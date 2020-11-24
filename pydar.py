@@ -1,0 +1,4437 @@
+# -*- coding: utf-8 -*-
+"""
+Classes and functions for registering and displaying mosaic lidar scans.
+
+In this module we take an object oriented approach to managing single scans, 
+projects (collections of scans all from the same day or 2 days sometimes), 
+tiepoint lists, and scan areas (collections of projects covering the same
+physical regions). Each of these categories is represented by a class.
+
+Created on Tue Sep  8 10:46:27 2020
+
+@author: d34763s
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+from matplotlib.colors import Normalize
+from scipy import ndimage
+from scipy.spatial import Delaunay
+from scipy.special import erf, erfinv
+from scipy.signal import fftconvolve
+from numpy.linalg import svd
+import cv2 as cv
+import scipy.sparse as sp
+from scipy.optimize import minimize, minimize_scalar
+import pandas as pd
+import vtk
+from vtk.numpy_interface import dataset_adapter as dsa
+import os
+import re
+import copy
+from vtk.util.numpy_support import vtk_to_numpy
+
+class TiePointList:
+    """Class to contain tiepointlist object and methods.
+    
+    ...
+    
+    Attributes
+    ----------
+    project_name : str
+        Filename of the RiSCAN project the tiepointlist comes from
+    project_path : str
+        Directory location of the project.
+    tiepoints : Pandas dataframe
+        List of tiepoint names and coordinates in project coordinate system.
+    tiepoints_transformed : Pandas dataframe
+        List of tiepoints transformed into a new coordinate system.
+    current_transform : tuple
+        Tuple with index of current transform (the one used to create 
+        tiepoints_transformed).
+    pwdist : Pandas dataframe
+        List of unique pairwise distances between reflectors.
+    dict_compare : dict
+        Stores comparisons of self pwdist with other tiepointlists' pwdists.
+    transforms : dict
+        Stores transformations that aligns self tiepoints with others. Keyed
+        on tuples (name, str_reflector_list). Each entry is a tuple 
+        (reflector_list, transform, std).
+        
+    Methods
+    -------
+    calc_pairwise_dist()
+        Calculates the distances between each unique pair of reflectors.
+    compare_pairwise_dist(other_tiepointlist)
+        Compares pwdist with other_tiepointlist, stores result in compare_dict
+    plot_map(other_project_name, delaunay=False, mode='dist')
+        Plots a map of the change in reflector distances.
+    calc_transformation(other_tiepointlist, reflector_list, mode='LS')
+        Calculates best fitting rigid transformation to align with other.
+    add_transform(name, transform, reflector_list=[], std=np.NaN)
+        Adds a transform the the transforms dataframe.
+    apply_transform(index)
+        Applies a transform in transforms to update tiepoints_transformed.
+    get_transform(index)
+        Returns the requested numpy array.
+    """
+    
+    def __init__(self, project_path, project_name):
+        """Stores the project_path and project_name variables and loads the 
+        tiepoints into a pandas dataframe"""
+        self.project_path = project_path
+        self.project_name = project_name
+        self.tiepoints = pd.read_csv(project_path + project_name +
+                                     '\\tiepoints.csv',
+                                     index_col=0, usecols=[0,1,2,3])
+        self.tiepoints.sort_index(inplace=True)
+        # Add the identity matrix to the transform list
+        self.transforms = {('identity', '') : ([], np.eye(4), np.NaN)}
+        
+        # Create the tiepoints_transformed dataframe
+        self.tiepoints_transformed = self.tiepoints.copy(deep=True)
+        self.current_transform = ('identity', '')
+        
+    def add_transform(self, name, transform, reflector_list=[], std=np.NaN):
+        """
+        Add a transform to the transforms dict.
+
+        Parameters
+        ----------
+        name : str
+            The name of the tranformation to put in self.transforms
+        transform : 4x4 ndarray
+            The affine transformation in homologous coordinates.
+        reflector_list : list, optional
+            List of reflectors used to find this transformation (if any). 
+            The default is None.
+        std : float, optional
+            Standard deviation of residuals between aligned reflectors in m
+            if transformation is from reflectors. The default is None.
+
+        Returns
+        -------
+        key : tuple
+            The tuple that the tranform is keyed (indexed) in on transforms.
+
+        """
+        
+        # Index into the transforms dict 
+        str_reflector_list = ', '.join(reflector_list)
+        self.transforms[(name, str_reflector_list)] = (reflector_list, 
+                                                       transform,
+                                                       std)
+        
+        # Return key (index) of transform
+        return (name, str_reflector_list)
+    
+    def get_transform(self, index):
+        """
+        Return the requested transform's array.
+
+        Parameters
+        ----------
+        index : tuple
+            Key for desired transform in self.transforms.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        return self.transforms[index][1]
+    
+    def apply_transform(self, index):
+        """
+        Apply the transform in transforms to update tiepoints_transformed
+
+        Parameters
+        ----------
+        index : tuple
+            Index of the transform in self.transforms to apply
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # extract positions in homogenous coordinates
+        x_vec = np.ones((4, self.tiepoints.shape[0]))
+        x_vec[:-1, :] = self.tiepoints.to_numpy().T
+        # apply transformation
+        y_vec = np.matmul(self.transforms[index][1], x_vec)
+        # replace values in self.tiepoints_transformed
+        self.tiepoints_transformed[:] = y_vec[:3, :].T
+        
+        # Update current_transform
+        self.current_transform = index
+
+    def calc_pairwise_dist(self):
+        """Calculate the pairwise distances between each unique pair of 
+        reflectors"""
+        # Use list of dictionaries approach: https://stackoverflow.com/questions/10715965/add-one-row-to-pandas-dataframe
+        rows_list = []
+        for indexA, rowA in self.tiepoints.iterrows():
+            for indexB, rowB in self.tiepoints.iterrows():
+                if (indexA >= indexB):
+                    continue
+                else:
+                    dict1 = {}
+                    dict1.update({'rA': indexA, 'rB': indexB,
+                                  'dist': np.sqrt(
+                        (rowA[0] - rowB[0])**2 +
+                        (rowA[1] - rowB[1])**2 +
+                        (rowA[2] - rowB[2])**2)})
+                    rows_list.append(dict1)
+        self.pwdist = pd.DataFrame(rows_list)
+        self.pwdist.set_index(['rA', 'rB'], inplace=True)
+        
+    def compare_pairwise_dist(self, other_tiepointlist):
+        """
+        Compares pairwise distances of TiePointList with the other one and 
+        stores results in a dictionary whose key is the name of the other.
+        
+        Note, our typical usage will be to compare the current tiepointlist
+        with one from a week prior. Thus the difference we calculate is this
+        list's distance minus the other distance.
+
+        Parameters
+        ----------
+        other_tiepointlist : TiePointList to compare to.
+            These tiepoints will be represented by rB and dist_y.
+
+        Returns
+        -------
+        None. But stores results in a dictionary. Keyed on name of other.
+
+        """
+        # Create Dictionary if it doesn't exist
+        if not hasattr(self, 'dict_compare'):
+            self.dict_compare = {}
+        
+        # Now Calculate pairwise distances and store
+        if not hasattr(self, 'pwdist'):
+            self.calc_pairwise_dist()
+        if not hasattr(other_tiepointlist, 'pwdist'):
+            other_tiepointlist.calc_pairwise_dist()
+        df = pd.merge(self.pwdist, other_tiepointlist.pwdist, how='inner', 
+                      left_index=True, right_index=True)
+        df['diff'] = df['dist_x'] - df['dist_y']
+        df['diff_abs'] = abs(df['diff'])
+        df['strain'] = df['diff']/df['dist_y']
+        df.sort_values(by='diff_abs', inplace=True)
+        self.dict_compare.update({other_tiepointlist.project_name: df})
+    
+    def calc_transformation(self, other_tiepointlist, reflector_list, 
+                            mode='LS', use_tiepoints_transformed=True,
+                            yaw_angle=0):
+        """
+        Calculate the rigid transformation to align with other tiepointlist.
+        
+        See info under mode. In either mode, we start by computing the 
+        centroids of the selected reflectors in both lists and create arrays
+        of position relative to centroid. Then we use the singular value
+        decomposition to find the rotation matrix (either in 3 dimensions or
+        1 depending on mode) that best aligns the reflectors. Finally, we 
+        solve for the appropriate translation based on the centroids. We store
+        the result as a 4x4 matrix in self.transforms.
+        
+        The method used here is based off of Arun et al 1987:
+            https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=4767965
+        
+        Parameters
+        ----------
+        other_tiepointlist : TiePointList
+            TiePointList to compare with.
+        reflector_list : list
+            List of tiepoints to align.
+        mode : str, optional
+            Mode of the transformation, in 'LS' transformation can rotate on 
+            all 3 axes to find best fit (must have at least 3 reflectors). In
+            'Yaw' the z axis is fixed and we are only rotating around it (it 
+            still translates in all 3 dimensions). The default is 'LS'.
+        use_tiepoints_transformed : bool, optional
+            Whether to use the tiepoints_transformed from the other tiepoint
+            list or the raw ones. The default is True.
+        yaw_angle : float, optional
+            If the mode is 'Trans' this is the angle (in radians) by which to
+            change the heading of the scan. The default is 0.
+
+        Returns
+        -------
+        key : tuple
+            The tuple that the tranform is keyed (indexed) in on transforms.
+
+        """
+        
+        # extract point lists and name as in Arun et al.
+        if use_tiepoints_transformed:
+            psubi_prime = other_tiepointlist.tiepoints_transformed.loc[
+                reflector_list].to_numpy().T
+        else:
+            psubi_prime = other_tiepointlist.tiepoints.loc[
+                reflector_list].to_numpy().T
+        psubi = self.tiepoints.loc[reflector_list].to_numpy().T
+        
+        # Compute centroids
+        p_prime = psubi_prime.mean(axis=1).reshape((3,1))
+        p = psubi.mean(axis=1).reshape((3,1))
+        
+        # Translate such that centroids are at zero
+        qsubi_prime = psubi_prime - p_prime
+        qsubi = psubi - p
+        
+        # Compute best fitting rotation matrix R
+        if (mode=='LS'):
+            # Calculate the 3x3 matrix H (Using all 3 axes)
+            H = np.matmul(qsubi, qsubi_prime.T)
+            # Find it's singular value decomposition
+            U, S, Vh = svd(H)
+            # Calculate X, the candidate rotation matrix
+            X = np.matmul(Vh.T, U.T)
+            # Check if the determinant of X is near 1, this should basically 
+            # alsways be the case for our data
+            if np.isclose(1, np.linalg.det(X)):
+                R = X
+            elif np.isclose(-1, np.linalg.det(X)):
+                V_prime = np.array([[Vh[0,:]], [Vh[1,:]], [-1*Vh[2,:]]]).T
+                R = np.matmul(V_prime, U.T)
+        elif (mode=='Yaw'):
+            # If we are locking the x-y plane we can modify the above process
+            # to just find a rotation in 2 dimensions
+            # Calculate the 2x2 matrix H
+            H = np.matmul(qsubi[:2,:], qsubi_prime[:2,:].T)
+            # Find it's singular value decomposition
+            U, S, Vh = svd(H)
+            # Calculate X, the candidate rotation matrix
+            X = np.matmul(Vh.T, U.T)
+            # Check if the determinant of X is near 1, this should basically 
+            # alsways be the case for our data
+            R = np.eye(3)
+            if np.isclose(1, np.linalg.det(X)):
+                R[:2, :2] = X
+            elif np.isclose(-1, np.linalg.det(X)):
+                V_prime = np.array([Vh[0,:], -1*Vh[1,:]]).T
+                R[:2, :2] = np.matmul(V_prime, U.T)
+        elif (mode=='Trans'):
+            # If we are just in translational mode then rotation matrix is 
+            # Determined by yaw angle.
+            R = np.eye(3)
+            R[0,0] = np.cos(yaw_angle)
+            R[0,1] = -1*np.sin(yaw_angle)
+            R[1,0] = np.sin(yaw_angle)
+            R[1,1] = np.cos(yaw_angle)
+        
+        # Now find translation vector to align centroids
+        T = p_prime - np.matmul(R, p)
+        
+        # Combine R and T into 4x4 matrix
+        A = np.eye(4)
+        A[:3, :3] = R
+        A[:3, 3] = T.squeeze()
+        
+        # Compute standard deviation of euclidean distances.
+        if not (mode=='Trans'):
+            p_trans = np.matmul(R, psubi) + T
+            dist = np.sqrt((np.square(psubi_prime - p_trans)).sum(axis=0))
+            std = std=dist.std()
+        else:
+            std = np.NaN
+        
+        # Add matrix to transforms
+        key = self.add_transform(other_tiepointlist.project_name + '_' + mode,
+                                 A, reflector_list, std=std)
+        # Return key (index) of tranform in self.transforms.
+        return key
+
+    def plot_map(self, other_project_name, delaunay=False, mode='dist',
+                 use_tiepoints_transformed=False):
+        """
+        Plot lines showing change in distances or strains between two scans.
+
+        Parameters
+        ----------
+        other_project_name : str
+            Other project must already be in dict_compare.
+        delaunay : bool, optional
+            Whether to plot just the lines that are part of the Delaunay 
+            triangulation. The default is False.
+        mode : str, optional
+            If 'dist' display differences as distances, if 'strain' display 
+            differences as strains. The default is 'dist'.
+        use_tiepoints_transformed : bool, optional
+            If true plot tiepoints at locations given by tiepoints_transformed.
+            The default is False.
+
+        Returns
+        -------
+        Matplotlib figure and axes objects.
+
+        """
+        # First let's just plot the reflectors and their names.
+        f, ax = plt.subplots(1, 1, figsize=(10, 10))
+        # Looping is inefficient but we have very few points.
+        # Let's limit to just plotting the reflectors present in both
+        tup = self.dict_compare[other_project_name].index.tolist()
+        as_arr = np.array(list(map(lambda x: x[0], tup)) + 
+                          list(map(lambda x: x[1], tup)))
+        common_reflectors = np.unique(as_arr)
+        if use_tiepoints_transformed:
+            for index, row in self.tiepoints_transformed.iterrows():
+                if (index in common_reflectors):
+                    ax.scatter(row[0], row[1], s=10, c='k')
+                    ax.text(row[0]+5, row[1]+5, s=index, fontsize=12)
+        else:
+            for index, row in self.tiepoints.iterrows():
+                if (index in common_reflectors):
+                    ax.scatter(row[0], row[1], s=10, c='k')
+                    ax.text(row[0]+5, row[1]+5, s=index, fontsize=12)
+        
+        # If we are just plotting delaunay lines calculate delaunay triang.
+        if delaunay:
+            tri = Delaunay(self.tiepoints.loc[common_reflectors].
+                           to_numpy()[:,:2])
+            # Now we want to create a list of tuples matching the multiindex
+            # in dict_compare
+            indptr, indices = tri.vertex_neighbor_vertices
+            delaunay_links = []
+            for i in range(common_reflectors.size): #range(self.tiepoints.shape[0]):
+                #r_start = self.tiepoints.index[i]
+                r_start = common_reflectors[i]
+                for neighbor in indices[indptr[i]:indptr[i+1]]:
+                    #r_end = self.tiepoints.index[neighbor]
+                    r_end = common_reflectors[neighbor]
+                    # Preserve ordering style in multiindex
+                    if (r_end > r_start):
+                        delaunay_links.append((r_start, r_end))
+        
+        # Create appropriate diverging color map for changes in distance
+        # We'll use RdBu for now and flip it so that Blue is contraction
+        if mode=='dist':
+            max_abs_diff = (self.dict_compare[other_project_name]
+                            ['diff_abs'].to_numpy().max())
+        elif mode=='strain':
+            max_abs_diff = (abs(self.dict_compare[other_project_name]
+                            ['strain'].to_numpy()).max())
+        
+        norm_color = Normalize(vmin=-1*max_abs_diff, vmax=max_abs_diff)
+        
+            
+        # Now plot lines between pairs of reflectors
+        if use_tiepoints_transformed:
+            for index, row in self.dict_compare[other_project_name].iterrows():
+                if (delaunay and not (index in delaunay_links)):
+                    continue
+                # Color indicates change, blue is shortening, red is lengthening
+                if mode=='dist':
+                    c = cm.RdBu_r(row['diff']/max_abs_diff + .5)
+                elif mode=='strain':
+                    c = cm.RdBu_r(row['strain']/max_abs_diff + .5)
+                ax.plot([self.tiepoints_transformed.loc[index[0],'X[m]'],
+                         self.tiepoints_transformed.loc[index[1],'X[m]']],
+                        [self.tiepoints_transformed.loc[index[0],'Y[m]'],
+                         self.tiepoints_transformed.loc[index[1],'Y[m]']],
+                        c=c)
+                if delaunay:
+                    if mode=='dist':
+                        ax.text((self.tiepoints_transformed.loc[index[0],'X[m]'] +
+                             self.tiepoints_transformed.loc[index[1],'X[m]'])/2,
+                            (self.tiepoints_transformed.loc[index[0],'Y[m]'] +
+                             self.tiepoints_transformed.loc[index[1],'Y[m]'])/2,
+                            s = format(row['diff'], '.2f'))
+                    elif mode=='strain':
+                        ax.text((self.tiepoints_transformed.loc[index[0],'X[m]'] +
+                             self.tiepoints_transformed.loc[index[1],'X[m]'])/2,
+                            (self.tiepoints_transformed.loc[index[0],'Y[m]'] +
+                             self.tiepoints_transformed.loc[index[1],'Y[m]'])/2,
+                            s = format(row['strain'], '.4f'))
+        else:
+            for index, row in self.dict_compare[other_project_name].iterrows():
+                if (delaunay and not (index in delaunay_links)):
+                    continue
+                # Color indicates change, blue is shortening, red is lengthening
+                if mode=='dist':
+                    c = cm.RdBu_r(row['diff']/max_abs_diff + .5)
+                elif mode=='strain':
+                    c = cm.RdBu_r(row['strain']/max_abs_diff + .5)
+                ax.plot([self.tiepoints.loc[index[0],'X[m]'],
+                         self.tiepoints.loc[index[1],'X[m]']],
+                        [self.tiepoints.loc[index[0],'Y[m]'],
+                         self.tiepoints.loc[index[1],'Y[m]']],
+                        c=c)
+                if delaunay:
+                    if mode=='dist':
+                        ax.text((self.tiepoints.loc[index[0],'X[m]'] +
+                             self.tiepoints.loc[index[1],'X[m]'])/2,
+                            (self.tiepoints.loc[index[0],'Y[m]'] +
+                             self.tiepoints.loc[index[1],'Y[m]'])/2,
+                            s = format(row['diff'], '.3f'))
+                    elif mode=='strain':
+                        ax.text((self.tiepoints.loc[index[0],'X[m]'] +
+                             self.tiepoints.loc[index[1],'X[m]'])/2,
+                            (self.tiepoints.loc[index[0],'Y[m]'] +
+                             self.tiepoints.loc[index[1],'Y[m]'])/2,
+                            s = format(row['strain'], '.4f'))
+            
+        # Add colorbar
+        f.colorbar(cm.ScalarMappable(norm=norm_color, cmap='RdBu_r'), ax=ax)
+        ax.axis('equal')
+        ax.set_title('Change from ' + other_project_name + ' to ' 
+                     + self.project_name)
+        
+class SingleScan:
+    """
+    Container for single lidar scan and methods for displaying it.
+    
+    ...
+    
+    Attributes
+    ----------
+    project_path : str
+        Path to folder containing all Riscan projects.
+    project_name : str
+        Name of Riscan project.
+    scan_name : str
+        Typically ScanPos0XX where XX is the scan number.
+    poly : int
+        Which polydata from the list to take.
+    transform_dict : dict
+        dict of vtkTransforms linked with this single scan.
+    transform : vtkTransform
+        pipelined, concatenated vtkTransform to apply to this scan.
+    transformFilter : vtkTransformPolyDataFilter
+        filter that applies the transform above
+    filterName : str
+        name of the current filter whose output is in currentFilter
+    currentFilter : vtkThresholdPoints
+        vtkThresholdPoints with all transformed points that haven't been 
+        filtered out.
+    filteredPoints : vtkThresholdPoints
+        vtkThresholdPoints containing all points that have been filtered out.
+    filterDict : dict
+        dict of vtkFilter objects
+    mapper : vtkPolyDataMapper
+        vtk mapper object
+    actor : vtkActor
+        vtk actor object
+    polydata_raw : vtkPolyData
+        Raw data read in from Riscan, we will add arrays to PointData. This
+        polydata's PointData includes an array flag_filter. In this array
+        0 means keep this point (currently) and other values indicate which
+        filter removes this point (e.g. 1 means elevation)
+    dsa_raw : vtk.numpy_interface.dataset_adapter.Polydata
+        dataset adaptor object for interacting with polydata_raw
+    
+    Methods
+    -------
+    write_scan()
+        Writest he scan to a file to save the filters
+    read_scan()
+        Reads the scan from a file, replacing the RiSCAN version.
+    apply_transforms(transform_list)
+        updates transform to be concatenation of transforms in transform list.
+    add_sop()
+        load the appropriate SOP matrix into transform_dict
+    add_z_offset(z_offset)
+        add a z_offset transformation to transform_dict
+    add_transform(key, matrix)
+        add a transform to transform_dict
+    create_elevation_pipeline(z_min, z_max, lower_threshold=-1000,
+                              upper_threshold=1000)
+        create mapper and actor for displaying points with colors by elevation
+    get_polydata()
+        Returns the polydata object for the current settings of transforms
+        and filters.
+    apply_snowflake_filter(shells)
+        Builds a snowflake filter pipeline
+    apply_elevation_filter(z_max)
+        Filter out all points above a certain height. Sets the flag in 
+        flag_filter to 1.
+    apply_snowflake_filter_2(z_diff, N, r_min):
+        Filter snowflakes based on their vertical distance from nearby points.
+    clear_filter_flag
+        Reset all filter_flag values to 0.
+    create_normalized_heights(x, cdf)
+        Use normalize function to create normalized heights in new PointData
+        array.
+    create_reflectance()
+        Create reflectance field in polydata_raw according to RiSCAN instructs.
+    create_reflectance_pipeline(v_min, v_max)
+        create mapper and actor for displaying points with colors by reflectance
+    correct_reflectance_radial(mode)
+        Adjust reflectance for radial artifact.
+    reflectance_filter(threshold, radius=0, field='reflectance_radial')
+        Set filter_flag values for high reflectance objects (and neighborhood
+        if desired) to 3.
+    """
+    
+    def __init__(self, project_path, project_name, scan_name, poly=0,
+                 read_scan=False):
+        """
+        Creates SingleScan object and transformation pipeline.
+
+        Parameters
+        ----------
+        project_path : str
+            Path to folder containing all Riscan projects.
+        project_name : str
+            Name of Riscan project.
+        scan_name : str
+            Typically ScanPos0XX where XX is the scan number.
+        poly : int, optional
+            Which polydata in folder to take. The default is 0.
+        read_scan : bool, optional
+            Whether to read a saved scan from file. Typically useful for
+            handling filtered scans. The default is False
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Store instance attributes
+        self.project_path = project_path
+        self.project_name = project_name
+        self.scan_name = scan_name
+        self.poly = poly
+        
+        # Create reader, transformFilter
+        reader = vtk.vtkXMLPolyDataReader()
+        polys = os.listdir(self.project_path + self.project_name + '\\SCANS\\'
+                           + self.scan_name + '\\POLYDATA\\')
+        if read_scan:
+            reader.SetFileName(self.project_path + self.project_name + "_" +
+                           self.scan_name + '.vtp')
+        else:
+            reader.SetFileName(self.project_path + self.project_name 
+                                    + '\\SCANS\\' + self.scan_name 
+                                    + '\\POLYDATA\\' + polys[poly] + '\\1.vtp')
+        reader.Update()
+        self.polydata_raw = reader.GetOutput()
+        
+        # Create dataset adaptor for interacting with polydata_raw
+        self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
+        
+        # Add filter_flag array to polydata_raw if it's not present
+        if not 'flag_filter' in self.dsa_raw.PointData.keys():
+            arr = vtk.vtkFloatArray()
+            arr.SetName('flag_filter')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
+            arr.FillComponent(0, 0)
+            self.polydata_raw.GetPointData().AddArray(arr)
+            self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')
+            
+        
+        
+        self.transform = vtk.vtkTransform()
+        # Set mode to post-multiply, so concatenation is successive transforms
+        self.transform.PostMultiply()
+        self.transformFilter = vtk.vtkTransformPolyDataFilter()
+        self.transformFilter.SetTransform(self.transform)
+        self.transformFilter.SetInputData(self.polydata_raw)
+        
+        # Create other attributes
+        self.transform_dict = {}
+        self.filterName = 'None'
+        self.filterDict = {}
+        
+        # Create currentFilter
+        self.currentFilter = vtk.vtkThresholdPoints()
+        self.currentFilter.ThresholdBetween(-.5, .5)
+        self.currentFilter.AddInputConnection(
+            self.transformFilter.GetOutputPort())
+        self.currentFilter.Update()
+    
+    def write_scan(self):
+        """
+        Write the scan to a vtp file. Thus storing flag_filter.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create writer and write mesh
+        writer = vtk.vtkXMLPolyDataWriter()
+        writer.SetInputData(self.polydata_raw)
+        writer.SetFileName(self.project_path + self.project_name + "_" +
+                               self.scan_name + '.vtp')
+        writer.Write()
+        
+    def read_scan(self):
+        """
+        Reads a scan from a vtp file
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Clear polydata_raw and dsa_raw
+        if hasattr(self, 'dsa_raw'):
+            del self.dsa_raw
+            del self.polydata_raw
+
+            
+        # Create Reader, read file
+        reader = vtk.vtkXMLPolyDataReader()
+        reader.SetFileName(self.project_path + self.project_name + "_" +
+                           self.scan_name + '.vtp')
+        reader.Update()
+        self.polydata_raw = reader.GetOutput()
+        self.polydata_raw.Modified()
+        
+        # Create dsa, link with transform filter
+        self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
+        self.transformFilter.SetInputData(self.polydata_raw)
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+    
+    def add_tranform(self, key, matrix):
+        """
+        Adds a new transform to the transform_dict
+
+        Parameters
+        ----------
+        key : str
+            Name of the tranform (e.g. 'sop')
+        matrix : 4x4 array-like
+            4x4 matrix of transformation in homologous coordinates.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create vtk transform object
+        vtk4x4 = vtk.vtkMatrix4x4()
+        for i in range(4):
+            for j in range(4):
+                vtk4x4.SetElement(i, j, matrix[i, j])
+        transform = vtk.vtkTransform()
+        transform.SetMatrix(vtk4x4)
+        # Add transform to transform_dict
+        self.transform_dict.update({key : transform})
+        
+    def add_sop(self):
+        """
+        Add the sop matrix to transform_dict. Must have exported from RiSCAN
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        trans = np.genfromtxt(self.project_path + self.project_name + '\\' 
+                              + self.scan_name + '.DAT', delimiter=' ')
+        self.add_tranform('sop', trans)
+        
+    def add_z_offset(self, z_offset):
+        """
+        Adds a uniform z offset to the scan
+
+        Parameters
+        ----------
+        z_offset : float
+            z offset to add in meters.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        trans = np.eye(4)
+        trans[2, 3] = z_offset
+        self.add_tranform('z_offset', trans)
+        
+    def get_polydata(self):
+        """
+        Returns vtkPolyData of scan with current transforms and filters.
+
+        Returns
+        -------
+        vtkPolyData.
+
+        """
+        
+        return self.currentFilter.GetOutput()
+    
+    def apply_transforms(self, transform_list):
+        """
+        Update transform to be a concatenation of transform_list.
+        
+        Clears existing transform!
+
+        Parameters
+        ----------
+        transform_list : list
+            str in list must be keys in transform_dict. Transformations are 
+            applied in the same order as in the list (postmultiply order)
+
+        Returns
+        -------
+        None.
+
+        """
+        # Reset transform to the identity
+        self.transform.Identity()
+        
+        for key in transform_list:
+            try:
+                self.transform.Concatenate(self.transform_dict[key])
+            except Exception as e:
+                print("Requested transform " + key + " is not in " +
+                      "transform_dict")
+                print(e)
+        
+        # If the norm_height array exists delete it we will recreate it 
+        # if needed
+        if 'norm_height' in self.dsa_raw.PointData.keys():
+            self.polydata_raw.GetPointData().RemoveArray('norm_height')
+            self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+    
+    def clear_flag_filter(self):
+        """
+        Reset flag_filter for all points to 0
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.dsa_raw.PointData['flag_filter'] = 0
+        # Update currentTransform
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+    
+    def apply_elevation_filter(self, z_max):
+        """
+        Set flag_filter for all points above z_max to be 1. 
+
+        Parameters
+        ----------
+        z_max : float
+            Maximum z-value (in reference frame of currentTransform).
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Get the points of the currentTransform as a numpy array
+        dsa_current = dsa.WrapDataObject(self.transformFilter.GetOutput())
+        # Set the in flag_filter for points whose z-value is above z_max to 1
+        self.dsa_raw.PointData['flag_filter'][dsa_current.Points[:,2] 
+                                              > z_max] = 1
+        # Update currentTransform
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+    
+    def apply_snowflake_filter_2(self, z_diff, N, r_min):
+        """
+        Filter snowflakes based on their vertical distance from nearby points.
+        
+        Here we exploit the fact that snowflakes (and for that matter power
+        cables and some other human objects) are higher than their nearby
+        points. The filter steps through each point in the transformed
+        dataset and compares it's z value with the mean of the z-values of
+        the N closest points. If the difference exceeds z_diff then set the
+        flag_filter for that point to be 2. Also, there is a shadow around the
+        base of the scanner so all points within there must be spurious. We
+        filter all points within r_min
+
+        Parameters
+        ----------
+        z_diff : float
+            Maximum vertical difference in m a point can have from its 
+            neighborhood.
+        N : int
+            Number of neighbors to find.
+        r_min : float
+            Radius of scanner in m within which to filter all points.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Move z-values to scalars 
+        elevFilter = vtk.vtkSimpleElevationFilter()
+        elevFilter.SetInputConnection(self.transformFilter.GetOutputPort())
+        elevFilter.Update()
+        # Flatten points
+        flattener = vtk.vtkTransformPolyDataFilter()
+        trans = vtk.vtkTransform()
+        trans.Scale(1, 1, 0)
+        flattener.SetTransform(trans)
+        flattener.SetInputConnection(elevFilter.GetOutputPort())
+        flattener.Update()
+        
+        # Create pdata and locator
+        pdata = flattener.GetOutput()
+        locator = vtk.vtkOctreePointLocator()
+        pdata.SetPointLocator(locator)
+        locator.SetDataSet(pdata)
+        pdata.BuildLocator()
+        
+        # Create temporary arrays for holding points
+        output = vtk.vtkFloatArray()
+        output.SetNumberOfValues(N)
+        output_np = vtk_to_numpy(output)
+        pt_ids = vtk.vtkIdList()
+        pt_ids.SetNumberOfIds(N)
+        pt = np.zeros((3))
+        scan_pos = np.array(self.transform.GetPosition())
+        
+        for m in np.arange(pdata.GetNumberOfPoints()):
+            # Get the point
+            pdata.GetPoint(m, pt)
+            # Check if the point is within our exclusion zone
+            r = np.linalg.norm(pt[:2]-scan_pos[:2])
+            if r < r_min:
+                self.dsa_raw.PointData['flag_filter'][m] = 2
+                continue
+            
+            # Get N closest points
+            locator.FindClosestNPoints(N, pt, pt_ids)
+            # now using the list of point_ids set the values in output to be the z
+            # values of the found points
+            pdata.GetPointData().GetScalars().GetTuples(pt_ids, output)
+            # If we exceed z_diff set flag_filter to 2
+            if (pdata.GetPointData().GetScalars().GetTuple(m)
+                - output_np.mean())>z_diff:
+                self.dsa_raw.PointData['flag_filter'][m] = 2
+        
+        # Update currentTransform
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+        
+    
+    def apply_snowflake_filter(self, shells):
+        """
+        Build and apply a snowflake filter from shells.
+        
+        Here we exploit the fact that snowflakes tend to be more isolated
+        than points on the snow surface and that point density decreases
+        in a predictable manner as we move away from the scanner. We construct
+        a filter on a set of radial shells around the scanner position where
+        we filter snowflakes more aggressively the closer we get to the 
+        scanner.
+
+        Parameters
+        ----------
+        shells : array-like of tuples
+            shells is an array-like set of tuples where each tuple is four
+            elements long (inner_r, outer_r, point_radius, neighbors). *_r
+            define the inner and outer radius of a halo defining shell. 
+            point_radius is radius for vtkRadiusOutlierRemoval to look at
+            (if 0, remove all points). Neighbors is number of neighbors that
+            must be within point_radius (if 0, keep all points)
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Clear currentFilter
+        self.currentFilter = vtk.vtkAppendPolyData()
+        self.filteredPoints = vtk.vtkAppendPolyData()
+        self.filterName = 'snowflake'
+        
+        # Loop through each shell and create appropriate pipeline connections.
+        for shell in shells:
+            # Create container for filters
+            self.filterDict[shell] = [None, None, None, None, None]
+            # Create implicit function
+            if (shell[1] is None):
+                # If the outer radius is none use a cylinder and get outside
+                self.filterDict[shell][2] = vtk.vtkCylinder()
+                self.filterDict[shell][2].SetRadius(shell[0])
+                self.filterDict[shell][2].SetCenter(self.transformFilter.
+                                                    GetTransform().
+                                                    GetPosition())
+                self.filterDict[shell][2].SetAxis(0, 0, 1)
+                # Create extractPoints
+                self.filterDict[shell][3] = vtk.vtkExtractPoints()
+                self.filterDict[shell][3].SetImplicitFunction(
+                    self.filterDict[shell][2])
+                # for just this category we want to extract outside
+                self.filterDict[shell][3].ExtractInsideOff()
+                self.filterDict[shell][3].SetInputConnection(
+                    self.transformFilter.GetOutputPort())
+            elif (shell[0]==0):
+                # if the inner radius is zero just use one cylinder
+                self.filterDict[shell][2] = vtk.vtkCylinder()
+                self.filterDict[shell][2].SetRadius(shell[1])
+                self.filterDict[shell][2].SetCenter(self.transformFilter.
+                                                    GetTransform().
+                                                    GetPosition())
+                self.filterDict[shell][2].SetAxis(0, 0, 1)
+                # Create extractPoints
+                self.filterDict[shell][3] = vtk.vtkExtractPoints()
+                self.filterDict[shell][3].SetImplicitFunction(
+                    self.filterDict[shell][2])
+                # for just this category we want to extract Inside
+                self.filterDict[shell][3].ExtractInsideOn()
+                self.filterDict[shell][3].SetInputConnection(
+                    self.transformFilter.GetOutputPort())
+            else:
+                # We need to extract a cylindrical shell of points.
+                # get points inside outer cylinder
+                self.filterDict[shell][0] = vtk.vtkCylinder()
+                self.filterDict[shell][0].SetRadius(shell[1])
+                self.filterDict[shell][0].SetCenter(self.transformFilter.
+                                                    GetTransform().
+                                                    GetPosition())
+                self.filterDict[shell][0].SetAxis(0, 0, 1)
+                # Create extractPoints
+                self.filterDict[shell][1] = vtk.vtkExtractPoints()
+                self.filterDict[shell][1].SetImplicitFunction(
+                    self.filterDict[shell][0])
+                # extract Inside
+                self.filterDict[shell][1].ExtractInsideOn()
+                self.filterDict[shell][1].SetInputConnection(
+                    self.transformFilter.GetOutputPort())
+                # Now get points outside inner cylinder
+                self.filterDict[shell][2] = vtk.vtkCylinder()
+                self.filterDict[shell][2].SetRadius(shell[0])
+                self.filterDict[shell][2].SetCenter(self.transformFilter.
+                                                    GetTransform().
+                                                    GetPosition())
+                self.filterDict[shell][2].SetAxis(0, 0, 1)
+                # Create extractPoints
+                self.filterDict[shell][3] = vtk.vtkExtractPoints()
+                self.filterDict[shell][3].SetImplicitFunction(
+                    self.filterDict[shell][2])
+                # extract outside
+                self.filterDict[shell][3].ExtractInsideOff()
+                self.filterDict[shell][3].SetInputConnection(
+                    self.filterDict[shell][1].GetOutputPort())
+            
+            # Update and get create Radius outlier removal (or not if
+            # neighbors==0 or point_radius==0)
+            self.filterDict[shell][3].Update()
+            if (shell[2]==0):
+                # If point_radius is 0 then we will discard these points
+                self.filterDict[shell][4] = vtk.vtkVertexGlyphFilter()
+                self.filterDict[shell][4].SetInputConnection(self.filterDict
+                                                             [shell][3]
+                                                             .GetOutputPort())
+                self.filterDict[shell][4].Update()
+                self.filteredPoints.AddInputConnection(self.filterDict[shell]
+                                                      [4].GetOutputPort())
+                self.filteredPoints.Update()
+                continue
+            if (shell[3]==0):
+                # If neigbors==0 then keep all points
+                self.filterDict[shell][4] = vtk.vtkVertexGlyphFilter()
+                self.filterDict[shell][4].SetInputConnection(self.filterDict
+                                                             [shell][3]
+                                                             .GetOutputPort())
+                self.filterDict[shell][4].Update()
+                self.currentFilter.AddInputConnection(self.filterDict[shell]
+                                                      [4].GetOutputPort())
+                self.currentFilter.Update()
+                continue
+            
+            # If neighbors is nonzero
+            self.filterDict[shell][4] = vtk.vtkRadiusOutlierRemoval()
+            self.filterDict[shell][4].SetRadius(shell[2])
+            self.filterDict[shell][4].SetNumberOfNeighbors(shell[3])
+            self.filterDict[shell][4].GenerateVerticesOn()
+            self.filterDict[shell][4].GenerateOutliersOn()
+            self.filterDict[shell][4].SetInputConnection(self.filterDict
+                                                         [shell][3]
+                                                         .GetOutputPort())
+            self.filterDict[shell][4].Update()
+            self.currentFilter.AddInputConnection(self.filterDict[shell][4]
+                                                  .GetOutputPort(0))
+            self.currentFilter.Update()
+            self.filteredPoints.AddInputConnection(self.filterDict[shell][4]
+                                                  .GetOutputPort(1))
+            self.filteredPoints.Update()        
+    
+    def create_filter_pipeline(self, colors={0 : (0, 1, 0, 1),
+                                             1 : (1, 0, 0, 1),
+                                             2 : (1, 0, 0, 1),
+                                             3 : (0, 0, 1, 1)}):
+        """
+        Create mapper and actor displaying points colored by flag_filter
+
+        Parameters
+        ----------
+        colors : dict, optional
+            Mapping from value in flag_filter to color. 
+            The default is {0 : (0, 255, 0), 1 : (255, 0, 0)}.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create Lookuptable
+        lut = vtk.vtkLookupTable()
+        lut.SetNumberOfTableValues(len(colors))
+        lut.SetTableRange(min(colors), max(colors))
+        for key in colors:
+            lut.SetTableValue(key, colors[key])
+        lut.Build()
+        
+        # Create mapper
+        self.mapper = vtk.vtkPolyDataMapper()
+        self.mapper.SetInputConnection(self.transformFilter.GetOutputPort())
+        self.mapper.SetLookupTable(lut)
+        self.mapper.SetScalarRange(min(colors), max(colors))
+        self.mapper.SetScalarVisibility(1)
+        
+        # Create actor
+        self.actor = vtk.vtkActor()
+        self.actor.SetMapper(self.mapper)
+        
+    
+    def create_elevation_pipeline(self, z_min, z_max, lower_threshold=-1000,
+                                  upper_threshold=1000):
+        """
+        create mapper and actor displaying points colored by elevation.
+
+        Parameters
+        ----------
+        z_min : float
+            Lower cutoff for plotting colors.
+        z_max : float
+            Upper cutoff for plotting colors.
+        lower_threshold : float, optional
+            Minimum elevation of point to display. The default is -1000.
+        upper_threshold : float, optional
+            Maximum elevation of point to display. The default is 1000.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # # Create elevation filter
+        elevFilter = vtk.vtkSimpleElevationFilter()
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+        elevFilter.SetInputConnection(self.currentFilter.GetOutputPort())
+        elevFilter.Update()
+        
+        # Create Threshold filter
+        thresholdFilter = vtk.vtkThresholdPoints()
+        thresholdFilter.SetInputConnection(elevFilter.GetOutputPort())
+        thresholdFilter.ThresholdBetween(lower_threshold, upper_threshold)
+        thresholdFilter.Update()
+        
+        # Create mapper, hardcode LUT for now
+        self.mapper = vtk.vtkPolyDataMapper()
+        self.mapper.SetInputConnection(thresholdFilter.GetOutputPort())
+        self.mapper.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+        self.mapper.SetScalarRange(z_min, z_max)
+        self.mapper.SetScalarVisibility(1)
+        
+        # Create actor
+        self.actor = vtk.vtkActor()
+        self.actor.SetMapper(self.mapper)
+    
+    def create_normalized_heights(self, x, cdf):
+        """
+        Use normalize function to create normalized heights in new PointData
+        array.
+        
+        Here we use the normalize function (defined below in Pydar) to
+        transform the z values from the output of transformFilter to a normal
+        distribution assuming they were drawn from the distribution specified
+        by x and cdf.
+
+        Parameters
+        ----------
+        x : 1d-array
+            Bin values in empirical cdf.
+        cdf : 1d-array
+            Values of empirical cdf.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # If normalized height array doesn't exist, create it.
+        if not 'norm_height' in self.dsa_raw.PointData.keys():
+            arr = vtk.vtkFloatArray()
+            arr.SetName('norm_height')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
+            arr.FillComponent(0, 0)
+            self.polydata_raw.GetPointData().AddArray(arr)
+        
+        # Create a temporary dataset_adaptor for the output of currentTransform
+        dsa_transform = dsa.WrapDataObject(self.transformFilter.GetOutput())
+        # Normalize
+        self.dsa_raw.PointData['norm_height'][:] = normalize(
+            dsa_transform.Points[:, 2].squeeze(), x, cdf)
+        
+        # Update
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+    
+    def create_reflectance(self):
+        """
+        Create reflectance field in polydata_raw according to RiSCAN instructs.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # If reflectance array doesn't exist, create it.
+        if not 'reflectance' in self.dsa_raw.PointData.keys():
+            arr = vtk.vtkFloatArray()
+            arr.SetName('reflectance')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
+            arr.FillComponent(0, 0)
+            self.polydata_raw.GetPointData().AddArray(arr)
+        
+        self.dsa_raw.PointData['reflectance'][:] = (np.array(self.dsa_raw.
+                                                             PointData
+                                          ['intensity'], dtype=np.float32) 
+                                          - 32768)/100.0
+        # Update
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+    
+    def create_reflectance_pipeline(self, v_min, v_max, field='reflectance'):
+        """
+        create mapper and actor displaying points colored by elevation.
+
+        Parameters
+        ----------
+        v_min : float
+            Lower cutoff for plotting colors.
+        v_max : float
+            Upper cutoff for plotting colors.
+        field : str, optional
+            Which array in pointdata to display. The default is 'reflectance'
+
+        Returns
+        -------
+        None.
+
+        """
+        # Create mapper, hardcode LUT for now
+        self.mapper = vtk.vtkPolyDataMapper()
+        self.mapper.SetInputConnection(self.currentFilter.GetOutputPort())
+        self.mapper.GetInput().GetPointData().SetActiveScalars(field)
+        self.mapper.SetLookupTable(mplcmap_to_vtkLUT(v_min, v_max, 
+                                                     name='plasma'))
+        self.mapper.SetScalarRange(v_min, v_max)
+        self.mapper.SetScalarVisibility(1)
+        
+        # Create actor
+        self.actor = vtk.vtkActor()
+        self.actor.SetMapper(self.mapper)
+    
+    def correct_reflectance_radial(self, mode, r_min=None, r_max=None, 
+                                   num=None, base=None):
+        """
+        Corrects radial artifact in reflectance. result: 'reflectance_radial'
+        
+        Attempts to correct radial artifact in reflectance. Still developing
+        the best way to do this.
+        
+        If mode is 'median': bin the raw reflectances by radial distance.
+
+        Parameters
+        ----------
+        mode : str
+            Method for correcting radial artifact in reflectances. Currently
+            only coded for 'median'.
+        r_min : float, optional
+            Needed for method 'median' minimum radius to bin 
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # If reflectance_radial array doesn't exist, create it.
+        if not 'reflectance_radial' in self.dsa_raw.PointData.keys():
+            arr = vtk.vtkFloatArray()
+            arr.SetName('reflectance_radial')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
+            arr.FillComponent(0, 0)
+            self.polydata_raw.GetPointData().AddArray(arr)
+        
+        if mode=='median':
+            start = np.log(r_min)/np.log(base)
+            end = np.log(r_max)/np.log(base)
+            
+            log_bin_edges = np.logspace(start, end, num=num, base=base)
+            
+            bin_centers = np.zeros(num-1)
+            median_refl = np.zeros(num-1)
+            
+            dist = np.sqrt(self.dsa_raw.Points[:,0]**2 + 
+                           self.dsa_raw.Points[:,1]**2 +
+                           self.dsa_raw.Points[:,2]**2)
+            
+            median_refl_pts = np.zeros(dist.shape)
+            
+            for i in np.arange(num-1):
+                in_bin = np.logical_and(dist>=log_bin_edges[i], 
+                                        dist<log_bin_edges[i+1])
+                bin_centers[i] = np.median(dist[in_bin])
+                median_refl[i] = np.median(self.dsa_raw.PointData
+                                           ['reflectance'][in_bin])
+                median_refl_pts[in_bin] = median_refl[i]
+            
+            # Set median values outside range to be edges
+            median_refl_pts[dist<r_min] = median_refl[0]
+            median_refl_pts[dist>=r_max] = median_refl[-1]
+        
+        
+        self.dsa_raw.PointData['reflectance_radial'][:] = (
+            self.dsa_raw.PointData['reflectance'] - median_refl_pts)
+        
+        # Update
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+    
+    def reflectance_filter(self, threshold, radius=0,
+                           field='reflectance_radial'):
+        """
+        Set flag_filter values for high reflectance objects (and neighborhood
+        if desired) to 3.
+
+        Parameters
+        ----------
+        threshold : float
+            reflectance threshold above which to flag
+        radius : float, optional
+            Radius around flagged points to also flag. The default is 0.
+        field : str, optional
+            The field in PointData to threshold. The default is 
+            'reflectance_radial'.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Undo previously flagged points (just reflectance, not snowflake)
+        self.dsa_raw.PointData['flag_filter'][self.dsa_raw.PointData
+                                              ['flag_filter']==3] = 0
+        
+        # Flag all points that exceed threshold and are not already flagged
+        self.dsa_raw.PointData['flag_filter'][
+            np.logical_and(self.dsa_raw.PointData[field]>threshold,
+                           self.dsa_raw.PointData['flag_filter']==0)] = 3
+        
+        # Update currentTransform
+        self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+        
+        if radius>0:
+            # If radius is greater than 0 we want to also flag all points within
+            # a vertical cylinder of radius of one of our flagged points.
+            #cylinder = vtk.vtkCylinder()
+            # Set the axis of our cylinder to align with vertical in the current
+            # transform
+            #cylinder.SetRadius(radius)
+            #cylinder.SetAxis(0.0, 0.0, 1.0)
+            implicitBoolean = vtk.vtkImplicitBoolean()
+            implicitBoolean.SetOperationTypeToUnion()
+            # Get all points that meet our criteria
+            thresholdPoints = vtk.vtkThresholdPoints()
+            thresholdPoints.ThresholdBetween(2.5, 3.5)
+            thresholdPoints.SetInputData(self.transformFilter.GetOutput())
+            thresholdPoints.Update()
+            pdata = thresholdPoints.GetOutput()
+            #print(pdata.GetNumberOfPoints())
+            # Create an implicit function of cylinders around all of our
+            # points
+            for i in np.arange(pdata.GetNumberOfPoints()):
+                cylinder = vtk.vtkCylinder()
+                cylinder.SetRadius(radius)
+                cylinder.SetAxis(0.0, 0.0, 1.0)
+                cylinder.SetCenter(pdata.GetPoint(i))
+                implicitBoolean.AddFunction(cylinder)
+            # Get all points inside this implicit function
+            extractPoints = vtk.vtkExtractPoints()
+            extractPoints.SetInputConnection(self.transformFilter.GetOutputPort())
+            extractPoints.SetImplicitFunction(implicitBoolean)
+            extractPoints.Update()
+            for i in np.arange(extractPoints.GetOutput().GetNumberOfPoints()):
+                pt_id = self.transformFilter.GetOutput().FindPoint(
+                    extractPoints.GetOutput().GetPoint(i))
+                self.dsa_raw.PointData['flag_filter'][pt_id] = 3
+            # Let's see if adjusting the PointData in the output of extract
+            # Points changes it in polydata_raw
+            # (extractPoints.GetOutput().GetPointData().
+            #  GetScalars('flag_filter').Fill(3))
+            # print(extractPoints.GetOutput().GetNumberOfPoints())
+            # point_map = extractPoints.GetPointMap()
+            # print(point_map)
+            # #numpy_map = vtk_to_numpy(point_map)
+            
+            
+            # Update currentTransform
+            self.polydata_raw.Modified()
+            self.transformFilter.Update()
+            self.currentFilter.Update()
+
+class Project:
+    """Class linking relevant data for a project and methods for registration.
+    
+    ...
+    
+    Attributes
+    ----------
+    project_date : str
+        Date that this project was started on (1st day for 2 day scans)
+    project_name : str
+        Filename of the RiSCAN project the tiepointlist comes from
+    project_path : str
+        Directory location of the project.
+    tiepointlist : TiePointList
+        Object containing tiepoints and methods for referencing them together.
+    scan_dict : dict
+        Dictionary of SingleScan objects keyed on scan names
+    current_transform_list : list
+        The list of transforms currently applied to the project.
+    filterName : str
+        Name of filter currently applied to all scans in project.
+    mesh : vtkPolyData
+        Polydata containing a mesh representation of the project.
+    image : vtkImageData
+        Image data containing gridded height information over specified region
+    imageTransform : vtkTransform
+        Transform for going from mesh reference frame to image ref
+        frame. Needed because vtkImageData can only be axis aligned.
+    dsa_image : datasetadapter
+        Wrapper to interact with image via numpy
+    empirical_cdf : tuple
+        (bounds, x, cdf) tuple with distribution of snow surface heights for 
+        use with transforming and normalizing z-values.
+    theta : 1D array or list
+        Theta parameters for the GMRF used in pixel infilling. See Rue and
+        Held 2005 Chapter 5.1
+    theta1 : float
+        Scaling parameter for GMRF used in pixel infilling. See Rue and Held
+        2005 Chapter 5.1
+    mu_agivenb : 1D array
+        Expectation of missing pixel values conditioned on observed pixels.
+    sparse_LAA : sparse matrix
+        Lower triangular Cholesky factor of the conditional precision matrix
+        (QAA) of the missing pixels conditioned on the observed pixels.
+    
+    Methods
+    -------
+    add_z_offset(z_offset)
+        Add z offset to all scans in project.
+    apply_transforms(transform_list)
+        Update transform for each scan and update current_transform_list.
+    display_project(z_min, z_max, lower_threshold=-1000, upper_threshold=1000)
+        Display project in a vtk interactive window.
+    display_image(z_min, z_max)
+        Display project image in a vtk interactive window.
+    write_merged_points(output_name=self.project_name + '_merged.vtp')
+        Merge all transformed and filtered pointclouds and write to file.
+    write_mesh(output_name=self.project_name + '_mesh.vtp')
+        Write mesh to vtp file.
+    read_mesh(mesh_name=self.project_name + '_mesh.vtp')
+        Read mesh from file.
+    write_scans()
+        Write all singlescans to files.
+    read_scans()
+        Read all singlescans from files.
+    merged_points_to_mesh(subgrid_x, subgrid_y, min_pts=100, alpha=0,
+                          overlap=0.1)
+        Merge all transformed pointclouds and convert to mesh.
+    project_to_image(z_min, z_max, focal_point, camera_position,
+                         image_scale=500, lower_threshold=-1000, 
+                         upper_threshold=1000, mode='map', colorbar=True,
+                         name='')
+        Write out an image of the project (in point cloud) to the snapshot
+        folder.
+    add_transforms(key, matrix)
+        Add the provided transform to each SingleScan
+    apply_snowflake_filter(shells)
+        Apply the snowflake filter.
+    apply_snowflake_filter_2(z_diff, N, r_min)
+        Apply a snowflake filter based on z difference with nearby points.
+    get_merged_points()
+        Get the merged points as a polydata
+    mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0)
+        Interpolate mesh into image.
+    plot_image(z_min, z_max, cmap='inferno')
+        Plots the image using matplotlib
+    get_np_nan_image()
+        Convenience function for copying the image to a numpy object.
+    create_empirical_cdf(bounds)
+        Creates an empirical cdf from z-values of all points within bounds.
+    create_empirical_cdf_image(z_min, z_max)
+        Creates an empirical cdf from z-values of image.
+    create_im_gaus()
+        Create normalized image based on the empirical cdf
+    add_theta(theta1, theta)
+        Adds the GMRF parameters theta1 and theta to attributes.
+    create_im_nan_border(buffer)
+        Creates a mask for which missing pixels not to infill.
+    write_image(output_name=None)
+        Write vtkImageData to file. Useful for saving im_nan_border.
+    read_image(image_path=None)
+        Read image from file.
+    create_gmrf()
+        Create GMRF for pixel infilling. Generates mu_agivenb and sparse_LAA.
+    create_reflectance()
+        Create reflectance for each scan.
+    """
+    
+    def __init__(self, project_path, project_name, load_scans=True, 
+                 read_scans=False):
+        """
+        Generates project, also inits singlescan objects
+
+        Parameters
+        ----------
+        project_path : str
+            Directory location of the project.
+        project_name : str
+            Filename of the RiSCAN project.
+        load_scans : bool, optional
+            Whether to actually load the scans. Often if we're just
+            aligning successive scans loading all of them causes overhead.
+        read_scans : bool, optional
+            If False, each SingleScan object will be initialized to read the
+            raw polydata from where RiSCAN saved it. If True, read the saved
+            vtp file from in the scan area directory. Useful if we have saved
+            already filtered scans. The default is False.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Store instance attributes
+        self.project_path = project_path
+        self.project_name = project_name
+        self.scan_dict = {}
+        self.project_date = mosaic_date_parser(project_name)
+        self.current_transform_list = []
+        
+        # Add SingleScans, including their SOPs, 
+        # we will only add a singlescan if it has an SOP and a polydata
+        if load_scans:
+            scan_names = os.listdir(project_path + project_name + '\\SCANS\\')
+            for scan_name in scan_names:
+                if os.path.isfile(self.project_path + self.project_name + '\\' 
+                                  + scan_name + '.DAT'):
+                    if not (len(os.listdir(self.project_path + 
+                                           self.project_name + '\\SCANS\\' + 
+                                           scan_name + '\\POLYDATA\\'))==0):
+                        scan = SingleScan(self.project_path, self.project_name,
+                                          scan_name, read_scan=read_scans)
+                        scan.add_sop()
+                        
+                        self.scan_dict.update({scan_name : scan})
+        
+        # Load TiePointList
+        self.tiepointlist = TiePointList(self.project_path, self.project_name)
+    
+    def apply_transforms(self, transform_list):
+        """
+        Apply transforms in transform list to each SingleScan
+
+        Parameters
+        ----------
+        transform_list : list
+            str in list must be transforms in each SingleScan, see SingleScan 
+            class for more details.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].apply_transforms(transform_list)
+        self.current_transform_list = transform_list
+    
+    def write_scans(self):
+        """
+        Write all single scans to files.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].write_scan()
+    
+    def read_scans(self):
+        """
+        Read all single scans from files.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].read_scan()
+    
+    def apply_snowflake_filter(self, shells):
+        """
+        Apply a snowflake filter to each SingleScan
+
+        Parameters
+        ----------
+        shells : array-like of tuples
+            shells is an array-like set of tuples where each tuple is four
+            elements long (inner_r, outer_r, point_radius, neighbors). *_r
+            define the inner and outer radius of a halo defining shell. 
+            point_radius is radius for vtkRadiusOutlierRemoval to look at
+            (if 0, remove all points). Neighbors is number of neighbors that
+            must be within point_radius (if 0, keep all points)
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].apply_snowflake_filter(shells)
+        self.filterName = "snowflake"
+    
+    def apply_snowflake_filter_2(self, z_diff, N, r_min):
+        """
+        Filter snowflakes based on their vertical distance from nearby points.
+        
+        Here we exploit the fact that snowflakes (and for that matter power
+        cables and some other human objects) are higher than their nearby
+        points. The filter steps through each point in the transformed
+        dataset and compares it's z value with the mean of the z-values of
+        the N closest points. If the difference exceeds z_diff then set the
+        flag_filter for that point to be 2. Also, there is a shadow around the
+        base of the scanner so all points within there must be spurious. We
+        filter all points within r_min
+
+        Parameters
+        ----------
+        z_diff : float
+            Maximum vertical difference in m a point can have from its 
+            neighborhood.
+        N : int
+            Number of neighbors to find.
+        r_min : float
+            Radius of scanner in m within which to filter all points.
+
+        Returns
+        -------
+        None.
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].apply_snowflake_filter_2(z_diff, N,
+                                                               r_min)
+        self.filterName = "snowflake_2"
+        
+    
+    def add_transform(self, key, matrix):
+        """
+        Add the provided transform to each single scan
+
+        Parameters
+        ----------
+        key : const (could be string or tuple)
+            Dictionary key for the transforms dictionary.
+        matrix : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].add_tranform(key, matrix)
+    
+    def add_transform_from_tiepointlist(self, key):
+        """
+        Add the transform in the tiepointlist to each single scan.
+
+        Parameters
+        ----------
+        key : const (could be string or tuple)
+            Dictionary key for the transforms dictionary.
+        matrix : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].add_tranform(key, 
+                                                   self.tiepointlist.
+                                                   get_transform(key))
+            
+    def add_z_offset(self, z_offset):
+        """
+        Add z_offset transform to each single scan in scan_dict
+
+        Parameters
+        ----------
+        z_offset : float.
+            z offset to add in meters.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].add_z_offset(z_offset)
+            
+    def display_project(self, z_min, z_max, lower_threshold=-1000, 
+                        upper_threshold=1000, colorbar=True, field='Elevation',
+                        mapview=False):
+        """
+        Display all scans in a vtk interactive window.
+        
+        Points will be colored by elevation, apply_transforms must be run 
+        before this the transform data into desired reference frame.
+        
+        Currently, this renderwindowinteractor is set to write the camera
+        position and focal point to std out when the user presses 'u'.
+
+        Parameters
+        ----------
+        z_min : float
+            Lower cutoff for plotting colors.
+        z_max : float
+            Upper cutoff for plotting colors.
+        lower_threshold : float, optional
+            Minimum elevation of point to display. The default is -1000.
+        upper_threshold : float, optional
+            Maximum elevation of point to display. The default is 1000.
+        colorbar : bool, optional
+            Display colorbar. The default is True.
+        field : str, optional
+            Which scalar field to display (elevation, reflectance, etc). The
+            default is 'Elevation'
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Define function for writing the camera position and focal point to
+        # std out when the user presses 'u'
+        def cameraCallback(obj, event):
+            print("Camera Pos: " + str(obj.GetRenderWindow().
+                                           GetRenderers().GetFirstRenderer().
+                                           GetActiveCamera().GetPosition()))
+            print("Focal Point: " + str(obj.GetRenderWindow().
+                                            GetRenderers().GetFirstRenderer().
+                                            GetActiveCamera().GetFocalPoint()))
+            print("Roll: " + str(obj.GetRenderWindow().
+                                            GetRenderers().GetFirstRenderer().
+                                            GetActiveCamera().GetRoll()))
+        
+        # Create renderer
+        renderer = vtk.vtkRenderer()
+        
+        # Run create elevation pipeline for each scan and add each actor
+        for scan_name in self.scan_dict:
+            if field=='Elevation':
+                self.scan_dict[scan_name].create_elevation_pipeline(z_min, 
+                                                                    z_max, 
+                                                                lower_threshold, 
+                                                                upper_threshold)
+            elif field=='flag_filter':
+                self.scan_dict[scan_name].create_filter_pipeline()
+            else:
+                self.scan_dict[scan_name].create_reflectance_pipeline(z_min,
+                                                                      z_max,
+                                                                      field=
+                                                                      field)
+            renderer.AddActor(self.scan_dict[scan_name].actor)
+            
+        if colorbar:
+            scalarBar = vtk.vtkScalarBarActor()
+            if field=='Elevation':
+                scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+                renderer.AddActor2D(scalarBar)
+            elif field in ['reflectance', 'reflectance_radial']:
+                scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max,
+                                                           name='plasma'))
+                renderer.AddActor2D(scalarBar)
+            
+        
+        if mapview:
+            camera = vtk.vtkCamera()
+            camera.SetFocalPoint(0.0, 0.0, -5)
+            camera.SetPosition(0.0, 0.0, 500)
+            camera.ParallelProjectionOn()
+            camera.SetParallelScale(500)
+            renderer.SetActiveCamera(camera)
+            legendScaleActor = vtk.vtkLegendScaleActor()
+            renderer.AddActor(legendScaleActor)
+            
+        # Create RenderWindow and interactor, set style to trackball camera
+        renderWindow = vtk.vtkRenderWindow()
+        renderWindow.SetSize(2000, 1500)
+        renderWindow.AddRenderer(renderer)
+        iren = vtk.vtkRenderWindowInteractor()
+        iren.SetRenderWindow(renderWindow)
+
+        style = vtk.vtkInteractorStyleTrackballCamera()
+        iren.SetInteractorStyle(style)
+            
+        iren.Initialize()
+        renderWindow.Render()
+        iren.AddObserver('UserEvent', cameraCallback)
+        iren.Start()
+    
+    def project_to_image(self, z_min, z_max, focal_point, camera_position,
+                         roll=0, image_scale=500, lower_threshold=-1000, 
+                         upper_threshold=1000, mode='map', colorbar=True,
+                         name=''):
+        """
+        Write an image of the project to the snapshots folder.
+        
+        Assumes we want an orthorectified image (mode='map') and we want the
+        default image name to just be the project name.
+
+        Parameters
+        ----------
+        z_min : float
+            Minimum z value to display colors.
+        z_max : float
+            Maximum z value to display colors.
+        focal_point : 3 element array like
+            Focal point of the camera in the project's reference frame.
+        camera_position : 3 element array like
+            Camera position in the project's reference frame.
+        roll : float, optional
+            Camera roll in degrees. The default is 0.
+        image_scale : float, optional
+            Image scale used in parallel projection. The default is 500.
+        lower_threshold : float, optional
+            Value of z to clip below. The default is -1000.
+        upper_threshold : float, optional
+            Value of z to clip above. The default is 1000.
+        mode : str, optional
+            What kind of projection system to use. 'Map' indicates parallel
+            or orthorectified projection. The default is 'map'.
+        colorbar : bool, optional
+            Whether to display a colorbar.
+        name : str, optional
+            Name to append to this snapshot. The default is ''.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create renderer
+        renderer = vtk.vtkRenderer()
+        
+        # Run create elevation pipeline for each scan and add each actor
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].create_elevation_pipeline(z_min, z_max, 
+                                                            lower_threshold, 
+                                                            upper_threshold)
+            renderer.AddActor(self.scan_dict[scan_name].actor)
+            
+        if colorbar:
+            scalarBar = vtk.vtkScalarBarActor()
+            scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+            renderer.AddActor2D(scalarBar)
+            
+        # Add project date as text
+        textActor = vtk.vtkTextActor()
+        textActor.SetInput(self.project_date)
+        textActor.SetPosition2(10, 40)
+        textActor.SetTextScaleModeToNone()
+        textActor.GetTextProperty().SetFontSize(24)
+        textActor.GetTextProperty().SetColor(0.0, 1.0, 0.0)
+        renderer.AddActor2D(textActor)
+        
+        # Create RenderWindow
+        renderWindow = vtk.vtkRenderWindow()
+        renderWindow.SetSize(2000, 1000)
+        renderWindow.AddRenderer(renderer)
+        # Create Camera
+        camera = vtk.vtkCamera()
+        camera.SetFocalPoint(focal_point)
+        camera.SetPosition(camera_position)
+        if mode=='map':
+            camera.ParallelProjectionOn()
+            camera.SetParallelScale(image_scale)
+            camera.SetViewUp(0, 1.0, 0)
+            legendScaleActor = vtk.vtkLegendScaleActor()
+            renderer.AddActor(legendScaleActor)
+        else:
+            camera.SetRoll(roll)
+        renderer.SetActiveCamera(camera)
+        
+        renderWindow.Render()
+        
+        # Screenshot image to save
+        w2if = vtk.vtkWindowToImageFilter()
+        w2if.SetInput(renderWindow)
+        w2if.Update()
+    
+        writer = vtk.vtkPNGWriter()
+        writer.SetFileName(self.project_path + 'snapshots\\' + 
+                           self.project_name + '_' + name + '.png')
+        writer.SetInputData(w2if.GetOutput())
+        writer.Write()
+    
+        renderWindow.Finalize()
+        del renderWindow
+    
+    def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0):
+        """
+        Interpolate mesh at regularly spaced points.
+        
+        Currently this image can only be axis aligned, if you want a different
+        orientation then you need to apply the appropriate transformation to
+        the mesh.
+
+        Parameters
+        ----------
+        nx : int
+            Number of gridcells in x direction.
+        ny : int
+            Number of gridcells in y direction.
+        dx : int
+            Width of gridcells in x direction.
+        dy : int
+            Width of gridcells in y direction.
+        x0 : float
+            x coordinate of the origin in m.
+        y0 : float
+            y coordinate of the origin in m.
+        yaw : float, optional
+            yaw angle in degerees of image to create, for generating 
+            non-axis aligned image. The default is 0
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Use elevation filter to write z data to scalars
+        elevFilter = vtk.vtkSimpleElevationFilter()
+        elevFilter.SetInputData(self.mesh)
+        elevFilter.Update()
+        
+        # Flatten Mesh, z data is now redundant (its in scalars)
+        transform = vtk.vtkTransform()
+        transform.Scale(1, 1, 0)
+        flattener = vtk.vtkTransformFilter()
+        flattener.SetTransform(transform)
+        flattener.SetInputData(elevFilter.GetOutput())
+        flattener.Update()
+        
+        # Transform mesh into image reference frame, needed because
+        # vtkImageData can only be axis-aligned. We'll save the transform 
+        # filter in case we need it for mapping flags, etc, into image
+        self.imageTransform = vtk.vtkTransform()
+        self.imageTransform.PostMultiply()
+        # Translate origin to be at (x0, y0)
+        self.imageTransform.Translate(-x0, -y0, 0)
+        # Rotate around this origin
+        self.imageTransform.RotateZ(yaw)
+        
+        # Create transform filter and apply
+        imageTransformFilter = vtk.vtkTransformPolyDataFilter()
+        imageTransformFilter.SetTransform(self.imageTransform)
+        imageTransformFilter.SetInputData(flattener.GetOutput())
+        imageTransformFilter.Update()
+        
+        # Create image
+        im = vtk.vtkImageData()
+        im.SetDimensions(nx, ny, 1)
+        im.SetSpacing(dx, dy, 1)
+        im.SetOrigin(0, 0, 0)
+        im.AllocateScalars(vtk.VTK_FLOAT, 1)
+            
+        
+        # Use probe filter to interpolate
+        probe = vtk.vtkProbeFilter()
+        probe.SetSourceData(imageTransformFilter.GetOutput())
+        probe.SetInputData(im)
+        probe.Update()
+        # If we've already created an image delete and make way for this one
+        if hasattr(self, 'image'):
+            del(self.image)
+        self.image = probe.GetOutput()
+        
+        # Also wrap with a datasetadaptor for working with numpy
+        self.dsa_image = dsa.WrapDataObject(self.image)
+        
+        # and use dsa to set NaN values where we have no data
+        bool_arr = self.dsa_image.PointData['vtkValidPointMask']==0
+        self.dsa_image.PointData['Elevation'][bool_arr] = np.NaN
+    
+    def get_image(self, field='Elevation', warp_scalars=False):
+        """
+        Return image as vtkImageData or vtkPolyData depending on warp_scalars
+
+        Parameters
+        ----------
+        field : str, optional
+            Which field in PointData to set active. The default is 'Elevation'
+        warp_scalars : bool, optional
+            Whether to warp the scalars in the image to create 3D surface
+
+        Returns
+        -------
+        image: vtkImageData or vtkPolyData
+
+        """
+        
+        self.image.GetPointData().SetActiveScalars(field)
+        if warp_scalars:
+            geometry = vtk.vtkImageDataGeometryFilter()
+            geometry.SetInputData(self.image)
+            geometry.Update()
+            tri = vtk.vtkTriangleFilter()
+            tri.SetInputData(geometry.GetOutput())
+            tri.Update()
+            strip = vtk.vtkStripper()
+            strip.SetInputData(tri.GetOutput())
+            strip.Update()
+            warp = vtk.vtkWarpScalar()
+            warp.SetScaleFactor(1)
+            warp.SetInputData(strip.GetOutput())
+            warp.Update()
+            
+            return warp.GetOutput()
+        
+        else:
+            return self.image
+    
+    def display_image(self, z_min, z_max, field='Elevation',
+                      warp_scalars=False):
+        """
+        Display image in vtk interactive window.
+
+        Parameters
+        ----------
+        z_min : float
+            Minimum z value in m for color.
+        z_max : float
+            Maximum z value in m for color.
+        field : str, optional
+            Which field in PointData to display. The default is 'Elevation'
+        warp_scalars : bool, optional
+            Whether to warp the scalars in the image to create 3D surface
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Define function for writing the camera position and focal point to
+        # std out when the user presses 'u'
+        def cameraCallback(obj, event):
+            print("Camera Pos: " + str(obj.GetRenderWindow().
+                                           GetRenderers().GetFirstRenderer().
+                                           GetActiveCamera().GetPosition()))
+            print("Focal Point: " + str(obj.GetRenderWindow().
+                                            GetRenderers().GetFirstRenderer().
+                                            GetActiveCamera().GetFocalPoint()))
+            print("Roll: " + str(obj.GetRenderWindow().
+                                            GetRenderers().GetFirstRenderer().
+                                            GetActiveCamera().GetRoll()))
+        
+        if warp_scalars:
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(self.get_image(field, warp_scalars))
+            
+        else:
+            mapper = vtk.vtkDataSetMapper()
+            mapper.SetInputData(self.get_image(field, warp_scalars))
+            
+        mapper.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+        mapper.SetScalarRange(z_min, z_max)
+        
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        
+        renderer = vtk.vtkRenderer()
+        renderWindow = vtk.vtkRenderWindow()
+        renderWindow.SetSize(2000, 1000)
+        renderer.AddActor(actor)
+        
+        scalarBar = vtk.vtkScalarBarActor()
+        scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+        renderer.AddActor2D(scalarBar)
+        
+        renderWindow.AddRenderer(renderer)
+        
+        # create a renderwindowinteractor
+        iren = vtk.vtkRenderWindowInteractor()
+        iren.SetRenderWindow(renderWindow)
+        
+        iren.Initialize()
+        renderWindow.Render()
+        iren.AddObserver('UserEvent', cameraCallback)
+        iren.Start()
+    
+    def write_plot_image(self, z_min, z_max, focal_point, camera_position,
+                         field='Elevation', warp_scalars=False,
+                         roll=0, image_scale=500, lower_threshold=-1000, 
+                         upper_threshold=1000, mode='map', colorbar=True,
+                         name=''):
+        """
+        Write an image of the image to the snapshots folder.
+        
+        Assumes we want an orthorectified image (mode='map') and we want the
+        default image name to just be the project name.
+
+        Parameters
+        ----------
+        z_min : float
+            Minimum z value to display colors.
+        z_max : float
+            Maximum z value to display colors.
+        focal_point : 3 element array like
+            Focal point of the camera in the project's reference frame.
+        camera_position : 3 element array like
+            Camera position in the project's reference frame.
+        field : str, optional
+            Which field in PointData to display. The default is 'Elevation'
+        warp_scalars : bool, optional
+            Whether to warp the scalars in the image to create 3D surface
+        roll : float, optional
+            Camera roll in degrees. The default is 0.
+        image_scale : float, optional
+            Image scale used in parallel projection. The default is 500.
+        lower_threshold : float, optional
+            Value of z to clip below. The default is -1000.
+        upper_threshold : float, optional
+            Value of z to clip above. The default is 1000.
+        mode : str, optional
+            What kind of projection system to use. 'Map' indicates parallel
+            or orthorectified projection. The default is 'map'.
+        colorbar : bool, optional
+            Whether to display a colorbar.
+        name : str, optional
+            Name to append to this snapshot. The default is ''.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Get image
+        if warp_scalars:
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(self.get_image(field, warp_scalars))
+        else:
+            mapper = vtk.vtkDataSetMapper()
+            mapper.SetInputData(self.get_image(field, warp_scalars))
+        mapper.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+        mapper.SetScalarRange(z_min, z_max)
+        
+        # Create actor and renderer        
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        renderer = vtk.vtkRenderer()
+        renderer.AddActor(actor)
+            
+        if colorbar:
+            scalarBar = vtk.vtkScalarBarActor()
+            scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+            renderer.AddActor2D(scalarBar)
+            
+        # Add project date as text
+        textActor = vtk.vtkTextActor()
+        textActor.SetInput(self.project_date)
+        textActor.SetPosition2(10, 40)
+        textActor.SetTextScaleModeToNone()
+        textActor.GetTextProperty().SetFontSize(24)
+        textActor.GetTextProperty().SetColor(0.0, 1.0, 0.0)
+        renderer.AddActor2D(textActor)
+        
+        # Create RenderWindow
+        renderWindow = vtk.vtkRenderWindow()
+        renderWindow.SetSize(2000, 1000)
+        renderWindow.AddRenderer(renderer)
+        # Create Camera
+        camera = vtk.vtkCamera()
+        camera.SetFocalPoint(focal_point)
+        camera.SetPosition(camera_position)
+        if mode=='map':
+            camera.ParallelProjectionOn()
+            camera.SetParallelScale(image_scale)
+            camera.SetViewUp(0, 1.0, 0)
+            legendScaleActor = vtk.vtkLegendScaleActor()
+            renderer.AddActor(legendScaleActor)
+        else:
+            camera.SetRoll(roll)
+        renderer.SetActiveCamera(camera)
+        
+        renderWindow.Render()
+        
+        # Screenshot image to save
+        w2if = vtk.vtkWindowToImageFilter()
+        w2if.SetInput(renderWindow)
+        w2if.Update()
+    
+        writer = vtk.vtkPNGWriter()
+        writer.SetFileName(self.project_path + 'snapshots\\' + 
+                           self.project_name + '_' + name + '.png')
+        writer.SetInputData(w2if.GetOutput())
+        writer.Write()
+    
+        renderWindow.Finalize()
+        del renderWindow
+    
+    def plot_image(self, z_min, z_max, cmap='inferno', figsize=(15, 15)):
+        """
+        Plot the image of this project using matplotlib
+
+        Parameters
+        ----------
+        z_min : float
+            Minimum z value in m for color.
+        z_max : float
+            Maximum z value in m for color.
+        cmap : str, optional
+            Name of matplotlib colormap to use. The default is 'inferno'.
+        figsize : tuple, optional
+            Figure size. The default is (15, 15)
+
+        Returns
+        -------
+        f, ax : matplotlib figure and axes objects
+
+        """
+        
+        # Use point mask to create array with NaN's where we have no data
+        nan_image = copy.deepcopy(self.dsa_image.PointData['Elevation'])
+        nan_image[self.dsa_image.PointData['vtkValidPointMask']==0] = np.NaN
+        dims = self.image.GetDimensions()
+        nan_image = nan_image.reshape((dims[1], dims[0]))
+        
+        # Plot
+        f, ax = plt.subplots(1, 1, figsize=figsize)
+        cf = ax.imshow(nan_image, cmap=cmap, aspect='equal', origin='lower',
+                       vmin=z_min, vmax=z_max)
+        f.colorbar(cf, ax=ax)
+        ax.set_title(self.project_name)
+        
+        return f, ax
+    
+    def get_np_nan_image(self):
+        """
+        Convenience function for copying the image to a numpy object.
+
+        Returns
+        -------
+        nan_image : numpy ndarray
+
+        """
+        
+        # Use point mask to create array with NaN's where we have no data
+        nan_image = copy.deepcopy(self.dsa_image.PointData['Elevation'])
+        nan_image[self.dsa_image.PointData['vtkValidPointMask']==0] = np.NaN
+        dims = self.image.GetDimensions()
+        nan_image = nan_image.reshape((dims[1], dims[0]))
+        
+        return nan_image
+    
+    def merged_points_to_mesh(self, subgrid_x, subgrid_y, min_pts=100, 
+                              alpha=0, overlap=0.1):
+        """
+        Create mesh from all points in singlescans.
+        
+        Note, we use a delaunay2D filter to create this mesh. The filter
+        encounters memory issues for large numbers of input points. So before
+        the mesh creation step, we break the project up into a subgrid of 
+        smaller chunks and then we apply the delaunay2D filter to each of 
+        these and save the output in the mesh object.
+
+        Parameters
+        ----------
+        subgrid_x : float
+            x spacing, in m for the subgrid.
+        subgrid_y : float
+            y spacing, in m for the subgrid.
+        min_pts : int, optional
+            Minimum number of points for a subgrid region below which dont 
+            include data from this region. The default is 100.
+        alpha : float, optional
+            Alpha value for vtkDelaunay2D filter. Inverse of how large of data
+            gaps to interpolate over in m. The default is 0.
+        overlap : float, optional
+            Overlap value indicates how much overlap to permit between subgrid
+            chunks in meters. The default is 0.1
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create kDTree
+        kDTree = vtk.vtkKdTree()
+        pdata_merged = self.get_merged_points()
+        kDTree.BuildLocatorFromPoints(pdata_merged.GetPoints())
+        
+        # Create Appending filter
+        appendPolyData = vtk.vtkAppendPolyData()
+        
+        # Step through grid
+        # Get the overall bounds of the data
+        data_bounds = np.zeros(6)
+        kDTree.GetBounds(data_bounds)
+        x_min = data_bounds[0]
+        x_max = data_bounds[1]
+        y_min = data_bounds[2]
+        y_max = data_bounds[3]
+        z_min = data_bounds[4]
+        z_max = data_bounds[5]
+        while x_min < x_max:
+            while y_min < y_max:
+                # Create bounds and find points in area
+                bounds = (x_min - overlap, x_min + subgrid_x + overlap, 
+                          y_min - overlap, y_min + subgrid_y + overlap,
+                          z_min, z_max)
+                #print(bounds)
+                ids = vtk.vtkIdTypeArray()
+                kDTree.FindPointsInArea(bounds, ids)
+                
+                if (ids.GetNumberOfValues() < min_pts):
+                    y_min = y_min + subgrid_y
+                    continue
+                
+                # Create polydata with the found points
+                pts = vtk.vtkPoints()
+                pts.SetNumberOfPoints(ids.GetNumberOfValues())
+                for i in np.arange(ids.GetNumberOfValues()):
+                    pts.InsertPoint(i, pdata_merged.
+                                        GetPoint(ids.GetValue(i)))
+                pdata = vtk.vtkPolyData()
+                pdata.SetPoints(pts)
+                vertexFilter = vtk.vtkVertexGlyphFilter()
+                vertexFilter.SetInputData(pdata)
+                vertexFilter.Update()
+                
+                # Apply delaunay triangulation to this subgrid
+                delaunay2D = vtk.vtkDelaunay2D()
+                delaunay2D.SetAlpha(alpha)
+                delaunay2D.SetInputData(vertexFilter.GetOutput())
+                delaunay2D.Update()
+                
+                # Append resulting mesh
+                appendPolyData.AddInputData(delaunay2D.GetOutput())
+                appendPolyData.Update()
+                
+                # Update y_min
+                y_min = y_min + subgrid_y
+                
+            # Return y_min to start again
+            y_min = data_bounds[2]
+            # Increment x_min by one
+            x_min = x_min + subgrid_x
+        
+        # Store result in mesh
+        self.mesh = appendPolyData.GetOutput()
+        
+    def get_merged_points(self):
+        """
+        Returns a polydata with merged points from all single scans
+
+        Returns
+        -------
+        vtkPolyData.
+
+        """
+        
+        # Create Appending filter and add all data to it
+        appendPolyData = vtk.vtkAppendPolyData()
+        for key in self.scan_dict:
+            self.scan_dict[key].transformFilter.Update()
+            appendPolyData.AddInputData(self.scan_dict[key].
+                                        get_polydata())
+        
+        appendPolyData.Update()
+        
+        return appendPolyData.GetOutput()
+
+    def write_merged_points(self, output_name=None):
+        """
+        Write the transformed, merged points to a vtp file.
+        
+        Uses the output of each scans get_polydata so should run
+        apply_transforms beforehand.
+        Parameters
+        ----------
+        output_name : str, optional
+            Output name for the file, if None use the project_name + 
+            '_merged.vtp'. The default is None.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create writer and write data
+        writer = vtk.vtkSimplePointsWriter()
+        writer.SetInputData(self.get_merged_points())
+        if output_name:
+            writer.SetFileName(self.project_path + output_name)
+        else:
+            writer.SetFileName(self.project_path + self.project_name + 
+                               '_merged.xyz')
+        #writer.SetFileTypeToASCII()
+        writer.Write()
+    
+    def write_mesh(self, output_name=None):
+        """
+        Write the mesh out to a file
+
+        Parameters
+        ----------
+        output_name : str, optional
+            Output name for the file, if None use the project_name + 
+            '_mesh.vtp'. The default is None.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create writer and write mesh
+        writer = vtk.vtkXMLPolyDataWriter()
+        writer.SetInputData(self.mesh)
+        if output_name:
+            writer.SetFileName(self.project_path + output_name)
+        else:
+            writer.SetFileName(self.project_path + self.project_name + 
+                               '_mesh.vtp')
+        writer.Write()
+        
+    def read_mesh(self, mesh_path=None):
+        """
+        Read in the mesh from a file.
+
+        Parameters
+        ----------
+        mesh_path : str, optional
+            Path to the mesh, if none use project_path + project_name + 
+            '_mesh.vtp'. The default is None.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create reader and read mesh
+        reader = vtk.vtkXMLPolyDataReader()
+        if mesh_path:
+            reader.SetFileName(mesh_path)
+        else:
+            reader.SetFileName(self.project_path + self.project_name + 
+                               '_mesh.vtp')
+        reader.Update()
+        self.mesh = reader.GetOutput()
+    
+    def create_empirical_cdf(self, bounds):
+        """
+        Creates an empirical distribution of heights from histogram.
+        
+        Currently sets the resolution of distribution to 1 mm vertically but
+        could change that if needed.
+
+        Parameters
+        ----------
+        bounds : six element tuple
+            The boundaries of box of points to create distribution from.
+            Format is (xmin, xmax, ymin, ymax, zmin, zmax)
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Get all points within bounds
+        box = vtk.vtkBox()
+        box.SetBounds(bounds)
+        appendPolyData = vtk.vtkAppendPolyData()
+        for key in self.scan_dict:
+            self.scan_dict[key].currentFilter.Update()
+            extractPoints = vtk.vtkExtractPoints()
+            extractPoints.SetImplicitFunction(box)
+            extractPoints.SetExtractInside(1)
+            extractPoints.SetInputData(self.scan_dict[key].get_polydata())
+            extractPoints.Update()
+            appendPolyData.AddInputData(extractPoints.GetOutput())
+        
+        appendPolyData.Update()
+        
+        # Get z-values of points and create cdf
+        dsa_points = dsa.WrapDataObject(appendPolyData.GetOutput())
+        z = dsa_points.Points[:, 2].squeeze()
+        minh = np.min(z)
+        maxh = np.max(z)
+        nbins = int(1000*(maxh - minh))
+        pdf, bin_edges = np.histogram(z,
+                                  density=True, bins=nbins)
+        x = (bin_edges[:-1] + bin_edges[1:])/2
+        cdf = np.cumsum(pdf)/1000
+        
+        # Store result in empirical_cdf attribute
+        self.empirical_cdf = (bounds, x, cdf)
+    
+    def create_empirical_cdf_image(self, z_min, z_max):
+        """
+        Creates an empirical distribution of heights from the image
+
+        Parameters
+        ----------
+        z_min : float
+            Minimum height value to consider.
+        z_max : float
+            Maximum height value to consider.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Check that image has been created
+        if not hasattr(self, 'image'):
+            raise RuntimeError('Need to create an image for project: ' + 
+                               self.project_name)
+        
+        z = np.ravel(self.get_np_nan_image())
+        z[z<z_min] = np.NaN
+        z[z>z_max] = np.NaN
+        minh = np.nanmin(z)
+        maxh = np.nanmax(z)
+        nbins = int(1000*(maxh - minh))
+        pdf, bin_edges = np.histogram(z[~np.isnan(z)],
+                                  density=True, bins=nbins)
+        x = (bin_edges[:-1] + bin_edges[1:])/2
+        cdf = np.cumsum(pdf)/1000
+        
+        # Store result in empirical_cdf attribute
+        bounds_image = self.image.GetBounds()
+        bounds = (bounds_image[0], bounds_image[1], bounds_image[2], 
+                  bounds_image[3], z_min, z_max)
+        self.empirical_cdf = (bounds, x, cdf)
+    
+    def create_im_gaus(self):
+        """
+        Transform image to gaussian using current value of empirical cdf
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Check that image  and empirical cdf has been created
+        if not hasattr(self, 'empirical_cdf'):
+            raise RuntimeError('Need to create an empirical_cdf for project: '
+                               + self.project_name)
+        if not hasattr(self, 'image'):
+            raise RuntimeError('Need to create an image for project: ' + 
+                               self.project_name)
+        
+        # Create im_gaus field if it doesn't exist.
+        if not 'im_gaus' in self.dsa_image.PointData.keys():
+            arr = vtk.vtkFloatArray()
+            arr.SetName('im_gaus')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
+            arr.FillComponent(0, 0)
+            self.image.GetPointData().AddArray(arr)
+        
+        # Fill im_gaus
+        self.dsa_image.PointData['im_gaus'][:] = normalize(
+            self.dsa_image.PointData['Elevation'],
+            self.empirical_cdf[1], self.empirical_cdf[2])
+    
+    def add_theta(self, theta1, theta):
+        """
+        Adds theta attributes for specifying GMRF, see Rue and Held 2005 ch. 5
+
+        Parameters
+        ----------
+        theta1 : float
+            Scaling parameter theta1.
+        theta : array
+            Conditional covariances of neighbors, see Rue and Held Ch. 5.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.theta1 = theta1
+        self.theta = theta
+    
+    def create_im_nan_border(self, buffer=2):
+        """
+        Creates a mask of which missing pixels not to infill.
+        
+        We don't want to infill certain pixels because either, they border the 
+        boundary of our domain or more generally are conditionally dependent
+        on a pixel outside the border of our domain (which we cannot know).
+        We create this mask recursively starting at the boundary of the domain
+        and then iteratively finding all missing pixels that are in contact
+        with the boundary.
+
+        Parameters
+        ----------
+        buffer : int, optional
+            The width of the neighborhood around a pixel, same as m in the
+            specification of theta. The default is 2.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Get logical array of missing pixels
+        im_nan = np.array(np.isnan(self.dsa_image.PointData['im_gaus']).
+                          reshape((self.image.GetDimensions()[1],
+                                   self.image.GetDimensions()[0])), 
+                          dtype='uint8')
+        
+        # Connected components filter
+        retval, labels = cv.connectedComponents(im_nan)
+        
+        # First find missing blobs on boundary
+        border = np.zeros(im_nan.shape, dtype='bool')
+        border[:buffer,:] = True
+        border[:,:buffer] = True
+        border[-1*buffer:,:] = True
+        border[:,-1*buffer:] = True
+        
+        im_nan_border = np.zeros(im_nan.shape, dtype='bool')
+        
+        for i in np.arange(labels.max()):
+            if (np.logical_and((labels==i), border)).any():
+                im_nan_border[(labels==i)] = True
+        
+        im_nan_border = np.logical_and(im_nan_border, im_nan, dtype='uint8')
+        
+        # Now repeatedly dilate missing area by the buffer, see if any missing
+        # areas are within the neighborhood, add those that are, and repeat
+        # until we've gotten all areas conditionally dependent on pixels
+        # outside of boundary.
+        kernel = np.ones((2*buffer+1, 2*buffer+1), dtype='uint8')
+        while True:
+            im_nan_border_dilate = cv.dilate(im_nan_border.astype(np.uint8), 
+                                             kernel, iterations=1)
+            im_nan_border2 = np.zeros(im_nan.shape, dtype='bool')
+            for i in np.arange(labels.max()):
+                if (np.logical_and((labels==i), im_nan_border_dilate)).any():
+                    im_nan_border2[(labels==i)] = True
+            im_nan_border2 = np.logical_and(im_nan_border2, im_nan, 
+                                            dtype='uint8')
+            
+            if np.equal(im_nan_border, im_nan_border2).all():
+                break
+            else:
+                im_nan_border = copy.deepcopy(im_nan_border2)
+        
+        # Create im_nan_border field if it doesn't exist.
+        if not 'im_nan_border' in self.dsa_image.PointData.keys():
+            arr = vtk.vtkUnsignedCharArray()
+            arr.SetName('im_nan_border')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
+            arr.FillComponent(0, 0)
+            self.image.GetPointData().AddArray(arr)
+        self.dsa_image.PointData['im_nan_border'][:] = np.ravel(im_nan_border)
+        
+    def dummy_im_nan_border(self):
+        """
+        Create an all false im_nan_border.
+        
+        In case we want to do pixel infilling on all pixels.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create im_nan_border field if it doesn't exist.
+        if not 'im_nan_border' in self.dsa_image.PointData.keys():
+            arr = vtk.vtkUnsignedCharArray()
+            arr.SetName('im_nan_border')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
+            arr.FillComponent(0, 0)
+            self.image.GetPointData().AddArray(arr)
+        self.dsa_image.PointData['im_nan_border'][:] = 0
+    
+    def write_image(self, output_name=None):
+        """
+        Write the image out to a file.
+        
+        Particularly useful for saving im_nan_border
+
+        Parameters
+        ----------
+        output_name : str, optional
+            Output name for the file, if None use the project_name + 
+            '_image.vti'. The default is None.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create writer and write mesh
+        writer = vtk.vtkXMLImageDataWriter()
+        writer.SetInputData(self.image)
+        if output_name:
+            writer.SetFileName(self.project_path + output_name)
+        else:
+            writer.SetFileName(self.project_path + self.project_name + 
+                               '_image.vti')
+        writer.Write()
+    
+    def read_image(self, image_path=None):
+        """
+        Read in the image from a file.
+
+        Parameters
+        ----------
+        mesh_path : str, optional
+            Path to the mesh, if none use project_path + project_name + 
+            '_image.vti'. The default is None.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create reader and read mesh
+        reader = vtk.vtkXMLImageDataReader()
+        if image_path:
+            reader.SetFileName(image_path)
+        else:
+            reader.SetFileName(self.project_path + self.project_name + 
+                               '_image.vti')
+        reader.Update()
+        
+        # If we've already created an image delete and make way for this one
+        if hasattr(self, 'image'):
+            del(self.image)
+        self.image = reader.GetOutput()
+        
+        # Also wrap with a datasetadaptor for working with numpy
+        self.dsa_image = dsa.WrapDataObject(self.image)
+        
+    def create_gmrf(self):
+        """
+        Creates a GMRF for the missing data in im_gaus using theta1 and theta.
+        
+        This method implements our pixel infilling scheme, which is:
+        represent the gaussian transformed image as a Gaussian Markov Random
+        Field with a known, sparse precision matrix Q. The neighbors of each
+        node are the points in a square around it (usually 5 pixels wide). If
+        the whole image is a GMRF, then any subset A is also a GMRF with a 
+        mean function that is conditional on the points not in the subset (
+        we'll label these points B) and the precision matrix of A (QAA) is
+        just a subset of Q. Specifically, we choose the missing pixels to be
+        the subset A and the known ones to be our subset B. Then, following
+        Rue and Held 2005 ch. 2 we can find the expectation of this GMRF and
+        simulate draws from it.
+        
+        This function generates the attributes mu_agivenb and sparse_LAA
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if not (len(self.theta)==5):
+            raise RuntimeError("Currently we assume m = 2 only.")
+        # Create sparse_Q, precision matrix for the entire image
+        sparse_Q = theta_to_Q(self.image.GetDimensions()[1], 
+                              self.image.GetDimensions()[0], 
+                              2, self.theta) * self.theta1
+        sparse_Q = sparse_Q.tocsr()
+        
+        # SHOULD REALLY CHECK THAT ALL OF THIS INDEXING IS WORKING AS PLANNED
+        # Find indices of missing pixels and subset Q accordingly
+        if not 'im_nan_border' in self.dsa_image.PointData.keys():
+            raise RuntimeError('Must create im_nan_border before gmrf')
+        ind_a = np.logical_and(np.isnan(self.dsa_image.PointData['im_gaus']),
+                       ~np.array(self.dsa_image.PointData['im_nan_border'],
+                                 dtype='bool'))
+        ind_b = ~np.isnan(self.dsa_image.PointData['im_gaus'])
+        i_b = np.argwhere(ind_b)
+        #i_a = np.argwhere(ind_missing) not needed
+        i_b = np.argwhere(ind_b)
+        sparse_QAA = sparse_Q[ind_a,:][:,ind_a]
+        sparse_QAB = sparse_Q[ind_a,:][:,ind_b]
+        
+        # Compute the b a given b parameter of the canonical conditional dist
+        b_agivenb = -1*sparse_QAB.dot(self.dsa_image.PointData['im_gaus'][i_b])
+        # And conditional mean Q*mu = b, so for the conditional distribution 
+        # Q=QAA
+        self.mu_agivenb = sp.linalg.spsolve(sparse_QAA, b_agivenb)
+        
+        # create sparse_LAA to sample from the posterior
+        # In order to sample from the posterior we need to find the cholesky 
+        # factor of QAA, let's see if we can do this with SuperLU
+        options = dict(SymmetricMode=True)
+        # set permute colum specification to natural to prevent it from 
+        # permuting matrix, mild computation hit but makes coding easier
+        splu_QAA = sp.linalg.splu(sparse_QAA.tocsc(), permc_spec='NATURAL', 
+                        options=options)
+        
+        # The L factor in SuperLU is normalized with principal diagonal elements 
+        # equal to 1.
+        # Follow this reference for computing L (cholesky)
+        # https://people.eecs.berkeley.edu/~demmel/ma221_Fall11/Lectures/
+        # Lecture_13.html
+        d = np.sqrt(splu_QAA.U.diagonal(0))
+        D = sp.diags(d)
+        self.sparse_LAA = splu_QAA.L.dot(D)
+    
+    def create_im_gaus_mean_fill(self):
+        """
+        Fill missing pixels in im_gaus with expectation (mu_agivenb)
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create im_gaus_mean_fill field if it doesn't exist.
+        if not 'im_gaus_mean_fill' in self.dsa_image.PointData.keys():
+            arr = vtk.vtkFloatArray()
+            arr.SetName('im_gaus_mean_fill')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
+            arr.FillComponent(0, 0)
+            self.image.GetPointData().AddArray(arr)
+        
+        # Fill im_gaus_mean_fill
+        self.dsa_image.PointData['im_gaus_mean_fill'][:] = copy.deepcopy(
+            self.dsa_image.PointData['im_gaus'])
+        ind_a = np.logical_and(np.isnan(self.dsa_image.PointData['im_gaus']),
+                       ~np.array(self.dsa_image.PointData['im_nan_border'],
+                                 dtype='bool'))
+        print(ind_a.sum())
+        i_a = np.argwhere(ind_a)
+        print(self.dsa_image.PointData['im_gaus_mean_fill'][i_a].shape)
+        self.dsa_image.PointData['im_gaus_mean_fill'][i_a] = self.mu_agivenb[
+            :, np.newaxis]
+    
+    def create_elevation_mean_fill(self):
+        """
+        Fill missing pixels in Elevation with transformed expectation
+
+        Returns
+        -------
+        None.
+
+        """
+        # Create im_gaus_mean_fill field if it doesn't exist.
+        if not 'Elevation_mean_fill' in self.dsa_image.PointData.keys():
+            arr = vtk.vtkFloatArray()
+            arr.SetName('Elevation_mean_fill')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
+            arr.FillComponent(0, 0)
+            self.image.GetPointData().AddArray(arr)
+        
+        # Fill Elevation_mean_fill
+        self.dsa_image.PointData['Elevation_mean_fill'][:] = copy.deepcopy(
+            self.dsa_image.PointData['Elevation'])
+        ind_a = np.logical_and(np.isnan(self.dsa_image.PointData['im_gaus']),
+                       ~np.array(self.dsa_image.PointData['im_nan_border'],
+                                 dtype='bool'))
+        i_a = np.argwhere(ind_a)
+        #print(self.dsa_image.PointData['im_gaus_mean_fill'][i_a].shape)
+        self.dsa_image.PointData['Elevation_mean_fill'][i_a] = inormalize(
+            self.mu_agivenb[:, np.newaxis], 
+            self.empirical_cdf[1],
+            self.empirical_cdf[2])
+    
+    def create_reflectance(self):
+        """
+        Create reflectance fielf for each scan.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].create_reflectance()
+            
+
+class ScanArea:
+    """
+    Manage multiple scans from the same area.
+    
+    ...
+    
+    Attributes
+    ----------
+    project_path : str
+        Path to folder containing all Riscan projects
+    project_dict : dict
+        Dictionary containing each project object keyed on project_name
+    registration_list : list
+        List of registration instructions, each element is a namedtuple
+        (project_name_0, project_name_1, reflector_list, mode, yaw_angle). 
+        The order of the list determines the order that actions are performed.
+    difference_dict : dict
+        Dictionary containing the differences between pairs of scans
+        
+    Methods
+    -------
+    add_project(project_name)
+        Add a project in project_path directory to project_dict
+    compare_reflectors(project_name_0, project_name_1, delaunay=False, 
+                       mode='dist')
+        Calculate pwdists and plot reflector comparison project 0 to project 1
+    register_project(project_name_0, project_name_1, reflector_list, mode='lS')
+        Register project 1 to project 0 using the reflectors in reflector_list.
+    add_registration_tuple(registration_tuple, index=None)
+        Add a registration tuple to the registration list.
+    del_registration_tuple(index)
+        Delete registration tuple from registration_list.
+    register_all()
+        Register all projects according to registration list.
+    apply_snowflake_filter(shells)
+        Apply a snowflake filter to each scan in each project.
+    apply_snowflake_filter_2(z_diff, N, r_min)
+        Apply a snowflake filter based on z difference with nearby points.
+    merged_points_to_mesh(self, subgrid_x, subgrid_y, min_pts=100, 
+                          alpha=0, overlap=0.1)
+        For each project convert pointcloud to mesh.
+    mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0)
+        Interpolate mesh into image.
+    difference_projects(project_name_0, project_name_1)
+        Subtract project_0 from project_1 and store the result in 
+        difference_dict.
+    
+    """
+    
+    def __init__(self, project_path, project_names=[], registration_list=[],
+                 load_scans=True, read_scans=False):
+        """
+        init stores project_path and initializes project_dict
+
+        Parameters
+        ----------
+        project_path : str
+            Directory location of the projects
+        project_names : list, optional
+            If given add all of these projects into project_dict. The default
+            is [].
+        registration_list : list, optional
+            If given this is the list of registration actions. Note, we make
+            a deep copy of this list to avoid reference issues. The default is
+            [].
+        load_scans : bool, optional
+            Whether to actually load the scans. Often if we're just
+            aligning successive scans loading all of them causes overhead.
+            The default is True.
+        read_scans : bool, optional
+            If False, each SingleScan object will be initialized to read the
+            raw polydata from where RiSCAN saved it. If True, read the saved
+            vtp file from in the scan area directory. Useful if we have saved
+            already filtered scans. The default is False.
+        
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.project_path = project_path
+        self.project_dict = {}
+        self.difference_dict = {}
+        self.difference_dsa_dict = {}
+        
+        for project_name in project_names:
+            self.add_project(project_name, load_scans=load_scans,
+                             read_scans=read_scans)
+            
+        self.registration_list = copy.deepcopy(registration_list)
+    
+    def add_project(self, project_name, load_scans=True, read_scans=False):
+        """
+        Add a new project to the project_dict (or overwrite existing project)
+
+        Parameters
+        ----------
+        project_name : str
+            Name of Riscan project to add
+        load_scans : bool, optional
+            Whether to actually load the scans. Often if we're just
+            aligning successive scans loading all of them causes overhead.
+            The default is True.
+        read_scans : bool, optional
+            If False, each SingleScan object will be initialized to read the
+            raw polydata from where RiSCAN saved it. If True, read the saved
+            vtp file from in the scan area directory. Useful if we have saved
+            already filtered scans. The default is False.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.project_dict[project_name] = Project(self.project_path, 
+                                                  project_name, load_scans=
+                                                  load_scans, read_scans=
+                                                  read_scans)
+    
+    def compare_reflectors(self, project_name_0, project_name_1, 
+                           delaunay=False, mode='dist', 
+                           use_tiepoints_transformed=False):
+        """
+        Plot the comparison of pwdist changes from project 0 to 1
+
+        Parameters
+        ----------
+        project_name_0 : str
+            Name of project 0. Presumably already transformed to desired loc.
+        project_name_1 : str
+            Name of project 1. Project we are comparing (usually later)
+        delaunay : bool, optional
+            Whether to plot just delaunay lines. The default is False.
+        mode : str, optional
+            Whether to display distance change ('dist') or strain ('strain'). 
+            The default is 'dist'.
+        use_tiepoints_transformed : bool, optional
+            Whether to display tiepoints in their transformed locations.
+            The default is False.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Add project_0 tiepoints to project_1's dict_compare
+        self.project_dict[project_name_1].tiepointlist.compare_pairwise_dist(
+            self.project_dict[project_name_0].tiepointlist)
+        
+        # Display comparison
+        (self.project_dict[project_name_1].
+         tiepointlist.plot_map(project_name_0, delaunay=delaunay, mode=mode,
+                               use_tiepoints_transformed=
+                               use_tiepoints_transformed))
+    
+    def add_registration_tuple(self, registration_tuple, index=None):
+        """
+        Add registration tuple to registration list, if no index given append.
+
+        Parameters
+        ----------
+        registration_tuple : tuple
+            Registration tuple to add.
+        index : int, optional
+            Index at which to add tuple or add at end if None. 
+            The default is None.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if index is None:
+            self.registration_list.append(registration_tuple)
+        else:
+            self.registration_list.insert(index, registration_tuple)
+        
+    def del_registration_tuple(self, index):
+        """
+        Delete registration tuple from position specified by index.
+
+        Parameters
+        ----------
+        index : int
+            Index of registration tuple to delete.
+
+        Returns
+        -------
+        None.
+
+        """
+        self.registration_list.pop(index)
+    
+    def register_all(self):
+        """
+        Register all projects in self according to registration_list.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for registration_tuple in self.registration_list:
+            self.register_project(registration_tuple.project_name_0,
+                                  registration_tuple.project_name_1,
+                                  registration_tuple.reflector_list,
+                                  registration_tuple.mode,
+                                  True,
+                                  registration_tuple.yaw_angle)
+    
+    def register_project(self, project_name_0, project_name_1, reflector_list,
+                         mode='LS', use_tiepoints_transformed=True,
+                         yaw_angle=0):
+        """
+        Register project_1 to project_0 using reflectors in reflector_list.
+        
+        Calculates 4x4 transform matrix and adds it to project_1's 
+        tiepointlist and to each SingleScan in Project_1's tranform_dict. The
+        transform is keyed on the tuple (project_name_0 + '_' + mode, 
+        str_reflector_list). Applies the transform to project_1's tiepointlist
+        and applies sop and that transform to each SingleScan in project_1.
+        
+        For the special case where we just want to set a project's
+        registration to be its own prcs (leave the tiepoints as is) we set
+        the project_name_0 to be the same as project_name_1.
+
+        Parameters
+        ----------
+        project_name_0 : str
+            Name of project to register other project to.
+        project_name_1 : str
+            Name of project we want to register.
+        reflector_list : list
+            List of reflectors to use in registration.
+        mode : str, optional
+            'LS' or 'Yaw", the mode of the registration. See 
+            Tiepointlist.calc_transformation for more detail. 
+            The default is 'LS'.
+        use_tiepoints_transformed : bool, optional
+            Whether to register to tiepoints_transformed in project_0.
+            The default is True.
+        yaw_angle : float, optional
+            If the mode is 'Trans' this is the angle (in radians) by which to
+            change the heading of the scan. The default is 0.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if project_name_0 == project_name_1:
+            # Apply identity transform to tiepoints
+            self.project_dict[project_name_0].tiepointlist.apply_transform(
+                ('identity', ''))
+            # Apply sop to each single scan
+            self.project_dict[project_name_0].apply_transforms(['sop'])
+            # Return to skip rest of execution
+            return
+        
+        # Calculate the transformation that aligns project_1 with project_0
+        transform_name = (self.project_dict[project_name_1].tiepointlist.
+                          calc_transformation(self.project_dict[
+                              project_name_0].tiepointlist, reflector_list,
+                              mode=mode, use_tiepoints_transformed=
+                              use_tiepoints_transformed, yaw_angle=yaw_angle))
+        
+        # Apply that transform to project_1's tiepointlist
+        self.project_dict[project_name_1].tiepointlist.apply_transform(
+            transform_name)
+        
+        # Add that transform to project_1's SingleScans transform_dict
+        self.project_dict[project_name_1].add_transform_from_tiepointlist(
+            transform_name)
+        
+        # Apply sop and our new transform to each SingleScan
+        self.project_dict[project_name_1].apply_transforms(['sop', 
+                                                            transform_name])
+    
+    def apply_snowflake_filter(self, shells):
+        """
+        Apply a snowflake filter to each project.
+
+        Parameters
+        ----------
+        shells : array-like of tuples
+            shells is an array-like set of tuples where each tuple is four
+            elements long (inner_r, outer_r, point_radius, neighbors). *_r
+            define the inner and outer radius of a halo defining shell. 
+            point_radius is radius for vtkRadiusOutlierRemoval to look at
+            (if 0, remove all points). Neighbors is number of neighbors that
+            must be within point_radius (if 0, keep all points)
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for key in self.project_dict:
+            self.project_dict[key].apply_snowflake_filter(shells)
+        
+    def apply_snowflake_filter_2(self, z_diff, N, r_min):
+        """
+        Filter snowflakes based on their vertical distance from nearby points.
+        
+        Here we exploit the fact that snowflakes (and for that matter power
+        cables and some other human objects) are higher than their nearby
+        points. The filter steps through each point in the transformed
+        dataset and compares it's z value with the mean of the z-values of
+        the N closest points. If the difference exceeds z_diff then set the
+        flag_filter for that point to be 2. Also, there is a shadow around the
+        base of the scanner so all points within there must be spurious. We
+        filter all points within r_min
+
+        Parameters
+        ----------
+        z_diff : float
+            Maximum vertical difference in m a point can have from its 
+            neighborhood.
+        N : int
+            Number of neighbors to find.
+        r_min : float
+            Radius of scanner in m within which to filter all points.
+
+        Returns
+        -------
+        None.
+        """
+        
+        for key in self.project_dict:
+            print(key)
+            self.project_dict[key].apply_snowflake_filter_2(z_diff, N, r_min)
+    
+    def merged_points_to_mesh(self, subgrid_x, subgrid_y, min_pts=100, 
+                              alpha=0, overlap=0.1):
+        """
+        Create mesh from all points in singlescans.
+        
+        Note, we use a delaunay2D filter to create this mesh. The filter
+        encounters memory issues for large numbers of input points. So before
+        the mesh creation step, we break the project up into a subgrid of 
+        smaller chunks and then we apply the delaunay2D filter to each of 
+        these and save the output in the mesh object.
+
+        Parameters
+        ----------
+        subgrid_x : float
+            x spacing, in m for the subgrid.
+        subgrid_y : float
+            y spacing, in m for the subgrid.
+        min_pts : int, optional
+            Minimum number of points for a subgrid region below which dont 
+            include data from this region. The default is 100.
+        alpha : float, optional
+            Alpha value for vtkDelaunay2D filter. Inverse of how large of data
+            gaps to interpolate over in m. The default is 0.
+        overlap : float, optional
+            Overlap value indicates how much overlap to permit between subgrid
+            chunks in meters. The default is 0.1
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for key in self.project_dict:
+            print(key)
+            self.project_dict[key].merged_points_to_mesh(subgrid_x, subgrid_y,
+                                                         min_pts, alpha, 
+                                                         overlap)
+    
+    def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0, sub_list=[]):
+        """
+        Interpolate mesh at regularly spaced points.
+        
+        Currently this image can only be axis aligned, if you want a different
+        orientation then you need to apply the appropriate transformation to
+        the mesh.
+
+        Parameters
+        ----------
+        nx : int
+            Number of gridcells in x direction.
+        ny : int
+            Number of gridcells in y direction.
+        dx : int
+            Width of gridcells in x direction.
+        dy : int
+            Width of gridcells in y direction.
+        x0 : float
+            x coordinate of the origin in m.
+        y0 : float
+            y coordinate of the origin in m.
+        yaw : float, optional
+            yaw angle in degerees of image to create, for generating 
+            non-axis aligned image. The default is 0
+        sub_list : list, optional
+            If given, only apply mesh to image on the projects in sub_list.
+            The default is [].
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if len(sub_list)==0:
+            for key in self.project_dict:
+                self.project_dict[key].mesh_to_image(nx, ny, dx, dy, x0, y0, 
+                                                     yaw=yaw)
+        else:
+            for key in sub_list:
+                self.project_dict[key].mesh_to_image(nx, ny, dx, dy, x0, y0,
+                                                     yaw=yaw)
+            
+    def difference_projects(self, project_name_0, project_name_1, 
+                            difference_field='Elevation'):
+        """
+        Subtract project_0 from project_1 and store in difference_dict.
+
+        Parameters
+        ----------
+        project_name_0 : str
+            Name of project to subtract (usually older).
+        project_name_1 : str
+            Name of project to subtract from (usually younger).
+        difference_field : str, optional
+            Which field in ImageData to use. The default is 'Elevation'
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Difference projects and copy image to difference dict
+        # assume projects have the same sized images covering same extent
+        # Create image
+        im = vtk.vtkImageData()
+        im.SetDimensions(self.project_dict[project_name_0].image.
+                         GetDimensions())
+        im.SetOrigin(self.project_dict[project_name_0].image.
+                     GetOrigin())
+        im.SetSpacing(self.project_dict[project_name_0].image.
+                      GetSpacing())
+        arr = vtk.vtkFloatArray()
+        arr.SetNumberOfValues(self.project_dict[project_name_0].image.
+                              GetNumberOfPoints())
+        arr.SetName('Difference')
+        im.GetPointData().SetScalars(arr)
+        self.difference_dsa_dict[(project_name_0, project_name_1)] = (
+            dsa.WrapDataObject(im))
+        # Difference images
+        self.difference_dsa_dict[(project_name_0, project_name_1)].PointData[
+            'Difference'][:] = (
+            self.project_dict[project_name_1].dsa_image.PointData[
+                difference_field]
+            - self.project_dict[project_name_0].dsa_image.PointData[
+                difference_field])
+        
+        # np.ravel(
+        #     self.project_dict[project_name_1].get_np_nan_image() -
+        #     self.project_dict[project_name_0].get_np_nan_image())
+        # # Assign value
+        self.difference_dict[(project_name_0, project_name_1)] = im
+    
+    def display_difference(self, project_name_0, project_name_1, diff_window,
+                           cmap='rainbow'):
+        """
+        Display image in vtk interactive window.
+
+        Parameters
+        ----------
+        project_name_0 : str
+            Name of project to subtract (usually older).
+        project_name_1 : str
+            Name of project to subtract from (usually younger).
+        diff_window : float
+            Scale of differences to display in color in m.
+        cmap : str, optional
+            Name of matplotlib colormap to use. The default is 'rainbow'
+
+        Returns
+        -------
+        None.
+
+        """
+        # Define function for writing the camera position and focal point to
+        # std out when the user presses 'u'
+        def cameraCallback(obj, event):
+            print("Camera Pos: " + str(obj.GetRenderWindow().
+                                           GetRenderers().GetFirstRenderer().
+                                           GetActiveCamera().GetPosition()))
+            print("Focal Point: " + str(obj.GetRenderWindow().
+                                            GetRenderers().GetFirstRenderer().
+                                            GetActiveCamera().GetFocalPoint()))
+        
+        mapper = vtk.vtkDataSetMapper()
+        mapper.SetInputData(self.difference_dict[(project_name_0,
+                                                  project_name_1)])
+        mapper.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
+                                                name=cmap))
+        mapper.SetScalarRange(-diff_window, diff_window)
+        
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        
+        renderer = vtk.vtkRenderer()
+        renderWindow = vtk.vtkRenderWindow()
+        renderer.AddActor(actor)
+        
+        scalarBar = vtk.vtkScalarBarActor()
+        scalarBar.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
+                                                   name=cmap))
+        renderer.AddActor2D(scalarBar)
+        
+        renderWindow.AddRenderer(renderer)
+        
+        # create a renderwindowinteractor
+        iren = vtk.vtkRenderWindowInteractor()
+        iren.SetRenderWindow(renderWindow)
+        
+        iren.Initialize()
+        renderWindow.Render()
+        iren.AddObserver('UserEvent', cameraCallback)
+        iren.Start()
+    
+    def display_warp_difference(self, project_name_0, project_name_1, 
+                                diff_window, field='Elevation_mean_fill',
+                                cmap='rainbow'):
+        """
+        Display the surface of the image from project_name_1 colored by diff.
+
+        Parameters
+        ----------
+        project_name_0 : str
+            Name of project to subtract (usually older).
+        project_name_1 : str
+            Name of project to subtract from (usually younger).
+        diff_window : float
+            Scale of differences to display in color in m.
+        field : str, optional
+            The field in PointData of project_name_1 to use as warped scalars.
+            The default is 'Elevation_mean_fill'
+        cmap : str, optional
+            Name of matplotlib colormap to use. The default is 'rainbow'
+
+        Returns
+        -------
+        None.
+
+        """
+        # Define function for writing the camera position and focal point to
+        # std out when the user presses 'u'
+        def cameraCallback(obj, event):
+            print("Camera Pos: " + str(obj.GetRenderWindow().
+                                           GetRenderers().GetFirstRenderer().
+                                           GetActiveCamera().GetPosition()))
+            print("Focal Point: " + str(obj.GetRenderWindow().
+                                            GetRenderers().GetFirstRenderer().
+                                            GetActiveCamera().GetFocalPoint()))
+            print("Roll: " + str(obj.GetRenderWindow().
+                                            GetRenderers().GetFirstRenderer().
+                                            GetActiveCamera().GetRoll()))
+        
+        # Merge filter combines the geometry from project_name_1 with scalars
+        # from difference
+        merge = vtk.vtkMergeFilter()
+        merge.SetGeometryInputData(self.project_dict[project_name_1].
+                                   get_image(field=field, warp_scalars=True))
+        merge.SetScalarsData(self.difference_dict[(project_name_0,
+                                                  project_name_1)])
+        merge.Update()
+        
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(merge.GetOutput())
+        mapper.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
+                                                name=cmap))
+        mapper.SetScalarRange(-diff_window, diff_window)
+        
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        
+        renderer = vtk.vtkRenderer()
+        renderWindow = vtk.vtkRenderWindow()
+        renderer.AddActor(actor)
+        
+        scalarBar = vtk.vtkScalarBarActor()
+        scalarBar.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
+                                                   name=cmap))
+        renderer.AddActor2D(scalarBar)
+        
+        renderWindow.AddRenderer(renderer)
+        
+        # create a renderwindowinteractor
+        iren = vtk.vtkRenderWindowInteractor()
+        iren.SetRenderWindow(renderWindow)
+        iren.Initialize()
+        renderWindow.Render()
+        iren.AddObserver('UserEvent', cameraCallback)
+        iren.Start()
+        
+    def write_plot_warp_difference(self, project_name_0, project_name_1, 
+                                diff_window, camera_position, focal_point,
+                                roll=0,
+                                field='Elevation_mean_fill',
+                                cmap='rainbow', filename="", name="",
+                                light=None, colorbar=True):
+        """
+        
+
+        Parameters
+        ----------
+        project_name_0 : str
+            Name of project to subtract (usually older).
+        project_name_1 : str
+            Name of project to subtract from (usually younger).
+        diff_window : float
+            Scale of differences to display in color in m.
+        camera_position : TYPE
+            DESCRIPTION.
+        focal_point : TYPE
+            DESCRIPTION.
+        roll : float, optional
+            Camera roll angle in degrees. The default is 0.
+        field : str, optional
+            DESCRIPTION. The default is 'Elevation_mean_fill'.
+        cmap : str, optional
+            matplotlib colormap to use for differences. The default is 
+            'rainbow'.
+        filename : str, optional
+            full filename (w/ path) to write to. If empty will be placed
+            in snapshots folder. The default is "".
+        name : str, optional
+            string to append to filename if filename is empty. The default
+            is ''.
+        light : vtkLight, optional
+            If desired add a light to the scene to replace the default vtk
+            lighting. The default is None
+        colorbar : bool, optional
+            Whether to render a colorbar. The default is True
+
+        Returns
+        -------
+        None.
+
+        """
+        # Merge filter combines the geometry from project_name_1 with scalars
+        # from difference
+        merge = vtk.vtkMergeFilter()
+        merge.SetGeometryInputData(self.project_dict[project_name_1].
+                                   get_image(field=field, warp_scalars=True))
+        merge.SetScalarsData(self.difference_dict[(project_name_0,
+                                                  project_name_1)])
+        merge.Update()
+        
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(merge.GetOutput())
+        mapper.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
+                                                name=cmap))
+        mapper.SetScalarRange(-diff_window, diff_window)
+        
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        
+        renderer = vtk.vtkRenderer()
+        renderWindow = vtk.vtkRenderWindow()
+        renderWindow.SetSize(2000, 1000)
+        renderer.AddActor(actor)
+        if light:
+            renderer.AddLight(light)
+        
+        if colorbar:
+            scalarBar = vtk.vtkScalarBarActor()
+            scalarBar.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, 
+                                                       diff_window, name=cmap))
+            renderer.AddActor2D(scalarBar)
+        
+        renderWindow.AddRenderer(renderer)
+        
+        # Create Camera
+        camera = vtk.vtkCamera()
+        camera.SetFocalPoint(focal_point)
+        camera.SetPosition(camera_position)
+        camera.SetViewUp(0, 0, 1)
+        camera.SetRoll(roll)
+        renderer.SetActiveCamera(camera)
+        
+        renderWindow.Render()
+        # Screenshot image to save
+        w2if = vtk.vtkWindowToImageFilter()
+        w2if.SetInput(renderWindow)
+        w2if.Update()
+    
+        writer = vtk.vtkPNGWriter()
+        if filename=="":
+            writer.SetFileName(self.project_path + 'snapshots\\' + 
+                               project_name_0 + "_" + project_name_1 + 
+                               'warp_difference_' + name + '.png')
+        else:
+            writer.SetFileName(filename)
+        
+        writer.SetInputData(w2if.GetOutput())
+        writer.Write()
+    
+        renderWindow.Finalize()
+        del renderWindow
+        
+    def write_plot_difference_projects(self, project_name_0, project_name_1, 
+                                 diff_window, filename="", colorbar=True):
+        """
+        Display a plot showing the difference between two projects
+
+        Parameters
+        ----------
+        project_name_0 : str
+            Name of project to subtract (usually older).
+        project_name_1 : str
+            Name of project to subtract from (usually younger).
+        diff_window : float
+            Scale of differences to display in color in m.
+        filename : str
+            Path and name of file to write, defaults to snapshots folder if ""
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create mapper
+        mapper = vtk.vtkDataSetMapper()
+        mapper.SetInputData(self.difference_dict[(project_name_0, 
+                                                  project_name_1)])
+        mapper.SetLookupTable(mplcmap_to_vtkLUT(-1*diff_window, diff_window))
+        mapper.SetScalarRange(-1*diff_window, diff_window)
+        
+        # Create Actor
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        
+        # Create Renderer
+        renderer = vtk.vtkRenderer()
+        renderer.AddActor(actor)
+        
+        # Create Colorbar
+        if colorbar:
+            scalarBar = vtk.vtkScalarBarActor()
+            scalarBar.SetLookupTable(mplcmap_to_vtkLUT(-1*diff_window,
+                                                       diff_window))
+            renderer.AddActor2D(scalarBar)
+            
+        # Add TExt
+        textActor = vtk.vtkTextActor()
+        textActor.SetInput("Change from " + project_name_0 + " to " 
+                           + project_name_1)
+        textActor.SetPosition2(10, 40)
+        textActor.SetTextScaleModeToNone()
+        textActor.GetTextProperty().SetFontSize(40)
+        textActor.GetTextProperty().SetColor(0.0, 1.0, 0.0)
+        renderer.AddActor2D(textActor)
+        
+        # Create Render window
+        renderWindow = vtk.vtkRenderWindow()
+        renderWindow.SetSize(1500, 1500)
+        renderWindow.AddRenderer(renderer)
+        renderWindow.Render()
+        
+        # Screenshot image to save
+        w2if = vtk.vtkWindowToImageFilter()
+        w2if.SetInput(renderWindow)
+        w2if.Update()
+    
+        writer = vtk.vtkPNGWriter()
+        if filename=="":
+            writer.SetFileName(self.project_path + 'snapshots\\' + 
+                               project_name_0 + "_" + project_name_1 + '.png')
+        else:
+            writer.SetFileName(filename)
+        
+        writer.SetInputData(w2if.GetOutput())
+        writer.Write()
+    
+        renderWindow.Finalize()
+        del renderWindow
+    
+    def difference_histogram(self, ax, project_name_0, project_name_1, 
+                            difference_field='Elevation'):
+        """
+        
+
+        Parameters
+        ----------
+        ax : matplotlib axis object
+            Axis to plot on.
+        project_name_0 : str
+            Name of project to subtract (usually older).
+        project_name_1 : str
+            Name of project to subtract from (usually younger).
+        difference_field : str, optional
+            Which field in ImageData to use. The default is 'Elevation'
+        
+        Returns
+        -------
+        None.
+
+        """
+    
+
+def mplcmap_to_vtkLUT(vmin, vmax, name='rainbow', N=256, color_under='fuchsia', 
+                      color_over='white'):
+    """
+    Create a vtkLookupTable from a matplotlib colormap.
+
+    Parameters
+    ----------
+    vmin : float
+        Minimum value for colormap.
+    vmax : float
+        Maximum value for colormap.
+    name : str, optional
+        Matplotlib name of the colormap. The default is 'rainbow'
+    N : int, optional
+        Number of levels in colormap. The default is 256.
+    color_under : str, optional
+        Color for values less than vmin, should be in vtkNamedColors. 
+        The default is 'fuchsia'.
+    color_over : str, optional
+        Color for values greater than vmax, should be in vtkNamedColors. 
+        The default is 'white'.
+
+    Returns
+    -------
+    vtkLookupTable
+
+    """
+
+    # Pull the matplotlib colormap
+    mpl_cmap = cm.get_cmap(name, N)
+    
+    # Create Lookup Table
+    lut = vtk.vtkLookupTable()
+    lut.SetTableRange(vmin, vmax)
+    
+    # Add Colors from mpl colormap
+    lut.SetNumberOfTableValues(N)
+    for (i, c) in zip(np.arange(N), mpl_cmap(range(N))):
+        lut.SetTableValue(i, c)
+
+    # Add above and below range colors
+    nc = vtk.vtkNamedColors()
+    lut.SetBelowRangeColor(nc.GetColor4d(color_under))
+    lut.SetAboveRangeColor(nc.GetColor4d(color_over))
+
+    lut.Build()
+    
+    return lut
+
+def mosaic_date_parser(project_name):
+    """
+    Parses the project name into a date.
+
+    Parameters
+    ----------
+    project_name : str
+        The project name as a string.
+
+    Returns
+    -------
+    The date and time (for April 8 b)
+
+    """
+    
+    # The date is always a sequence of 6 numbers in the filename.
+    seq = re.compile('[0-9]{6}')
+    seq_match = seq.search(project_name)
+    
+    if seq_match:
+        year = '20' + seq_match[0][-2:]
+        if year == '2020':
+            date = year + '-' + seq_match[0][2:4] + '-' + seq_match[0][:2]
+        elif year == '2019':
+            date = year + '-' + seq_match[0][:2] + '-' + seq_match[0][2:4]
+    else:
+        return None
+    
+    # Looks like Dec 6 was an exception to the format...
+    if date=='2019-06-12':
+        date = '2019-12-06'
+    
+    # Handle April 8 b scan case.
+    if project_name[seq_match.end()]=='b':
+        date = date + ' 12:00:00'
+        
+    return date
+
+def normalize(xx, x, cdf):
+    """
+    Use the inverse-cdf approach to transform a dataset to normal distribution
+
+    Parameters
+    ----------
+    xx : ndarray
+        The data to transform (should be in empirical distribution).
+    x : 1d-array
+        Bin values in empirical cdf.
+    cdf : 1d-array
+        Values of empirical cdf.
+
+    Returns
+    -------
+    ndarray
+        The gaussian transformed data, same shape as xx.
+
+    """
+    # Flatten xx
+    shp = xx.shape
+    xx = xx.reshape(xx.size)
+    
+    # First adjust CDF to meet erfinv convention
+    c = 2*(cdf-0.5)
+    
+    # Next find the left nearest indices in array 
+    sidx = np.argsort(xx)
+    xxsort = xx[sidx]
+    xidx = np.searchsorted(x, xxsort, side='left')
+    # Now get the values transformed to a uniform distribution
+    u = c[xidx-1][np.argsort(sidx)]
+    u[np.isnan(xx)] = np.nan
+    u = u.reshape(shp)
+    # And return values transfored to standard normal distribution
+    return np.sqrt(2)*erfinv(u)
+
+def inormalize(yy, x, cdf):
+    """
+    Use the inverse-cdf approach to transform normal data to an empirical dist.
+
+    Parameters
+    ----------
+    yy : ndarray
+        The normally distributed data to transform.
+    x : 1d-array
+        Bin values in empirical cdf.
+    cdf : 1d-array
+        Values of empirical cdf.
+
+    Returns
+    -------
+    ndarray
+        The transformed data, same shape as yy.
+
+    """
+    # Flatten yy
+    shp = yy.shape
+    yy = yy.reshape(yy.size)
+    
+    # transform to uniform dist
+    u = 1/2*(1 + erf(yy/np.sqrt(2)))
+    
+    # Next use cdf as mapping into x
+    sidx = np.argsort(u)
+    usort = u[sidx]
+    cidx = np.searchsorted(cdf, usort, side='left')
+    xx = x[cidx-1][np.argsort(sidx)]
+    xx[np.isnan(yy)] = np.NaN
+    return xx.reshape(shp)
+
+def sample_autocorr_2d(samples_in, mode='normal', nanmode='zero-fill'):
+    """
+    Returns autocorrelation fn for evenly spaced 2D sample
+    
+    Parameters
+    ----------
+    samples_in : 2D array
+        2D array of samples
+    mode : str, optional
+        {'normal', 'fourier', 'radial'} specifies whether the indices should
+        be normal (0,0 in middle) or fourier 0-> positive lags
+        then negative lags -> 0. The default is 'normal'
+    nanmode : str, optional
+        if 'zero-fill' if the input contains nan's, zero fill them and adjust
+        output by multiplicative factor  from Handbook of Spatial Statistics
+        pg. 71
+    
+    Returns
+    -------
+    ndarray
+        empirical autocorrelation, lag spacing is same as sample spacing
+        
+    Raises
+    ------
+        TypeError: samples must be 2D
+        ValueError: mode must be either 'normal' or 'fourier'
+    """
+    
+    # Input checking
+    if not len(samples_in.shape)==2:
+        raise TypeError("Samples must be 2D")
+    
+    # Handle nan values
+    # Following Handbook of Spatial Statistics, pg. 71
+    samples = copy.deepcopy(samples_in)
+    if nanmode=='zero-fill':
+        n_values = (~np.isnan(samples)).sum()
+        # Z_tilda = np.nansum(samples)/n_values # below eqn 5.20
+        # samples = samples - Z_tilda # implementing eqn. 5.20
+        samples[np.isnan(samples)] = 0 # zero-fill as it says on the bottom
+        # of pg. 71
+    else:
+        n_values = samples.size
+    
+    # Compute autocorrelation with fft convolve
+    con = fftconvolve(samples, np.flip(samples), mode='full')
+    counts = fftconvolve(np.ones(samples.shape), np.ones(samples.shape), 
+                         mode='full')
+    # Return autocorrelation
+    if mode=='normal':
+        return (samples.size/n_values) * con/counts
+    elif mode=='fourier':
+        return (samples.size/n_values) * np.fft.ifftshift(con/counts)
+    elif mode=='radial':
+        x = np.concatenate((np.arange(-1*samples.shape[1] + 1, 0),
+                            np.arange(samples.shape[1])))
+        y = np.concatenate((np.arange(-1*samples.shape[0] + 1, 0),
+                            np.arange(samples.shape[0])))
+        X = np.tile(x[np.newaxis, :], (y.size, 1))
+        Y = np.tile(y[:, np.newaxis], (1, x.size))
+        r = np.hypot(X, Y)
+        rbin = np.around(r, decimals=0)
+        corr = (samples.size/n_values) * ndimage.mean(con/counts, labels=rbin, 
+                            index=np.arange(samples.shape[0]))
+        # In addition to the pairwise correlation in each bin, we also want
+        # the centroid of the pairwise distances, this is especially important
+        # for close to the origin.
+        r_radial = ndimage.mean(r, labels=rbin, 
+                                index=np.arange(samples.shape[0]))
+        return (r_radial, corr)
+    else:
+        raise ValueError("mode must be either 'normal' or 'fourier'")
+
+def biquad_plot(ax, arr, bins_0, bins_1, dx0=1, dx1=1):
+    """Plots a 2D array that is fourier indexed.
+    
+    Parameters
+    ----------
+    ax : matplotlib.pyplot.axis
+        axis object to plot on
+    arr : 2D array
+        array to plot, can be either full or biquad
+    bins_0 : int
+        number of positive and negative freqency bins along zeroth axis to 
+        show
+    bins_1 : int
+        number of positive bins along first axis
+    dx0 : float, optional
+        pixel length along axis 0. The default is 1.
+    dx1 : float, optional
+        pixel length along axis 1. The default is 1.
+        
+    Returns
+    -------
+    pyplot mappable
+        plot object to generate colorbar with
+    """
+    # Pull requested bins from arr
+    im = np.vstack((arr[-1*bins_0:,:bins_1],
+                   arr[:bins_0, :bins_1]))
+    nu0 = (np.arange(bins_0*2) - bins_0)*1/dx0
+    nu1 = (np.arange(bins_1)) * 1/dx1
+    # Plot and return plot object
+    return ax.contourf(nu1, nu0, im)
+
+def biquad_difference_plot(ax, arr0, arr1, bins_0, bins_1, dx0=1, dx1=1):
+    """Plots difference of 2 2D arrays that are fourier indexed.
+    
+    Parameters
+    ----------
+    ax : matplotlib.pyplot.axis
+        axis object to plot on
+    arr0 : 2D array
+        array to difference, can be either full or biquad
+    arr1 : 2d array
+        array to difference, can be either full or biquad
+    bins_0 : int
+        number of positive and negative freqency bins along zeroth axis to 
+        show
+    bins_1 : int
+        number of positive bins along first axis
+    dx0 : float, optional
+        pixel length along axis 0. The default is 1.
+    dx1 : float, optional
+        pixel length along axis 1. The default is 1.
+        
+    Returns
+    -------
+    pyplot mappable
+        plot object to generate colorbar with
+    """
+    # Pull requested bins from arr
+    im = (np.vstack((arr1[-1*bins_0:,:bins_1],
+                   arr1[:bins_0, :bins_1]))
+          - np.vstack((arr0[-1*bins_0:,:bins_1],
+                      arr0[:bins_0, :bins_1])))
+    nu0 = (np.arange(bins_0*2) - bins_0)*1/dx0
+    nu1 = (np.arange(bins_1)) * 1/dx1
+    # Plot and return plot object
+    print(np.sqrt((im**2).mean()))
+    return ax.contourf(nu1, nu0, im)
+
+def block_circ_base(n0, n1, m, theta, c=None):
+    """
+    Generates a block circulant base with parameters given by theta
+    
+    See Rue and Held 2005. p. 196
+
+    Parameters
+    ----------
+    n0 : int
+        Size of the domain in the row direction.
+    n1 : int
+        Size of the domain in the column direction.
+    m : int
+        Usually 2 or 3, half width of neighborhood.
+    theta : 1d-array
+        Parameter values of precision matrix, ordered in the same manner as 
+        Rue and Held 2005 p. 196.
+    c : ndarray, optional
+        If given, this is the array to place the block cirulant base into.
+
+    Returns
+    -------
+    n0xn1 array or none.
+        If c is not given then return block circulant base. If c is given 
+        modify in-place and don't return anything.
+
+    """
+    
+    # Create or clear c
+    if c is None:
+        return_c = True
+        c = np.zeros((n0, n1))
+    else:
+        return_c = False
+        c[:] = 0
+    
+    # Set the origin precision equal to 1
+    c[0, 0] = 1
+    
+    if m>=1:
+        # theta2/theta1
+        c[0, 1] = theta[0]
+        c[1, 0] = theta[0]
+        c[0, -1] = theta[0]
+        c[-1, 0] = theta[0]
+        
+        # theta3/theta1
+        c[1, 1] = theta[1]
+        c[1, -1] = theta[1]
+        c[-1, 1] = theta[1]
+        c[-1, -1] = theta[1]
+    
+        if m>=2:
+            # theta4/theta1
+            c[0, 2] = theta[2]
+            c[2, 0] = theta[2]
+            c[0, -2] = theta[2]
+            c[-2, 0] = theta[2]
+            
+            # theta5/theta1
+            c[1, 2] = theta[3]
+            c[2, 1] = theta[3]
+            c[-1, -2] = theta[3]
+            c[-2, -1] = theta[3]
+            c[-1, 2] = theta[3]
+            c[2, -1] = theta[3]
+            c[1, -2] = theta[3]
+            c[-2, 1] = theta[3]
+            
+            # theta6/theta1
+            c[2, 2] = theta[4]
+            c[2, -2] = theta[4]
+            c[-2, 2] = theta[4]
+            c[-2, -2] = theta[4]
+            
+            if m>=3:
+                # theta7/theta1
+                c[0, 3] = theta[5]
+                c[3, 0] = theta[5]
+                c[0, -3] = theta[5]
+                c[-3, 0] = theta[5]
+                
+                # theta8/theta1
+                c[1, 3] = theta[6]
+                c[3, 1] = theta[6]
+                c[-1, -3] = theta[6]
+                c[-3, -1] = theta[6]
+                c[-1, 3] = theta[6]
+                c[3, -1] = theta[6]
+                c[1, -3] = theta[6]
+                c[-3, 1] = theta[6]
+                
+                # theta9/theta1
+                c[2, 3] = theta[7]
+                c[3, 2] = theta[7]
+                c[-2, -3] = theta[7]
+                c[-3, -2] = theta[7]
+                c[-2, 3] = theta[7]
+                c[3, -2] = theta[7]
+                c[2, -3] = theta[7]
+                c[-3, 2] = theta[7]
+                
+                # theta10/theta1
+                c[3, 3] = theta[8]
+                c[3, -3] = theta[8]
+                c[-3, 3] = theta[8]
+                c[-3, -3] = theta[8]
+                
+    
+    # Now return c if appropriate
+    if return_c:
+        return c
+    else:
+        return
+
+def objective_fun(theta, args):
+    """
+    Implements objective function for misfit of GMRF from GF.
+    
+    See Rue and Held 2005, pg 197 eqn 5.10. This objective function returns
+    the weighted 2 norm between ro (the correlation of the desired GF) and
+    ro(theta) the correlation function of the GMRF approximation parameterized
+    by theta
+    
+    !!! Note that Rue and Held use orthonormalized DFT !!!
+
+    Parameters
+    ----------
+    theta : 1d array
+        Parameters for GMRF, see block_circ_base.
+    args : tuple
+        Tuple with necessary arguments: (ro, w) where ro is the target
+        correlation function and w is an array of weights (same size as ro)
+        The size of ro and w is the same that will be used for GMRF base.
+
+    Returns
+    -------
+    float
+        Weighted 2-norm between ro and ro(theta)
+
+    """
+    
+    # Create base of precision matrix (block circulant)
+    if len(theta)==5:
+        m = 2
+    elif len(theta)==9:
+        m = 3
+    else:
+        raise ValueError("Theta must be length corresponding to valid " +
+                         "neighborhood (e.g. len(theta)=5 if m=2")
+    q = block_circ_base(args[0].shape[0], args[1].shape[1], m, theta)
+    
+    # Invert and scale to get base of correlation matrix
+    sigma = (1/args[0].size)*np.fft.irfft2(np.fft.rfft2(q, norm='ortho')**(-1), norm='ortho')
+    ro_theta = sigma/sigma[0, 0]
+    
+    # Return weighted 2-norm
+    return (((args[0]-ro_theta)**2)*args[1]).sum()
+
+def objective_fun_theta1(log_theta1, args):
+    """
+    Objective function for finding theta1 that gives unit marginal variance.
+
+    See Rue and Held 2005, p. 188. They don't specify how they compute the
+    value of theta1 to give unit marginal precision so we'll use scalar
+    optimization.
+    
+    !!! Note that Rue and Held use orthonormalized DFT !!!
+    Parameters
+    ----------
+    log_theta1 : float
+        Natural log of value of theta1 to test. Note that since by definition
+        theta1 must be positive we take the exp of this value so that we 
+        don't have to deal with bounds.
+    args : list, [theta, n0, n1]
+        Theta is the list of parameters for the GMRF, see block_circ_base
+        n0, n1 are dimensions of the domain
+
+    Returns
+    -------
+    float
+        absolute value of difference between marginal variance and 1
+
+    """
+    
+    # Create base of precision matrix q
+    q = block_circ_base(args[1], args[2], 2, args[0]) * np.exp(log_theta1)
+    # Invert to get base of precision matrix
+    sigma = (1/(args[1]*args[2]))*np.fft.irfft2(
+        np.fft.rfft2(q, norm='ortho')**(-1), norm='ortho')
+    # sigma[0,0] is marginal variance
+    return np.abs(1 - sigma[0, 0])
+
+def theta_to_Q(n0, n1, m, theta, circulant=False):
+    """
+    Create a sparse matrix Q from the parameters in theta.
+    
+    If circulant is false we'll ignore the wrap around terms.
+
+    Parameters
+    ----------
+    n0 : int
+        Size of the domain in the row direction.
+    n1 : int
+        Size of the domain in the column direction.
+    m : int
+        Usually 2 or 3, half width of neighborhood.
+    theta : 1d-array
+        Parameter values of precision matrix, ordered in the same manner as 
+        Rue and Held 2005 p. 196.
+    circulant : bool, optional
+        Whether to include the wrap-around terms. The default is False.
+
+    Returns
+    -------
+    (n0*n1)x(n0*n1) sparse matrix
+        The sparse precision matrix Q
+
+    """
+    if circulant==False:
+        diags = [np.ones(n0*n1), # zeroth spot is always 1
+                 theta[0] * np.ones(n0*n1 - 1), # one step sideways
+                 theta[0] * np.ones(n0*n1 - 1), # one step sideways
+                 theta[0] * np.ones(n0*n1 - n1), # one step up or down
+                 theta[0] * np.ones(n0*n1 - n1), # one step up or down
+                 theta[1] * np.ones(n0*n1 - n1 - 1), # Down to the right
+                 theta[1] * np.ones(n0*n1 - n1 + 1), # Down to the left
+                 theta[1] * np.ones(n0*n1 - n1 + 1), # Up to the right
+                 theta[1] * np.ones(n0*n1 - n1 - 1), # Up to the left
+                 theta[2] * np.ones(n0*n1 - 2), # two to the right
+                 theta[2] * np.ones(n0*n1 - 2), # two to the left
+                 theta[2] * np.ones(n0*n1 - 2*n1), # two down
+                 theta[2] * np.ones(n0*n1 - 2*n1), # two up
+                 theta[3] * np.ones(n0*n1 - n1 - 2), # Down 1, right 2
+                 theta[3] * np.ones(n0*n1 - n1 + 2), # Down 1, left 2
+                 theta[3] * np.ones(n0*n1 - n1 + 2), # up 1, right 2
+                 theta[3] * np.ones(n0*n1 - n1 - 2), # up 1, left 2
+                 theta[3] * np.ones(n0*n1 - 2*n1 - 1), # down 2, right 1
+                 theta[3] * np.ones(n0*n1 - 2*n1 + 1), # down 2, left 1
+                 theta[3] * np.ones(n0*n1 - 2*n1 + 1), # up 2, right 1
+                 theta[3] * np.ones(n0*n1 - 2*n1 - 1), # up 2, left 1
+                 theta[4] * np.ones(n0*n1 - 2*n1 - 2), # down 2, right 2
+                 theta[4] * np.ones(n0*n1 - 2*n1 + 2), # down 2, left 2
+                 theta[4] * np.ones(n0*n1 - 2*n1 + 2), # up 2, right 2
+                 theta[4] * np.ones(n0*n1 - 2*n1 - 2) # up 2, left 2
+                 ]
+        
+        ks = [0,
+              1,
+              -1,
+              n1, 
+              -n1,
+              n1 + 1,
+              n1 - 1,
+              -n1 + 1,
+              -n1 - 1,
+              2, 
+              -2,
+              2*n1,
+              -2*n1,
+              n1 + 2,
+              n1 - 2,
+              -n1 + 2,
+              -n1 - 2,
+              2*n1 + 1,
+              2*n1 - 1,
+              -2*n1 + 1,
+              -2*n1 - 1,
+              2*n1 + 2,
+              2*n1 - 2, 
+              -2*n1 + 2,
+              -2*n1 - 2]
+    else:
+        print("haven't written functionality for circulant yet")
+        diags = [np.ones(n0*n1), # zeroth spot is always 1
+                 theta[0] * np.ones(n0*n1 - 1), # one step sideways
+                 theta[0] * np.ones(n0*n1 - 1), # one step sideways
+                 theta[0], # 
+                 theta[0] * np.ones(n0*n1 - n1), # one step up or down
+                 theta[0] * np.ones(n0*n1 - n1), # one step up or down
+                 theta[1] * np.ones(n0*n1 - n1 - 1), # Down to the right
+                 theta[1] * np.ones(n0*n1 - n1 + 1), # Down to the left
+                 theta[1] * np.ones(n0*n1 - n1 + 1), # Up to the right
+                 theta[1] * np.ones(n0*n1 - n1 - 1), # Up to the left
+                 theta[2] * np.ones(n0*n1 - 2), # two to the right
+                 theta[2] * np.ones(n0*n1 - 2), # two to the left
+                 theta[2] * np.ones(n0*n1 - 2*n1), # two down
+                 theta[2] * np.ones(n0*n1 - 2*n1), # two up
+                 theta[3] * np.ones(n0*n1 - n1 - 2), # Down 1, right 2
+                 theta[3] * np.ones(n0*n1 - n1 + 2), # Down 1, left 2
+                 theta[3] * np.ones(n0*n1 - n1 + 2), # up 1, right 2
+                 theta[3] * np.ones(n0*n1 - n1 - 2), # up 1, left 2
+                 theta[3] * np.ones(n0*n1 - 2*n1 - 1), # down 2, right 1
+                 theta[3] * np.ones(n0*n1 - 2*n1 + 1), # down 2, left 1
+                 theta[3] * np.ones(n0*n1 - 2*n1 + 1), # up 2, right 1
+                 theta[3] * np.ones(n0*n1 - 2*n1 - 1), # up 2, left 1
+                 theta[4] * np.ones(n0*n1 - 2*n1 - 2), # down 2, right 2
+                 theta[4] * np.ones(n0*n1 - 2*n1 + 2), # down 2, left 2
+                 theta[4] * np.ones(n0*n1 - 2*n1 + 2), # up 2, right 2
+                 theta[4] * np.ones(n0*n1 - 2*n1 - 2) # up 2, left 2
+                 ]
+        
+        ks = [0,
+              1,
+              -1,
+              n1, 
+              -n1,
+              n1 + 1,
+              n1 - 1,
+              -n1 + 1,
+              -n1 - 1,
+              2, 
+              -2,
+              2*n1,
+              -2*n1,
+              n1 + 2,
+              n1 - 2,
+              -n1 + 2,
+              -n1 - 2,
+              2*n1 + 1,
+              2*n1 - 1,
+              -2*n1 + 1,
+              -2*n1 - 1,
+              2*n1 + 2,
+              2*n1 - 2, 
+              -2*n1 + 2,
+              -2*n1 - 2]
+    
+    return sp.diags(diags, ks)
+
+def fit_theta_to_ro(ro, wts, p, m=2):
+    """
+    Fits parameters of GMRF precision matrix Q to given correlation matrix ro.
+    
+    Assumes we want unit marginal variance. See Rue and Held 2005, ch. 5 for
+    details.
+
+    Parameters
+    ----------
+    ro : array
+        Target autocorrelation function. Same size as domain we'll simulate
+    wts : array
+        Weights to use for loss function. Same size as ro.
+    p : float
+        Guess at range parameter, used in starting point of optimization
+    m : int, optional
+        Size of the neighborhood to use in GMRF. The default is 2.
+
+    Returns
+    -------
+    theta1, theta
+        Tuple with theta1 scaling factor and theta neighbor weights.
+
+    """
+    
+    if not (m==2):
+        raise RuntimeWarning('fit_theta_to_ro may not work for m not equal 2')
+    
+    # Create initial guess for theta.
+    k = np.sqrt(8)/p
+    a = 4 + k**2
+    if m==2:
+        theta =  [-2*a, 2, 1, 0, 0]
+        theta = theta/(4 + a**2)
+    elif m==3:
+        theta =  [-2*a, 2, 1, 0, 0, 0, 0, 0]
+        theta = theta/(4 + a**2)
+    else:
+        raise RuntimeError('m must be 2 or 3')
+    
+    # Use scipy.optimize minimize functions to fit theta and theta1
+    res = minimize(objective_fun, theta, args=[ro, wts], method='Nelder-Mead')
+    res_log_theta1 = minimize_scalar(objective_fun_theta1, args=[res.x, 
+                                                                 ro.shape[0], 
+                                                                 ro.shape[1]])
+    
+    # Return parameters
+    return(np.exp(res_log_theta1.x), res.x)
