@@ -9,7 +9,7 @@ Created on Fri Sep 18 18:58:24 2020
 
 import vtk
 import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\lidar_processing\\')
+os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
 
 # %% init

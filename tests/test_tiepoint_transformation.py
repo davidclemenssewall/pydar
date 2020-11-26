@@ -8,7 +8,7 @@ Created on Mon Sep 14 13:50:06 2020
 """
 
 import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\lidar_processing\\')
+os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
 import numpy as np
 import matplotlib.pyplot as plt

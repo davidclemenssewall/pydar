@@ -1991,7 +1991,7 @@ class Project:
         # Translate origin to be at (x0, y0)
         self.imageTransform.Translate(-x0, -y0, 0)
         # Rotate around this origin
-        self.imageTransform.RotateZ(yaw)
+        self.imageTransform.RotateZ(-yaw)
         
         # Create transform filter and apply
         imageTransformFilter = vtk.vtkTransformPolyDataFilter()
@@ -2297,7 +2297,8 @@ class Project:
         return nan_image
     
     def merged_points_to_mesh(self, subgrid_x, subgrid_y, min_pts=100, 
-                              alpha=0, overlap=0.1):
+                              alpha=0, overlap=0.1, x0=None, y0=None, wx=None,
+                              wy=None, yaw=0):
         """
         Create mesh from all points in singlescans.
         
@@ -2331,7 +2332,30 @@ class Project:
         
         # Create kDTree
         kDTree = vtk.vtkKdTree()
-        pdata_merged = self.get_merged_points()
+        # If we only want to build mesh from a region of data:
+        if x0 is not None:
+            # Create box object
+            box = vtk.vtkBox()
+            box.SetBounds((0, wx, 0, wy, -10, 10))
+            # We need a transform to put the data in the desired location relative to our
+            # box
+            transform = vtk.vtkTransform()
+            transform.PostMultiply()
+            transform.RotateZ(yaw)
+            transform.Translate(x0, y0, 0)
+            # That transform moves the box relative to the data, so the box takes its
+            # inverse
+            transform.Inverse()
+            box.SetTransform(transform)
+            
+            # vtkExtractPoints does the actual filtering
+            extractPoints = vtk.vtkExtractPoints()
+            extractPoints.SetImplicitFunction(box)
+            extractPoints.SetInputData(self.get_merged_points())
+            extractPoints.Update()
+            pdata_merged = extractPoints.GetOutput()
+        else:
+            pdata_merged = self.get_merged_points()
         kDTree.BuildLocatorFromPoints(pdata_merged.GetPoints())
         
         # Create Appending filter
@@ -3952,8 +3976,6 @@ def sample_autocorr_2d(samples_in, mode='normal', nanmode='zero-fill'):
     samples = copy.deepcopy(samples_in)
     if nanmode=='zero-fill':
         n_values = (~np.isnan(samples)).sum()
-        # Z_tilda = np.nansum(samples)/n_values # below eqn 5.20
-        # samples = samples - Z_tilda # implementing eqn. 5.20
         samples[np.isnan(samples)] = 0 # zero-fill as it says on the bottom
         # of pg. 71
     else:
@@ -3964,6 +3986,7 @@ def sample_autocorr_2d(samples_in, mode='normal', nanmode='zero-fill'):
     counts = fftconvolve(np.ones(samples.shape), np.ones(samples.shape), 
                          mode='full')
     # Return autocorrelation
+    # dividing by n_values normalizes for missing data
     if mode=='normal':
         return (samples.size/n_values) * con/counts
     elif mode=='fourier':
@@ -3988,8 +4011,9 @@ def sample_autocorr_2d(samples_in, mode='normal', nanmode='zero-fill'):
     else:
         raise ValueError("mode must be either 'normal' or 'fourier'")
 
-def biquad_plot(ax, arr, bins_0, bins_1, dx0=1, dx1=1):
-    """Plots a 2D array that is fourier indexed.
+def biquad_plot(ax, arr, bins_0, bins_1, dx0=1, dx1=1, mode='inverse',
+                vmin=None, vmax=None):
+    """Plots center of a 2D array that is fourier indexed.
     
     Parameters
     ----------
@@ -3998,7 +4022,7 @@ def biquad_plot(ax, arr, bins_0, bins_1, dx0=1, dx1=1):
     arr : 2D array
         array to plot, can be either full or biquad
     bins_0 : int
-        number of positive and negative freqency bins along zeroth axis to 
+        number of positive and negative bins along zeroth axis to 
         show
     bins_1 : int
         number of positive bins along first axis
@@ -4006,7 +4030,11 @@ def biquad_plot(ax, arr, bins_0, bins_1, dx0=1, dx1=1):
         pixel length along axis 0. The default is 1.
     dx1 : float, optional
         pixel length along axis 1. The default is 1.
-        
+    mode : str, optional
+        Which mode for bin units. The default is 'inverse'
+    vmin, vmax : float, optional
+        Limits for color plotting. The default is None.
+    
     Returns
     -------
     pyplot mappable
@@ -4015,10 +4043,14 @@ def biquad_plot(ax, arr, bins_0, bins_1, dx0=1, dx1=1):
     # Pull requested bins from arr
     im = np.vstack((arr[-1*bins_0:,:bins_1],
                    arr[:bins_0, :bins_1]))
-    nu0 = (np.arange(bins_0*2) - bins_0)*1/dx0
-    nu1 = (np.arange(bins_1)) * 1/dx1
+    if mode=='inverse':
+        ax0 = (np.arange(bins_0*2) - bins_0)*1/dx0
+        ax1 = (np.arange(bins_1)) * 1/dx1
+    elif mode=='direct':
+        ax0 = (np.arange(bins_0*2) - bins_0) * dx0
+        ax1 = (np.arange(bins_1)) * dx1
     # Plot and return plot object
-    return ax.contourf(nu1, nu0, im)
+    return ax.contourf(ax1, ax0, im, levels=10, vmin=vmin, vmax=vmax)
 
 def biquad_difference_plot(ax, arr0, arr1, bins_0, bins_1, dx0=1, dx1=1):
     """Plots difference of 2 2D arrays that are fourier indexed.

@@ -9,7 +9,7 @@ Created on Tue Sep 29 15:36:01 2020
 
 import vtk
 import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\lidar_processing\\')
+os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
 import time
 

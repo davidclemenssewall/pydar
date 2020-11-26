@@ -9,7 +9,7 @@ Created on Wed Sep 23 10:22:08 2020
 
 import vtk
 import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\lidar_processing\\')
+os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
 from math import sqrt
 

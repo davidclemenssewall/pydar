@@ -8,7 +8,7 @@ Created on Mon Sep 14 10:20:17 2020
 """
 
 import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\lidar_processing\\')
+os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
 
 # %% Test init

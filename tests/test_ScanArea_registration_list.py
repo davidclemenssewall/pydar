@@ -9,7 +9,7 @@ Created on Thu Sep 17 10:31:09 2020
 
 import os
 from collections import namedtuple
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\lidar_processing\\')
+os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
 
 # %% Test named tuple

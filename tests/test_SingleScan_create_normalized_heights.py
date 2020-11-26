@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import vtk
 from vtk.numpy_interface import dataset_adapter as dsa
 import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\lidar_processing\\')
+os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
 
 # %% init
