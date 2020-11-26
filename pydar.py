@@ -1273,7 +1273,13 @@ class SingleScan:
             Method for correcting radial artifact in reflectances. Currently
             only coded for 'median'.
         r_min : float, optional
-            Needed for method 'median' minimum radius to bin 
+            Needed for method 'median' minimum radius to bin
+        r_max : float, optional
+            Needed for method 'median' maximum radius to bin
+        num : int, optional
+            Needed for method 'median', number of bins
+        base : float, optional
+            Needed for method 'median', base for logspaced bins
 
         Returns
         -------
@@ -1518,6 +1524,8 @@ class Project:
         Create GMRF for pixel infilling. Generates mu_agivenb and sparse_LAA.
     create_reflectance()
         Create reflectance for each scan.
+    correct_reflectance_radial()
+        Attempt to correct for reflectance bias due to distance from scanner.
     """
     
     def __init__(self, project_path, project_name, load_scans=True, 
@@ -2963,6 +2971,43 @@ class Project:
         
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].create_reflectance()
+    
+    def correct_reflectance_radial(self, mode, r_min=None, r_max=None, 
+                                   num=None, base=None):
+        """
+        Corrects radial artifact in reflectance. result: 'reflectance_radial'
+        
+        Attempts to correct radial artifact in reflectance. Still developing
+        the best way to do this.
+        
+        If mode is 'median': bin the raw reflectances by radial distance.
+
+        Parameters
+        ----------
+        mode : str
+            Method for correcting radial artifact in reflectances. Currently
+            only coded for 'median'.
+        r_min : float, optional
+            Needed for method 'median' minimum radius to bin
+        r_max : float, optional
+            Needed for method 'median' maximum radius to bin
+        num : int, optional
+            Needed for method 'median', number of bins
+        base : float, optional
+            Needed for method 'median', base for logspaced bins
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].correct_reflectance_radial(mode,
+                                                                 r_min=r_min, 
+                                                                 r_max=r_max, 
+                                                                 num=num, 
+                                                                 base=base)
             
 
 class ScanArea:
