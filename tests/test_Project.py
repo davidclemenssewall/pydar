@@ -14,9 +14,10 @@ import pydar
 # %% Test init
 
 project_path = 'D:\\mosaic_lidar\\Snow1\\'
-project_name = 'mosaic_01b_061219.RiSCAN.RiSCAN.RiSCAN'
+project_name = 'mosaic_01_040120.RiSCAN'
+poly = 'all_within_16m'
 
-project = pydar.Project(project_path, project_name)
+project = pydar.Project(project_path, project_name, poly=poly)
 print(project.project_date)
 
 # %% Add z offset and apply transforms

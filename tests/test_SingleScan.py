@@ -15,15 +15,16 @@ import pydar
 # %% Test init
 
 project_path = 'D:\\mosaic_lidar\\Snow1\\'
-project_name = 'mosaic_01_102519.RiSCAN'
-scan_name = 'ScanPos003'
+project_name = 'mosaic_01_040120.RiSCAN'
+scan_name = 'ScanPos006'
+poly = 'all_within_16m'
 
-ss = pydar.SingleScan(project_path, project_name, scan_name)
+ss = pydar.SingleScan(project_path, project_name, scan_name, poly=poly)
 
 # %% Test add SOP and add z offset
 
 ss.add_sop()
-ss.add_z_offset(3)
+ss.add_z_offset(4.5)
 
 print(ss.transform_dict['sop'].GetOrientation())
 

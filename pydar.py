@@ -568,10 +568,13 @@ class SingleScan:
         if desired) to 3.
     """
     
-    def __init__(self, project_path, project_name, scan_name, poly=0,
+    def __init__(self, project_path, project_name, scan_name, poly='.1_.1_.01',
                  read_scan=False):
         """
         Creates SingleScan object and transformation pipeline.
+        
+        Note, if a polydata folder with the desired suffix does not exist then
+        we will produce many vtk warnings (so I don't recommend this)
 
         Parameters
         ----------
@@ -581,8 +584,9 @@ class SingleScan:
             Name of Riscan project.
         scan_name : str
             Typically ScanPos0XX where XX is the scan number.
-        poly : int, optional
-            Which polydata in folder to take. The default is 0.
+        poly : str, optional
+            The suffix describing which polydata to load. The default is
+            '.1_.1_.01'.
         read_scan : bool, optional
             Whether to read a saved scan from file. Typically useful for
             handling filtered scans. The default is False
@@ -607,9 +611,15 @@ class SingleScan:
             reader.SetFileName(self.project_path + self.project_name + "_" +
                            self.scan_name + '.vtp')
         else:
-            reader.SetFileName(self.project_path + self.project_name 
-                                    + '\\SCANS\\' + self.scan_name 
-                                    + '\\POLYDATA\\' + polys[poly] + '\\1.vtp')
+            # Match poly with polys
+            for name in polys:
+                if re.search(poly + '$', name):
+                    reader.SetFileName(self.project_path + self.project_name 
+                                            + '\\SCANS\\' + self.scan_name 
+                                            + '\\POLYDATA\\' + name + 
+                                            '\\1.vtp')
+                    break
+                
         reader.Update()
         self.polydata_raw = reader.GetOutput()
         
@@ -1528,8 +1538,8 @@ class Project:
         Attempt to correct for reflectance bias due to distance from scanner.
     """
     
-    def __init__(self, project_path, project_name, load_scans=True, 
-                 read_scans=False):
+    def __init__(self, project_path, project_name, poly='.1_.1_.01', 
+                 load_scans=True, read_scans=False):
         """
         Generates project, also inits singlescan objects
 
@@ -1539,6 +1549,9 @@ class Project:
             Directory location of the project.
         project_name : str
             Filename of the RiSCAN project.
+        poly : str, optional
+            The suffix describing which polydata to load. The default is
+            '.1_.1_.01'.
         load_scans : bool, optional
             Whether to actually load the scans. Often if we're just
             aligning successive scans loading all of them causes overhead.
@@ -1562,17 +1575,24 @@ class Project:
         self.current_transform_list = []
         
         # Add SingleScans, including their SOPs, 
-        # we will only add a singlescan if it has an SOP and a polydata
+        # we will only add a singlescan if it has an SOP and a polydata that
+        # matches the poly suffix
         if load_scans:
             scan_names = os.listdir(project_path + project_name + '\\SCANS\\')
             for scan_name in scan_names:
                 if os.path.isfile(self.project_path + self.project_name + '\\' 
                                   + scan_name + '.DAT'):
-                    if not (len(os.listdir(self.project_path + 
-                                           self.project_name + '\\SCANS\\' + 
-                                           scan_name + '\\POLYDATA\\'))==0):
+                    polys = os.listdir(self.project_path + self.project_name +
+                                       '\\SCANS\\'+scan_name + '\\POLYDATA\\')
+                    match = False
+                    for name in polys:
+                        if re.search(poly + '$', name):
+                            match = True
+                            break
+                    if match:
                         scan = SingleScan(self.project_path, self.project_name,
-                                          scan_name, read_scan=read_scans)
+                                          scan_name, poly=poly,
+                                          read_scan=read_scans)
                         scan.add_sop()
                         
                         self.scan_dict.update({scan_name : scan})
@@ -3060,7 +3080,7 @@ class ScanArea:
     """
     
     def __init__(self, project_path, project_names=[], registration_list=[],
-                 load_scans=True, read_scans=False):
+                 poly='.1_.1_.01', load_scans=True, read_scans=False):
         """
         init stores project_path and initializes project_dict
 
@@ -3075,6 +3095,9 @@ class ScanArea:
             If given this is the list of registration actions. Note, we make
             a deep copy of this list to avoid reference issues. The default is
             [].
+        poly : str, optional
+            The suffix describing which polydata to load. The default is
+            '.1_.1_.01'.
         load_scans : bool, optional
             Whether to actually load the scans. Often if we're just
             aligning successive scans loading all of them causes overhead.
@@ -3098,11 +3121,12 @@ class ScanArea:
         
         for project_name in project_names:
             self.add_project(project_name, load_scans=load_scans,
-                             read_scans=read_scans)
+                             read_scans=read_scans, poly=poly)
             
         self.registration_list = copy.deepcopy(registration_list)
     
-    def add_project(self, project_name, load_scans=True, read_scans=False):
+    def add_project(self, project_name, poly='.1_.1_.01', load_scans=True, 
+                    read_scans=False):
         """
         Add a new project to the project_dict (or overwrite existing project)
 
@@ -3110,6 +3134,9 @@ class ScanArea:
         ----------
         project_name : str
             Name of Riscan project to add
+        poly : str, optional
+            The suffix describing which polydata to load. The default is
+            '.1_.1_.01'.
         load_scans : bool, optional
             Whether to actually load the scans. Often if we're just
             aligning successive scans loading all of them causes overhead.
