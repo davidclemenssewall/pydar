@@ -112,6 +112,8 @@ registration_list = [Registration('mosaic_01_102019.RiSCAN',
 
 sub_list = ['mosaic_01_060220.RiSCAN']
 
+poly = 'all_within_16m'
+
 # %% Initialize project
 
 # Initialize scan area object, setting the flags to false means we don't try
@@ -123,7 +125,8 @@ scan_area = pydar.ScanArea('D:\\mosaic_lidar\\test_for_robbie\\Snow1\\',
 
 # Load the one scan we do have.
 for project_name in sub_list:
-    scan_area.add_project(project_name, load_scans=True, read_scans=False)
+    scan_area.add_project(project_name, load_scans=True, read_scans=False,
+                          poly=poly)
 
 # %% Register
 

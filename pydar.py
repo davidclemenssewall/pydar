@@ -3156,7 +3156,7 @@ class ScanArea:
         self.project_dict[project_name] = Project(self.project_path, 
                                                   project_name, load_scans=
                                                   load_scans, read_scans=
-                                                  read_scans)
+                                                  read_scans, poly=poly)
     
     def compare_reflectors(self, project_name_0, project_name_1, 
                            delaunay=False, mode='dist', 
