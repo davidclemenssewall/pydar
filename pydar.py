@@ -30,6 +30,7 @@ from vtk.numpy_interface import dataset_adapter as dsa
 import os
 import re
 import copy
+import json
 from vtk.util.numpy_support import vtk_to_numpy
 
 class TiePointList:
@@ -566,6 +567,11 @@ class SingleScan:
     reflectance_filter(threshold, radius=0, field='reflectance_radial')
         Set filter_flag values for high reflectance objects (and neighborhood
         if desired) to 3.
+    write_npy_pdal(output_dir, filename, mode)
+        Write SingleScan to numpy structured array that can be read by pdal.
+    write_pdal_transformation_json(mode, input_dir, output_dir)
+        Write a JSON string for PDAL such that it transforms raw scan data
+        by self.transform.
     """
     
     def __init__(self, project_path, project_name, scan_name, poly='.1_.1_.01',
@@ -1427,6 +1433,114 @@ class SingleScan:
             self.polydata_raw.Modified()
             self.transformFilter.Update()
             self.currentFilter.Update()
+    
+    def write_npy_pdal(self, output_dir, filename=None, mode='transformed'):
+        """
+        Write scan to structured numpy array that can be read by PDAL.
+
+        Parameters
+        ----------
+        output_dir : str
+            Directory to write to.
+        filename : str, optional
+            Filename to write, if None will write PROJECT_NAME_SCAN_NAME. 
+            The default is None.
+        mode : str, optional
+            Whether to write 'raw' points, 'transformed' points, or 'filtered'
+            points. The default is 'transformed'.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if mode=='raw':
+            pdata = self.polydata_raw
+            dsa_pdata = self.dsa_raw
+        elif mode=='transformed':
+            pdata = self.transformFilter.GetOutput()
+            dsa_pdata = dsa.WrapDataObject(pdata)
+        elif mode=='filtered':
+            pdata = self.get_polydata()
+            dsa_pdata = dsa.WrapDataObject(pdata)
+        else:
+            raise ValueError('mode must be raw, transformed, or filtered')
+        
+        n_pts = pdata.GetNumberOfPoints()
+        
+        if 'reflectance' in dsa_pdata.PointData.keys():
+            output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z', 
+                                                         'Reflectance'),
+                                    'formats':(np.float32, np.float32, 
+                                               np.float32, np.float32)})
+            output_npy['X'] = dsa_pdata.Points[:,0]
+            output_npy['Y'] = dsa_pdata.Points[:,1]
+            output_npy['Z'] = dsa_pdata.Points[:,2]
+            output_npy['Reflectance'] = dsa_pdata.PointData['reflectance']
+        else:
+            output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z'),
+                                    'formats':(np.float32, np.float32, 
+                                               np.float32)})
+            output_npy['X'] = dsa_pdata.Points[:,0]
+            output_npy['Y'] = dsa_pdata.Points[:,1]
+            output_npy['Z'] = dsa_pdata.Points[:,2]
+        
+        if filename is None:
+            filename = self.project_name + '_' + self.scan_name
+        
+        np.save(output_dir + filename, output_npy)
+    
+    def write_pdal_transformation_json(self, mode='las', input_dir='./', 
+                                       output_dir='./pdal_output/'):
+        """
+        Write pdal formatted JSON for transforming raw data to current.
+
+        Parameters
+        ----------
+        mode : str, optional
+            Datatype of the input. The default is 'las'.
+        input_dir : str, optional
+            Location to find file. The default is './'.
+        output_dir : TYPE, optional
+            Location to put pdal output. The default is './pdal_output/'.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        json_list = [None, None, None]
+        # Find the first filename in input_dir that matches this scan position
+        # and filetype
+        filenames = os.listdir(input_dir)
+        pattern = re.compile(self.scan_name + '.*' + mode)
+        matches = [pattern.fullmatch(filename) for filename in filenames]
+        if any(matches):
+            # Create filename input
+            filename = next(f for f, m in zip(filenames, matches) if m)
+            json_list[0] = input_dir + filename
+            # Get current transform 4x4 matrix as an array
+            arr = np.ones(16, dtype='double')
+            self.transform.GetMatrix().DeepCopy(arr, 
+                                                self.transform.GetMatrix())
+            json_list[1] = {"type": "filters.transformation",
+                            "matrix": np.array2string(arr, max_line_width=1000
+                                                      , formatter={
+                                                          'float':lambda x: 
+                                                              "%0.16f" % x})
+                                [1:-1]}
+            # Create output
+            json_list[2] = output_dir + filename
+            # convert list to json and write to a file
+            with open(input_dir + self.scan_name + '_pdal_transformation.txt',
+                      'w') as outfile:
+                json.dump(json_list, outfile, indent=4)
+            
+        else:
+            raise UserWarning(self.scan_name + ' not found in ' + input_dir)
+
 
 class Project:
     """Class linking relevant data for a project and methods for registration.
