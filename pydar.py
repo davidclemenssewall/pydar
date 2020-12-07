@@ -31,6 +31,7 @@ import os
 import re
 import copy
 import json
+import pdal
 from vtk.util.numpy_support import vtk_to_numpy
 
 class TiePointList:
@@ -575,7 +576,7 @@ class SingleScan:
     """
     
     def __init__(self, project_path, project_name, scan_name, poly='.1_.1_.01',
-                 read_scan=False):
+                 read_scan=False, import_las=False):
         """
         Creates SingleScan object and transformation pipeline.
         
@@ -596,6 +597,9 @@ class SingleScan:
         read_scan : bool, optional
             Whether to read a saved scan from file. Typically useful for
             handling filtered scans. The default is False
+        import_las: bool, optional
+            If true (and read_scan is False) read in the las file instead of
+            the polydata. The default is False.
 
         Returns
         -------
@@ -616,7 +620,9 @@ class SingleScan:
         if read_scan:
             reader.SetFileName(self.project_path + self.project_name + "_" +
                            self.scan_name + '.vtp')
-        else:
+            reader.Update()
+            self.polydata_raw = reader.GetOutput()
+        elif not import_las:
             # Match poly with polys
             for name in polys:
                 if re.search(poly + '$', name):
@@ -624,10 +630,74 @@ class SingleScan:
                                             + '\\SCANS\\' + self.scan_name 
                                             + '\\POLYDATA\\' + name + 
                                             '\\1.vtp')
+                    reader.Update()
+                    self.polydata_raw = reader.GetOutput()
                     break
+        elif import_las:
+            # import las file from lasfiles directory in project_path
+            filenames = os.listdir(self.project_path + self.project_name + 
+                                   "\\lasfiles\\")
+            pattern = re.compile(self.scan_name + '.*las')
+            matches = [pattern.fullmatch(filename) for filename in filenames]
+            if any(matches):
+                # Create filename input
+                filename = next(f for f, m in zip(filenames, matches) if m)
+                json_list = [self.project_path + self.project_name + 
+                             "\\lasfiles\\" + filename]
+                json_data = json.dumps(json_list, indent=4)
+                # Load scan into numpy array
+                pipeline = pdal.Pipeline(json_data)
+                _ = pipeline.execute()
                 
-        reader.Update()
-        self.polydata_raw = reader.GetOutput()
+                # Create pdata and populate with points from las file
+                pdata = vtk.vtkPolyData()
+                points = vtk.vtkPoints()
+                points.SetDataTypeToFloat()
+                points.SetNumberOfPoints(pipeline.arrays[0].shape[0])
+                pdata.SetPoints(points)
+                arr_nret = vtk.vtkUnsignedCharArray()
+                arr_nret.SetName('NumberOfReturns')
+                arr_nret.SetNumberOfComponents(1)
+                arr_nret.SetNumberOfTuples(pipeline.arrays[0].shape[0])
+                pdata.GetPointData().AddArray(arr_nret)
+                arr_reti = vtk.vtkSignedCharArray()
+                arr_reti.SetName('ReturnIndex')
+                arr_reti.SetNumberOfComponents(1)
+                arr_reti.SetNumberOfTuples(pipeline.arrays[0].shape[0])
+                pdata.GetPointData().AddArray(arr_reti)
+                arr_refl = vtk.vtkFloatArray()
+                arr_refl.SetName('reflectance')
+                arr_refl.SetNumberOfComponents(1)
+                arr_refl.SetNumberOfTuples(pipeline.arrays[0].shape[0])
+                pdata.GetPointData().AddArray(arr_refl)
+                arr_amp = vtk.vtkFloatArray()
+                arr_amp.SetName('amplitude')
+                arr_amp.SetNumberOfComponents(1)
+                arr_amp.SetNumberOfTuples(pipeline.arrays[0].shape[0])
+                pdata.GetPointData().AddArray(arr_amp)
+                dsa_pdata = dsa.WrapDataObject(pdata)
+                dsa_pdata.Points[:,0] = np.float32(pipeline.arrays[0]['X'])
+                dsa_pdata.Points[:,1] = np.float32(pipeline.arrays[0]['Y'])
+                dsa_pdata.Points[:,2] = np.float32(pipeline.arrays[0]['Z'])
+                dsa_pdata.PointData['NumberOfReturns'][:] = (pipeline.arrays
+                                                    [0]['NumberOfReturns'])
+                ReturnIndex = np.int16(pipeline.arrays[0]['ReturnNumber'])
+                ReturnIndex[ReturnIndex==7] = 0
+                ReturnIndex = (ReturnIndex - 
+                               pipeline.arrays[0]['NumberOfReturns'])
+                dsa_pdata.PointData['ReturnIndex'][:] = ReturnIndex
+                pdata.Modified()
+                dsa_pdata.PointData['reflectance'][:] = np.float32(
+                    pipeline.arrays[0]['Reflectance'])
+                dsa_pdata.PointData['amplitude'][:] = np.float32(
+                    pipeline.arrays[0]['Amplitude'])
+                
+                # Create VertexGlyphFilter so that we have vertices for
+                # displaying
+                vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+                vertexGlyphFilter.SetInputData(pdata)
+                vertexGlyphFilter.Update()
+                self.polydata_raw = vertexGlyphFilter.GetOutput()
         
         # Create dataset adaptor for interacting with polydata_raw
         self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
@@ -1233,14 +1303,14 @@ class SingleScan:
             arr.FillComponent(0, 0)
             self.polydata_raw.GetPointData().AddArray(arr)
         
-        self.dsa_raw.PointData['reflectance'][:] = (np.array(self.dsa_raw.
-                                                             PointData
-                                          ['intensity'], dtype=np.float32) 
-                                          - 32768)/100.0
-        # Update
-        self.polydata_raw.Modified()
-        self.transformFilter.Update()
-        self.currentFilter.Update()
+            self.dsa_raw.PointData['reflectance'][:] = (np.array(self.dsa_raw.
+                                                                 PointData
+                                              ['intensity'], dtype=np.float32) 
+                                              - 32768)/100.0
+            # Update
+            self.polydata_raw.Modified()
+            self.transformFilter.Update()
+            self.currentFilter.Update()
     
     def create_reflectance_pipeline(self, v_min, v_max, field='reflectance'):
         """
