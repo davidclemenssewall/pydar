@@ -32,6 +32,7 @@ import re
 import copy
 import json
 import pdal
+import math
 from vtk.util.numpy_support import vtk_to_numpy
 
 class TiePointList:
@@ -554,6 +555,9 @@ class SingleScan:
         flag_filter to 1.
     apply_snowflake_filter_2(z_diff, N, r_min):
         Filter snowflakes based on their vertical distance from nearby points.
+    apply_snowflake_filter_returnindex(N, multiplier)
+        Filter snowflakes based on their return index and distance from
+        nearby points. 
     clear_filter_flag
         Reset all filter_flag values to 0.
     create_normalized_heights(x, cdf)
@@ -686,11 +690,11 @@ class SingleScan:
                 ReturnIndex = (ReturnIndex - 
                                pipeline.arrays[0]['NumberOfReturns'])
                 dsa_pdata.PointData['ReturnIndex'][:] = ReturnIndex
-                pdata.Modified()
                 dsa_pdata.PointData['reflectance'][:] = np.float32(
                     pipeline.arrays[0]['Reflectance'])
                 dsa_pdata.PointData['amplitude'][:] = np.float32(
                     pipeline.arrays[0]['Amplitude'])
+                pdata.Modified()
                 
                 # Create VertexGlyphFilter so that we have vertices for
                 # displaying
@@ -710,9 +714,7 @@ class SingleScan:
             arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
             arr.FillComponent(0, 0)
             self.polydata_raw.GetPointData().AddArray(arr)
-            self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')
-            
-        
+            self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')            
         
         self.transform = vtk.vtkTransform()
         # Set mode to post-multiply, so concatenation is successive transforms
@@ -898,8 +900,9 @@ class SingleScan:
 
         """
         
-        self.dsa_raw.PointData['flag_filter'] = 0
+        self.dsa_raw.PointData['flag_filter'][:] = 0
         # Update currentTransform
+        self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
     
@@ -1155,6 +1158,74 @@ class SingleScan:
                                                   .GetOutputPort(1))
             self.filteredPoints.Update()        
     
+    def apply_snowflake_filter_returnindex(self, N=6, multiplier=2):
+        """
+        Filter snowflakes using return index and distance to nearest point.
+        
+        Snowflakes are too small to fully occlude the laser pulse. Therefore
+        all snowflakes will be one of multiple returns (returnindex<-1).
+        However, the edges of shadows will also be one of multiple returns
+        snowflakes are distinctive because they will tend to be further away
+        from their neighbors than the edges of regions on the surface. All
+        points that are classified as snowflakes will have their flag_filter
+        set to 2.
+
+        Parameters
+        ----------
+        N : int, optional
+            Number of nearest points to get. The default is 6.
+        multiplier : float, optional
+            Number to multipy radial spacing by for abs mean point distance.
+            The default is 2.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Build Octree Point Locator
+        locator = vtk.vtkOctreePointLocator()
+        self.polydata_raw.SetPointLocator(locator)
+        locator.SetDataSet(self.polydata_raw)
+        self.polydata_raw.BuildLocator()
+        # # Wrap data object again to account for new locator
+        # self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
+        
+        # Get each point with a returnindex < -1
+        poss_pts = self.dsa_raw.Points[self.
+                                       dsa_raw.PointData['ReturnIndex']<-1,:]
+        # Get the predicted spacings for those points.
+        spacings = radial_spacing(np.linalg.norm(poss_pts, ord=2, axis=1))
+        # If the distance is less than 2.5 m those points must be artifacts
+        # set those spacings to 0 so they will be flagged
+        spacings[np.isnan(spacings)] = 0
+        
+        # Allocate variables
+        result = vtk.vtkIdList()
+        result.SetNumberOfIds(N+1)
+        dist_sum = float(0.0)
+        # For each possible point see if it's mean absolute difference from
+        # it's N neighbors exceeds spacing * multiplier, if so set flag_filter
+        # to 2
+        for i in np.arange(poss_pts.shape[0]):
+            # Get the N+1 closest points (including the point itself)
+            locator.FindClosestNPoints(N+1, poss_pts[i,:], result)
+            # Compute the mean absolute distance
+            for j in np.arange(N):
+                dist_sum += math.sqrt(vtk.vtkMath.Distance2BetweenPoints(
+                    self.polydata_raw.GetPoint(result.GetId(0)),
+                    self.polydata_raw.GetPoint(result.GetId(j+1))))
+            # If mean absolute distance exceeds spacing*multiplier set flag
+            if (dist_sum/N) > (spacings[i,0] * multiplier):
+                self.dsa_raw.PointData['flag_filter'][result.GetId(0)] = 2
+            dist_sum = float(0.0)
+        
+        # Update currentTransform
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+
     def create_filter_pipeline(self, colors={0 : (0, 1, 0, 1),
                                              1 : (1, 0, 0, 1),
                                              2 : (1, 0, 0, 1),
@@ -4723,3 +4794,45 @@ def fit_theta_to_ro(ro, wts, p, m=2):
     
     # Return parameters
     return(np.exp(res_log_theta1.x), res.x)
+
+def radial_spacing(r, dtheta=0.025, dphi=0.025, scanner_height=2.5, slope=0):
+    """
+    Computes expected spacing between lidar points at distances r.
+
+    Parameters
+    ----------
+    r : ndarray
+        (n,) Array of distances to compute spacing for.
+    dtheta : float, optional
+        Step size in degrees for lidar inclination angle. The default is 0.025.
+    dphi : float, optional
+        Step size in degrees for lidar azimuth angle. The default is 0.025.
+    scanner_height : float, optional
+        Height of the scanner above ground in m. The default is 2.5.
+    slope : float or ndarray, optional
+        Slope of the surface in degrees in radial direction. If array it must
+        have the same dimensions as r. The default is 0.
+
+    Returns
+    -------
+    (n, 2) Array of spacings at each distance in azimuthal and radial dirs.
+
+    """
+    
+    # Create output array
+    spac = np.zeros((r.size, 2))
+    
+    # Compute azimuthal spacing
+    r_g = np.sqrt(r**2 - scanner_height**2)
+    spac[:,0] = r_g * dphi * np.pi / 180
+    
+    # Compute radial spacing
+    dtheta_rad = dtheta * np.pi / 180
+    theta = np.arccos(scanner_height/r)
+    r_g_prime = scanner_height * np.tan(theta - dtheta_rad)
+    if slope==0:
+        spac[:,1] = r_g - r_g_prime
+    else:
+        dx = r_g - r_g_prime
+    
+    return spac
