@@ -708,13 +708,28 @@ class SingleScan:
         
         # Add filter_flag array to polydata_raw if it's not present
         if not 'flag_filter' in self.dsa_raw.PointData.keys():
-            arr = vtk.vtkFloatArray()
+            arr = vtk.vtkUnsignedCharArray()
             arr.SetName('flag_filter')
             arr.SetNumberOfComponents(1)
             arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
             arr.FillComponent(0, 0)
             self.polydata_raw.GetPointData().AddArray(arr)
-            self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')            
+            self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')
+        
+        # Add PedigreeIds if they are not already present
+        if not 'PedigreeIds' in self.dsa_raw.PointData.keys():
+            pedigreeIds = vtk.vtkTypeUInt32Array()
+            pedigreeIds.SetName('PedigreeIds')
+            pedigreeIds.SetNumberOfComponents(1)
+            pedigreeIds.SetNumberOfTuples(self.polydata_raw.
+                                          GetNumberOfPoints())
+            np_pedigreeIds = vtk_to_numpy(pedigreeIds)
+            np_pedigreeIds[:] = np.arange(self.polydata_raw.
+                                          GetNumberOfPoints(), dtype='uint32')
+            self.polydata_raw.GetPointData().SetPedigreeIds(pedigreeIds)
+            self.polydata_raw.GetPointData().SetActivePedigreeIds('PedigreeIds')
+        
+        self.polydata_raw.Modified()
         
         self.transform = vtk.vtkTransform()
         # Set mode to post-multiply, so concatenation is successive transforms
@@ -1158,25 +1173,34 @@ class SingleScan:
                                                   .GetOutputPort(1))
             self.filteredPoints.Update()        
     
-    def apply_snowflake_filter_returnindex(self, N=6, multiplier=2):
+    def apply_snowflake_filter_returnindex(self, cylinder_rad=0.025*np.sqrt(2)
+                                           *np.pi/180, radial_precision=0):
         """
-        Filter snowflakes using return index and distance to nearest point.
+        Filter snowflakes using return index visible space.
         
         Snowflakes are too small to fully occlude the laser pulse. Therefore
         all snowflakes will be one of multiple returns (returnindex<-1).
-        However, the edges of shadows will also be one of multiple returns
-        snowflakes are distinctive because they will tend to be further away
-        from their neighbors than the edges of regions on the surface. All
-        points that are classified as snowflakes will have their flag_filter
-        set to 2.
+        However, the edges of shadows will also be one of multiple returns. To
+        address this we look at each early return and check if it's on the 
+        border of the visible area from the scanner's perspective. We do this
+        by finding all points within cylinder_rad of the point in question
+        in panorama space. Then, if the radial value of the point in question
+        is greater than any of these radial values that means the point
+        in question is on the border of the visible region and we should keep
+        it.
+        
+        All points that this filter identifies as snowflakes are set to
+        flag_filter=2
 
         Parameters
         ----------
-        N : int, optional
-            Number of nearest points to get. The default is 6.
-        multiplier : float, optional
-            Number to multipy radial spacing by for abs mean point distance.
-            The default is 2.
+        cylinder_rad : float, optional
+            The radius of a cylinder, in radians around an early return
+            to look for last returns. The default is 0.025*np.sqrt(2)*np.pi/
+            180.
+        radial_precision : float, optional
+            If an early return's radius is within radial_precision of an
+            adjacent last return accept it as surface. The default is 0.
 
         Returns
         -------
@@ -1184,44 +1208,121 @@ class SingleScan:
 
         """
         
-        # Build Octree Point Locator
-        locator = vtk.vtkOctreePointLocator()
-        self.polydata_raw.SetPointLocator(locator)
-        locator.SetDataSet(self.polydata_raw)
-        self.polydata_raw.BuildLocator()
-        # # Wrap data object again to account for new locator
-        # self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
+        # Convert to polar coordinates
+        sphere2cart = vtk.vtkSphericalTransform()
+        cart2sphere = sphere2cart.GetInverse()
+        transformFilter = vtk.vtkTransformFilter()
+        transformFilter.SetTransform(cart2sphere)
+        transformFilter.SetInputData(self.polydata_raw)
+        transformFilter.Update()
         
-        # Get each point with a returnindex < -1
-        poss_pts = self.dsa_raw.Points[self.
-                                       dsa_raw.PointData['ReturnIndex']<-1,:]
-        # Get the predicted spacings for those points.
-        spacings = radial_spacing(np.linalg.norm(poss_pts, ord=2, axis=1))
-        # If the distance is less than 2.5 m those points must be artifacts
-        # set those spacings to 0 so they will be flagged
-        spacings[np.isnan(spacings)] = 0
+        # Get only last returns
+        (transformFilter.GetOutput().GetPointData().
+         SetActiveScalars('ReturnIndex'))
+        thresholdFilter = vtk.vtkThresholdPoints()
+        thresholdFilter.ThresholdByUpper(-1.5)
+        thresholdFilter.SetInputConnection(transformFilter.GetOutputPort())
+        thresholdFilter.Update()
         
-        # Allocate variables
+        # Transform such that points are  in x and y and radius is in Elevation field
+        swap_r_phi = vtk.vtkTransform()
+        swap_r_phi.SetMatrix((0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1))
+        filter_r_phi = vtk.vtkTransformFilter()
+        filter_r_phi.SetTransform(swap_r_phi)
+        filter_r_phi.SetInputConnection(thresholdFilter.GetOutputPort())
+        filter_r_phi.Update()
+        radialElev = vtk.vtkSimpleElevationFilter()
+        radialElev.SetVector(0, 0, 1.0)
+        radialElev.SetInputConnection(filter_r_phi.GetOutputPort())
+        radialElev.Update()
+        flattener = vtk.vtkTransformFilter()
+        transFlat = vtk.vtkTransform()
+        transFlat.Scale(1, 1, 0)
+        flattener.SetTransform(transFlat)
+        flattener.SetInputConnection(radialElev.GetOutputPort())
+        flattener.Update()
+        
+        # Create locator for last returns
+        locator = vtk.vtkStaticPointLocator2D()
+        flat_last_returns = flattener.GetOutput()
+        flat_last_returns.SetPointLocator(locator)
+        locator.SetDataSet(flat_last_returns)
+        flat_last_returns.BuildPointLocator()
+        
+        # Get early returns as possible snowflakes
+        thresholdFilterL = vtk.vtkThresholdPoints()
+        thresholdFilterL.ThresholdByLower(-1.5)
+        thresholdFilterL.SetInputConnection(transformFilter.GetOutputPort())
+        thresholdFilterL.Update()
+        early_returns = thresholdFilterL.GetOutput()
+        
+        # Allocate objects needed to find nearby points
         result = vtk.vtkIdList()
-        result.SetNumberOfIds(N+1)
-        dist_sum = float(0.0)
-        # For each possible point see if it's mean absolute difference from
-        # it's N neighbors exceeds spacing * multiplier, if so set flag_filter
-        # to 2
-        for i in np.arange(poss_pts.shape[0]):
-            # Get the N+1 closest points (including the point itself)
-            locator.FindClosestNPoints(N+1, poss_pts[i,:], result)
-            # Compute the mean absolute distance
-            for j in np.arange(N):
-                dist_sum += math.sqrt(vtk.vtkMath.Distance2BetweenPoints(
-                    self.polydata_raw.GetPoint(result.GetId(0)),
-                    self.polydata_raw.GetPoint(result.GetId(j+1))))
-            # If mean absolute distance exceeds spacing*multiplier set flag
-            if (dist_sum/N) > (spacings[i,0] * multiplier):
-                self.dsa_raw.PointData['flag_filter'][result.GetId(0)] = 2
-            dist_sum = float(0.0)
+        pt = np.zeros(3)
+        snowflake = True
+        
+        for i in np.arange(early_returns.GetNumberOfPoints()):
+            # Get the point in question
+            early_returns.GetPoint(i, pt)
+            # Get the adjacent points from last_returns and place id's in result
+            (flat_last_returns.GetPointLocator().FindPointsWithinRadius(
+                cylinder_rad, pt[2], pt[1], 0, result))
+            # If the radius of the point in question is larger than that of 
+            # any of the adjacent point, then that means we are on the edge of
+            # the lidar's vision and this point is probably not a snowflake
+            snowflake = True
+            for j in range(result.GetNumberOfIds()):
+                if pt[0] >= (flat_last_returns.GetPointData().
+                             GetAbstractArray('Elevation').GetTuple(result.
+                                                                    GetId(j)
+                                                                    )[0]
+                             -radial_precision):
+                    snowflake = False
+                    break
+            if snowflake:
+                self.dsa_raw.PointData['flag_filter'][self.dsa_raw.PointData[
+                    'PedigreeIds']==early_returns.GetPointData().
+                    GetPedigreeIds().GetValue(i)] = 2
+        
+        # # Build Octree Point Locator
+        # locator = vtk.vtkOctreePointLocator()
+        # self.polydata_raw.SetPointLocator(locator)
+        # locator.SetDataSet(self.polydata_raw)
+        # self.polydata_raw.BuildLocator()
+        # # # Wrap data object again to account for new locator
+        # # self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
+        
+        # # Get each point with a returnindex < -1
+        # poss_pts = self.dsa_raw.Points[self.
+        #                                dsa_raw.PointData['ReturnIndex']<-1,:]
+        # # Get the predicted spacings for those points.
+        # spacings = radial_spacing(np.linalg.norm(poss_pts, ord=2, axis=1))
+        # # If the distance is less than 2.5 m those points must be artifacts
+        # # set those spacings to 0 so they will be flagged
+        # spacings[np.isnan(spacings)] = 0
+        
+        # # Allocate variables
+        # result = vtk.vtkIdList()
+        # result.SetNumberOfIds(N+1)
+        # dist_sum = float(0.0)
+        # # For each possible point see if it's mean absolute difference from
+        # # it's N neighbors exceeds spacing * multiplier, if so set flag_filter
+        # # to 2
+        # for i in np.arange(poss_pts.shape[0]):
+        #     # Get the N+1 closest points (including the point itself)
+        #     locator.FindClosestNPoints(N+1, poss_pts[i,:], result)
+        #     # Compute the mean absolute distance
+        #     for j in np.arange(N):
+        #         dist_sum += math.sqrt(vtk.vtkMath.Distance2BetweenPoints(
+        #             self.polydata_raw.GetPoint(result.GetId(0)),
+        #             self.polydata_raw.GetPoint(result.GetId(j+1))))
+        #     # If mean absolute distance exceeds spacing*multiplier set flag
+        #     if (dist_sum/N) > (spacings[i,0] * multiplier):
+        #         self.dsa_raw.PointData['flag_filter'][result.GetId(0)] = 2
+        #     dist_sum = float(0.0)
         
         # Update currentTransform
+        self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
@@ -1245,6 +1346,10 @@ class SingleScan:
 
         """
         
+        # Set active scalars
+        self.transformFilter.GetOutput().GetPointData().SetActiveScalars(
+            'flag_filter')
+        
         # Create Lookuptable
         lut = vtk.vtkLookupTable()
         lut.SetNumberOfTableValues(len(colors))
@@ -1259,6 +1364,7 @@ class SingleScan:
         self.mapper.SetLookupTable(lut)
         self.mapper.SetScalarRange(min(colors), max(colors))
         self.mapper.SetScalarVisibility(1)
+        self.mapper.SetColorModeToMapScalars()
         
         # Create actor
         self.actor = vtk.vtkActor()

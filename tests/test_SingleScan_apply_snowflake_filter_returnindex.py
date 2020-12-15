@@ -23,25 +23,12 @@ scan_name = 'ScanPos006'
 
 ss = pydar.SingleScan(project_path, project_name, scan_name, import_las=True)
 
-# %% Explore building locator
-
-print(type(vtk.vtkMath.Distance2BetweenPoints((1, 0, 1), (0, 1, 0))))
-
-# %%
-
-print(ss.dsa_raw.PointData['ReturnIndex']<-1)
-
-# Get each point with a returnindex < -1
-poss_pts = ss.dsa_raw.Points[ss.
-                               dsa_raw.PointData['ReturnIndex']<-1,:]
-# Get the predicted spacings for those points.
-spacings = pydar.radial_spacing(np.linalg.norm(poss_pts, ord=2, axis=1))
 
 # %% test filter
 
 ss.clear_flag_filter()
 
-ss.apply_snowflake_filter_returnindex(multiplier=10)
+ss.apply_snowflake_filter_returnindex()
 
 
 # %% create filter pipelin
