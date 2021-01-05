@@ -25,17 +25,13 @@ ss = pydar.SingleScan(project_path, project_name, scan_name)
 
 ss.add_sop()
 print(ss.transform_dict['sop'].GetPosition())
-#ss.apply_transforms(['sop'])
+ss.apply_transforms(['sop'])
 
-mapper = vtk.vtkPolyDataMapper()
-mapper.SetInputData(ss.get_polydata())
-
-actor = vtk.vtkActor()
-actor.SetMapper(mapper)
+ss.create_elevation_pipeline(-4, -1)
 
 renderer = vtk.vtkRenderer()
 renderWindow = vtk.vtkRenderWindow()
-renderer.AddActor(actor)
+renderer.AddActor(ss.actor)
 
 renderWindow.AddRenderer(renderer)
 
@@ -47,9 +43,6 @@ iren.Initialize()
 renderWindow.Render()
 iren.Start()
 
-# %% Let's print out some point values
-
-print(ss.dsa_raw.Points[:10, :])
 
 # %% Now let's try applying our filter
 
@@ -57,6 +50,20 @@ z_max = -1
 
 ss.apply_elevation_filter(z_max)
 
-print(ss.dsa_raw.PointData['flag_filter'][:10])
+# %% Now display
 
-# Seems to work good, next we'll develop a way of displaying this.
+ss.create_filter_pipeline()
+
+renderer = vtk.vtkRenderer()
+renderWindow = vtk.vtkRenderWindow()
+renderer.AddActor(ss.actor)
+
+renderWindow.AddRenderer(renderer)
+
+# create a renderwindowinteractor
+iren = vtk.vtkRenderWindowInteractor()
+iren.SetRenderWindow(renderWindow)
+
+iren.Initialize()
+renderWindow.Render()
+iren.Start()

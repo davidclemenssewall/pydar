@@ -522,9 +522,20 @@ class SingleScan:
         vtk actor object
     polydata_raw : vtkPolyData
         Raw data read in from Riscan, we will add arrays to PointData. This
-        polydata's PointData includes an array flag_filter. In this array
-        0 means keep this point (currently) and other values indicate which
-        filter removes this point (e.g. 1 means elevation)
+        polydata's PointData includes an array Classification. This is a uint8
+        array with the classification of points defined as in the LAS 
+        specification from ASPRS: 
+        https://www.asprs.org/wp-content/uploads/2019/07/LAS_1_4_r15.pdf 
+        Plus additional catagories defined here
+        0 : Created, Never Classified
+        1 : Unclassified
+        2 : Ground
+        6 : Building
+        7 : Low Point (Noise)
+        64: High Elevation (Classified by elevation_filter)
+        65: Snowflake (Classified by returnindex filter)
+        66: Reflectance (high reflectance points and neighborhoods if desired)
+        
     dsa_raw : vtk.numpy_interface.dataset_adapter.Polydata
         dataset adaptor object for interacting with polydata_raw
     
@@ -548,18 +559,16 @@ class SingleScan:
     get_polydata()
         Returns the polydata object for the current settings of transforms
         and filters.
-    apply_snowflake_filter(shells)
-        Builds a snowflake filter pipeline
     apply_elevation_filter(z_max)
         Filter out all points above a certain height. Sets the flag in 
-        flag_filter to 1.
+        Classification to 64.
     apply_snowflake_filter_2(z_diff, N, r_min):
         Filter snowflakes based on their vertical distance from nearby points.
     apply_snowflake_filter_returnindex(cylinder_rad, radial_precision)
         Filter snowflakes based on their return index and whether they are on
         the border of the visible region.
-    clear_filter_flag
-        Reset all filter_flag values to 0.
+    clear_classification
+        Reset all Classification values to 0.
     create_normalized_heights(x, cdf)
         Use normalize function to create normalized heights in new PointData
         array.
@@ -570,8 +579,8 @@ class SingleScan:
     correct_reflectance_radial(mode)
         Adjust reflectance for radial artifact.
     reflectance_filter(threshold, radius=0, field='reflectance_radial')
-        Set filter_flag values for high reflectance objects (and neighborhood
-        if desired) to 3.
+        Set Classification values for high reflectance objects (and neighborhood
+        if desired) to 66.
     write_npy_pdal(output_dir, filename, mode)
         Write SingleScan to numpy structured array that can be read by pdal.
     write_pdal_transformation_json(mode, input_dir, output_dir)
@@ -671,12 +680,12 @@ class SingleScan:
                 arr_reti.SetNumberOfTuples(pipeline.arrays[0].shape[0])
                 pdata.GetPointData().AddArray(arr_reti)
                 arr_refl = vtk.vtkFloatArray()
-                arr_refl.SetName('reflectance')
+                arr_refl.SetName('Reflectance')
                 arr_refl.SetNumberOfComponents(1)
                 arr_refl.SetNumberOfTuples(pipeline.arrays[0].shape[0])
                 pdata.GetPointData().AddArray(arr_refl)
                 arr_amp = vtk.vtkFloatArray()
-                arr_amp.SetName('amplitude')
+                arr_amp.SetName('Amplitude')
                 arr_amp.SetNumberOfComponents(1)
                 arr_amp.SetNumberOfTuples(pipeline.arrays[0].shape[0])
                 pdata.GetPointData().AddArray(arr_amp)
@@ -691,9 +700,9 @@ class SingleScan:
                 ReturnIndex = (ReturnIndex - 
                                pipeline.arrays[0]['NumberOfReturns'])
                 dsa_pdata.PointData['ReturnIndex'][:] = ReturnIndex
-                dsa_pdata.PointData['reflectance'][:] = np.float32(
+                dsa_pdata.PointData['Reflectance'][:] = np.float32(
                     pipeline.arrays[0]['Reflectance'])
-                dsa_pdata.PointData['amplitude'][:] = np.float32(
+                dsa_pdata.PointData['Amplitude'][:] = np.float32(
                     pipeline.arrays[0]['Amplitude'])
                 pdata.Modified()
                 
@@ -707,20 +716,20 @@ class SingleScan:
         # Create dataset adaptor for interacting with polydata_raw
         self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
         
-        # Add filter_flag array to polydata_raw if it's not present
-        if not 'flag_filter' in self.dsa_raw.PointData.keys():
+        # Add Classification array to polydata_raw if it's not present
+        if not 'Classification' in self.dsa_raw.PointData.keys():
             arr = vtk.vtkUnsignedCharArray()
-            arr.SetName('flag_filter')
+            arr.SetName('Classification')
             arr.SetNumberOfComponents(1)
             arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
             arr.FillComponent(0, 0)
             self.polydata_raw.GetPointData().AddArray(arr)
-            self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')
+            self.polydata_raw.GetPointData().SetActiveScalars('Classification')
         
         # Add PedigreeIds if they are not already present
-        if not 'PedigreeIds' in self.dsa_raw.PointData.keys():
+        if not 'PointId' in self.dsa_raw.PointData.keys():
             pedigreeIds = vtk.vtkTypeUInt32Array()
-            pedigreeIds.SetName('PedigreeIds')
+            pedigreeIds.SetName('PointId')
             pedigreeIds.SetNumberOfComponents(1)
             pedigreeIds.SetNumberOfTuples(self.polydata_raw.
                                           GetNumberOfPoints())
@@ -728,7 +737,7 @@ class SingleScan:
             np_pedigreeIds[:] = np.arange(self.polydata_raw.
                                           GetNumberOfPoints(), dtype='uint32')
             self.polydata_raw.GetPointData().SetPedigreeIds(pedigreeIds)
-            self.polydata_raw.GetPointData().SetActivePedigreeIds('PedigreeIds')
+            self.polydata_raw.GetPointData().SetActivePedigreeIds('PointId')
         
         self.polydata_raw.Modified()
         
@@ -746,14 +755,14 @@ class SingleScan:
         
         # Create currentFilter
         self.currentFilter = vtk.vtkThresholdPoints()
-        self.currentFilter.ThresholdBetween(-.5, .5)
+        self.currentFilter.ThresholdBetween(-.5, 2.5)
         self.currentFilter.AddInputConnection(
             self.transformFilter.GetOutputPort())
         self.currentFilter.Update()
     
     def write_scan(self):
         """
-        Write the scan to a vtp file. Thus storing flag_filter.
+        Write the scan to a vtp file. Thus storing Classification.
 
         Returns
         -------
@@ -908,9 +917,9 @@ class SingleScan:
         self.transformFilter.Update()
         self.currentFilter.Update()
     
-    def clear_flag_filter(self):
+    def clear_classification(self):
         """
-        Reset flag_filter for all points to 0
+        Reset Classification for all points to 0
 
         Returns
         -------
@@ -918,7 +927,7 @@ class SingleScan:
 
         """
         
-        self.dsa_raw.PointData['flag_filter'][:] = 0
+        self.dsa_raw.PointData['Classification'][:] = 0
         # Update currentTransform
         self.polydata_raw.Modified()
         self.transformFilter.Update()
@@ -926,7 +935,7 @@ class SingleScan:
     
     def apply_elevation_filter(self, z_max):
         """
-        Set flag_filter for all points above z_max to be 1. 
+        Set Classification for all points above z_max to be 1. 
 
         Parameters
         ----------
@@ -941,9 +950,9 @@ class SingleScan:
         
         # Get the points of the currentTransform as a numpy array
         dsa_current = dsa.WrapDataObject(self.transformFilter.GetOutput())
-        # Set the in flag_filter for points whose z-value is above z_max to 1
-        self.dsa_raw.PointData['flag_filter'][dsa_current.Points[:,2] 
-                                              > z_max] = 1
+        # Set the in Classification for points whose z-value is above z_max to 1
+        self.dsa_raw.PointData['Classification'][dsa_current.Points[:,2] 
+                                              > z_max] = 64
         # Update currentTransform
         self.polydata_raw.Modified()
         self.transformFilter.Update()
@@ -958,7 +967,7 @@ class SingleScan:
         points. The filter steps through each point in the transformed
         dataset and compares it's z value with the mean of the z-values of
         the N closest points. If the difference exceeds z_diff then set the
-        flag_filter for that point to be 2. Also, there is a shadow around the
+        Classification for that point to be 2. Also, there is a shadow around the
         base of the scanner so all points within there must be spurious. We
         filter all points within r_min
 
@@ -1012,7 +1021,7 @@ class SingleScan:
             # Check if the point is within our exclusion zone
             r = np.linalg.norm(pt[:2]-scan_pos[:2])
             if r < r_min:
-                self.dsa_raw.PointData['flag_filter'][m] = 2
+                self.dsa_raw.PointData['Classification'][m] = 65
                 continue
             
             # Get N closest points
@@ -1020,161 +1029,15 @@ class SingleScan:
             # now using the list of point_ids set the values in output to be the z
             # values of the found points
             pdata.GetPointData().GetScalars().GetTuples(pt_ids, output)
-            # If we exceed z_diff set flag_filter to 2
+            # If we exceed z_diff set Classification to 2
             if (pdata.GetPointData().GetScalars().GetTuple(m)
                 - output_np.mean())>z_diff:
-                self.dsa_raw.PointData['flag_filter'][m] = 2
+                self.dsa_raw.PointData['Classification'][m] = 65
         
         # Update currentTransform
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
-        
-    
-    def apply_snowflake_filter(self, shells):
-        """
-        Build and apply a snowflake filter from shells.
-        
-        Here we exploit the fact that snowflakes tend to be more isolated
-        than points on the snow surface and that point density decreases
-        in a predictable manner as we move away from the scanner. We construct
-        a filter on a set of radial shells around the scanner position where
-        we filter snowflakes more aggressively the closer we get to the 
-        scanner.
-
-        Parameters
-        ----------
-        shells : array-like of tuples
-            shells is an array-like set of tuples where each tuple is four
-            elements long (inner_r, outer_r, point_radius, neighbors). *_r
-            define the inner and outer radius of a halo defining shell. 
-            point_radius is radius for vtkRadiusOutlierRemoval to look at
-            (if 0, remove all points). Neighbors is number of neighbors that
-            must be within point_radius (if 0, keep all points)
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        # Clear currentFilter
-        self.currentFilter = vtk.vtkAppendPolyData()
-        self.filteredPoints = vtk.vtkAppendPolyData()
-        self.filterName = 'snowflake'
-        
-        # Loop through each shell and create appropriate pipeline connections.
-        for shell in shells:
-            # Create container for filters
-            self.filterDict[shell] = [None, None, None, None, None]
-            # Create implicit function
-            if (shell[1] is None):
-                # If the outer radius is none use a cylinder and get outside
-                self.filterDict[shell][2] = vtk.vtkCylinder()
-                self.filterDict[shell][2].SetRadius(shell[0])
-                self.filterDict[shell][2].SetCenter(self.transformFilter.
-                                                    GetTransform().
-                                                    GetPosition())
-                self.filterDict[shell][2].SetAxis(0, 0, 1)
-                # Create extractPoints
-                self.filterDict[shell][3] = vtk.vtkExtractPoints()
-                self.filterDict[shell][3].SetImplicitFunction(
-                    self.filterDict[shell][2])
-                # for just this category we want to extract outside
-                self.filterDict[shell][3].ExtractInsideOff()
-                self.filterDict[shell][3].SetInputConnection(
-                    self.transformFilter.GetOutputPort())
-            elif (shell[0]==0):
-                # if the inner radius is zero just use one cylinder
-                self.filterDict[shell][2] = vtk.vtkCylinder()
-                self.filterDict[shell][2].SetRadius(shell[1])
-                self.filterDict[shell][2].SetCenter(self.transformFilter.
-                                                    GetTransform().
-                                                    GetPosition())
-                self.filterDict[shell][2].SetAxis(0, 0, 1)
-                # Create extractPoints
-                self.filterDict[shell][3] = vtk.vtkExtractPoints()
-                self.filterDict[shell][3].SetImplicitFunction(
-                    self.filterDict[shell][2])
-                # for just this category we want to extract Inside
-                self.filterDict[shell][3].ExtractInsideOn()
-                self.filterDict[shell][3].SetInputConnection(
-                    self.transformFilter.GetOutputPort())
-            else:
-                # We need to extract a cylindrical shell of points.
-                # get points inside outer cylinder
-                self.filterDict[shell][0] = vtk.vtkCylinder()
-                self.filterDict[shell][0].SetRadius(shell[1])
-                self.filterDict[shell][0].SetCenter(self.transformFilter.
-                                                    GetTransform().
-                                                    GetPosition())
-                self.filterDict[shell][0].SetAxis(0, 0, 1)
-                # Create extractPoints
-                self.filterDict[shell][1] = vtk.vtkExtractPoints()
-                self.filterDict[shell][1].SetImplicitFunction(
-                    self.filterDict[shell][0])
-                # extract Inside
-                self.filterDict[shell][1].ExtractInsideOn()
-                self.filterDict[shell][1].SetInputConnection(
-                    self.transformFilter.GetOutputPort())
-                # Now get points outside inner cylinder
-                self.filterDict[shell][2] = vtk.vtkCylinder()
-                self.filterDict[shell][2].SetRadius(shell[0])
-                self.filterDict[shell][2].SetCenter(self.transformFilter.
-                                                    GetTransform().
-                                                    GetPosition())
-                self.filterDict[shell][2].SetAxis(0, 0, 1)
-                # Create extractPoints
-                self.filterDict[shell][3] = vtk.vtkExtractPoints()
-                self.filterDict[shell][3].SetImplicitFunction(
-                    self.filterDict[shell][2])
-                # extract outside
-                self.filterDict[shell][3].ExtractInsideOff()
-                self.filterDict[shell][3].SetInputConnection(
-                    self.filterDict[shell][1].GetOutputPort())
-            
-            # Update and get create Radius outlier removal (or not if
-            # neighbors==0 or point_radius==0)
-            self.filterDict[shell][3].Update()
-            if (shell[2]==0):
-                # If point_radius is 0 then we will discard these points
-                self.filterDict[shell][4] = vtk.vtkVertexGlyphFilter()
-                self.filterDict[shell][4].SetInputConnection(self.filterDict
-                                                             [shell][3]
-                                                             .GetOutputPort())
-                self.filterDict[shell][4].Update()
-                self.filteredPoints.AddInputConnection(self.filterDict[shell]
-                                                      [4].GetOutputPort())
-                self.filteredPoints.Update()
-                continue
-            if (shell[3]==0):
-                # If neigbors==0 then keep all points
-                self.filterDict[shell][4] = vtk.vtkVertexGlyphFilter()
-                self.filterDict[shell][4].SetInputConnection(self.filterDict
-                                                             [shell][3]
-                                                             .GetOutputPort())
-                self.filterDict[shell][4].Update()
-                self.currentFilter.AddInputConnection(self.filterDict[shell]
-                                                      [4].GetOutputPort())
-                self.currentFilter.Update()
-                continue
-            
-            # If neighbors is nonzero
-            self.filterDict[shell][4] = vtk.vtkRadiusOutlierRemoval()
-            self.filterDict[shell][4].SetRadius(shell[2])
-            self.filterDict[shell][4].SetNumberOfNeighbors(shell[3])
-            self.filterDict[shell][4].GenerateVerticesOn()
-            self.filterDict[shell][4].GenerateOutliersOn()
-            self.filterDict[shell][4].SetInputConnection(self.filterDict
-                                                         [shell][3]
-                                                         .GetOutputPort())
-            self.filterDict[shell][4].Update()
-            self.currentFilter.AddInputConnection(self.filterDict[shell][4]
-                                                  .GetOutputPort(0))
-            self.currentFilter.Update()
-            self.filteredPoints.AddInputConnection(self.filterDict[shell][4]
-                                                  .GetOutputPort(1))
-            self.filteredPoints.Update()        
     
     def apply_snowflake_filter_returnindex(self, cylinder_rad=0.025*np.sqrt(2)
                                            *np.pi/180, radial_precision=0):
@@ -1193,7 +1056,7 @@ class SingleScan:
         it.
         
         All points that this filter identifies as snowflakes are set to
-        flag_filter=2
+        Classification=65
 
         Parameters
         ----------
@@ -1283,64 +1146,28 @@ class SingleScan:
                     snowflake = False
                     break
             if snowflake:
-                self.dsa_raw.PointData['flag_filter'][self.dsa_raw.PointData[
-                    'PedigreeIds']==early_returns.GetPointData().
-                    GetPedigreeIds().GetValue(i)] = 2
-        
-        # # Build Octree Point Locator
-        # locator = vtk.vtkOctreePointLocator()
-        # self.polydata_raw.SetPointLocator(locator)
-        # locator.SetDataSet(self.polydata_raw)
-        # self.polydata_raw.BuildLocator()
-        # # # Wrap data object again to account for new locator
-        # # self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
-        
-        # # Get each point with a returnindex < -1
-        # poss_pts = self.dsa_raw.Points[self.
-        #                                dsa_raw.PointData['ReturnIndex']<-1,:]
-        # # Get the predicted spacings for those points.
-        # spacings = radial_spacing(np.linalg.norm(poss_pts, ord=2, axis=1))
-        # # If the distance is less than 2.5 m those points must be artifacts
-        # # set those spacings to 0 so they will be flagged
-        # spacings[np.isnan(spacings)] = 0
-        
-        # # Allocate variables
-        # result = vtk.vtkIdList()
-        # result.SetNumberOfIds(N+1)
-        # dist_sum = float(0.0)
-        # # For each possible point see if it's mean absolute difference from
-        # # it's N neighbors exceeds spacing * multiplier, if so set flag_filter
-        # # to 2
-        # for i in np.arange(poss_pts.shape[0]):
-        #     # Get the N+1 closest points (including the point itself)
-        #     locator.FindClosestNPoints(N+1, poss_pts[i,:], result)
-        #     # Compute the mean absolute distance
-        #     for j in np.arange(N):
-        #         dist_sum += math.sqrt(vtk.vtkMath.Distance2BetweenPoints(
-        #             self.polydata_raw.GetPoint(result.GetId(0)),
-        #             self.polydata_raw.GetPoint(result.GetId(j+1))))
-        #     # If mean absolute distance exceeds spacing*multiplier set flag
-        #     if (dist_sum/N) > (spacings[i,0] * multiplier):
-        #         self.dsa_raw.PointData['flag_filter'][result.GetId(0)] = 2
-        #     dist_sum = float(0.0)
+                self.dsa_raw.PointData['Classification'][self.dsa_raw.PointData[
+                    'PointId']==early_returns.GetPointData().
+                    GetPedigreeIds().GetValue(i)] = 65
         
         # Update currentTransform
-        self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')
+        self.polydata_raw.GetPointData().SetActiveScalars('Classification')
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
 
     def create_filter_pipeline(self, colors={0 : (0, 1, 0, 1),
-                                             1 : (1, 0, 0, 1),
-                                             2 : (1, 0, 0, 1),
-                                             3 : (0, 0, 1, 1)}):
+                                             1 : (0, 1, 0, 1),
+                                             2 : (0, 1, 0, 1),
+                                             64 : (1, 0, 0, 1),
+                                             65 : (0, 0, 1, 1)}):
         """
-        Create mapper and actor displaying points colored by flag_filter
+        Create mapper and actor displaying points colored by Classification
 
         Parameters
         ----------
         colors : dict, optional
-            Mapping from value in flag_filter to color. 
+            Mapping from value in Classification to color. 
             The default is {0 : (0, 255, 0), 1 : (255, 0, 0)}.
 
         Returns
@@ -1351,12 +1178,12 @@ class SingleScan:
         
         # Set active scalars
         self.transformFilter.GetOutput().GetPointData().SetActiveScalars(
-            'flag_filter')
+            'Classification')
         
         # Create Lookuptable
         lut = vtk.vtkLookupTable()
-        lut.SetNumberOfTableValues(len(colors))
-        lut.SetTableRange(min(colors), max(colors))
+        lut.SetNumberOfTableValues(max(colors) + 1)
+        lut.SetTableRange(0, max(colors))
         for key in colors:
             lut.SetTableValue(key, colors[key])
         lut.Build()
@@ -1467,7 +1294,7 @@ class SingleScan:
     
     def create_reflectance(self):
         """
-        Create reflectance field in polydata_raw according to RiSCAN instructs.
+        Create Reflectance field in polydata_raw according to RiSCAN instructs.
 
         Returns
         -------
@@ -1475,16 +1302,16 @@ class SingleScan:
 
         """
         
-        # If reflectance array doesn't exist, create it.
-        if not 'reflectance' in self.dsa_raw.PointData.keys():
+        # If Reflectance array doesn't exist, create it.
+        if not 'Reflectance' in self.dsa_raw.PointData.keys():
             arr = vtk.vtkFloatArray()
-            arr.SetName('reflectance')
+            arr.SetName('Reflectance')
             arr.SetNumberOfComponents(1)
             arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
             arr.FillComponent(0, 0)
             self.polydata_raw.GetPointData().AddArray(arr)
         
-            self.dsa_raw.PointData['reflectance'][:] = (np.array(self.dsa_raw.
+            self.dsa_raw.PointData['Reflectance'][:] = (np.array(self.dsa_raw.
                                                                  PointData
                                               ['intensity'], dtype=np.float32) 
                                               - 32768)/100.0
@@ -1493,7 +1320,7 @@ class SingleScan:
             self.transformFilter.Update()
             self.currentFilter.Update()
     
-    def create_reflectance_pipeline(self, v_min, v_max, field='reflectance'):
+    def create_reflectance_pipeline(self, v_min, v_max, field='Reflectance'):
         """
         create mapper and actor displaying points colored by elevation.
 
@@ -1504,7 +1331,7 @@ class SingleScan:
         v_max : float
             Upper cutoff for plotting colors.
         field : str, optional
-            Which array in pointdata to display. The default is 'reflectance'
+            Which array in pointdata to display. The default is 'Reflectance'
 
         Returns
         -------
@@ -1583,7 +1410,7 @@ class SingleScan:
                                         dist<log_bin_edges[i+1])
                 bin_centers[i] = np.median(dist[in_bin])
                 median_refl[i] = np.median(self.dsa_raw.PointData
-                                           ['reflectance'][in_bin])
+                                           ['Reflectance'][in_bin])
                 median_refl_pts[in_bin] = median_refl[i]
             
             # Set median values outside range to be edges
@@ -1592,7 +1419,7 @@ class SingleScan:
         
         
         self.dsa_raw.PointData['reflectance_radial'][:] = (
-            self.dsa_raw.PointData['reflectance'] - median_refl_pts)
+            self.dsa_raw.PointData['Reflectance'] - median_refl_pts)
         
         # Update
         self.polydata_raw.Modified()
@@ -1602,8 +1429,8 @@ class SingleScan:
     def reflectance_filter(self, threshold, radius=0,
                            field='reflectance_radial'):
         """
-        Set flag_filter values for high reflectance objects (and neighborhood
-        if desired) to 3.
+        Set Classification values for high reflectance objects (and neighborhood
+        if desired) to 66.
 
         Parameters
         ----------
@@ -1622,16 +1449,17 @@ class SingleScan:
         """
         
         # Undo previously flagged points (just reflectance, not snowflake)
-        self.dsa_raw.PointData['flag_filter'][self.dsa_raw.PointData
-                                              ['flag_filter']==3] = 0
+        self.dsa_raw.PointData['Classification'][self.dsa_raw.PointData
+                                              ['Classification']==66] = 0
         
         # Flag all points that exceed threshold and are not already flagged
-        self.dsa_raw.PointData['flag_filter'][
+        self.dsa_raw.PointData['Classification'][
             np.logical_and(self.dsa_raw.PointData[field]>threshold,
-                           self.dsa_raw.PointData['flag_filter']==0)] = 3
+                           self.dsa_raw.PointData['Classification'] in [0, 1]
+                           )] = 66
         
         # Update currentTransform
-        self.polydata_raw.GetPointData().SetActiveScalars('flag_filter')
+        self.polydata_raw.GetPointData().SetActiveScalars('Classification')
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
@@ -1669,17 +1497,8 @@ class SingleScan:
             for i in np.arange(extractPoints.GetOutput().GetNumberOfPoints()):
                 pt_id = self.transformFilter.GetOutput().FindPoint(
                     extractPoints.GetOutput().GetPoint(i))
-                self.dsa_raw.PointData['flag_filter'][pt_id] = 3
-            # Let's see if adjusting the PointData in the output of extract
-            # Points changes it in polydata_raw
-            # (extractPoints.GetOutput().GetPointData().
-            #  GetScalars('flag_filter').Fill(3))
-            # print(extractPoints.GetOutput().GetNumberOfPoints())
-            # point_map = extractPoints.GetPointMap()
-            # print(point_map)
-            # #numpy_map = vtk_to_numpy(point_map)
-            
-            
+                self.dsa_raw.PointData['Classification'][pt_id] = 66
+
             # Update currentTransform
             self.polydata_raw.Modified()
             self.transformFilter.Update()
@@ -1720,7 +1539,7 @@ class SingleScan:
         
         n_pts = pdata.GetNumberOfPoints()
         
-        if 'reflectance' in dsa_pdata.PointData.keys():
+        if 'Reflectance' in dsa_pdata.PointData.keys():
             output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z', 
                                                          'Reflectance'),
                                     'formats':(np.float32, np.float32, 
@@ -1728,7 +1547,7 @@ class SingleScan:
             output_npy['X'] = dsa_pdata.Points[:,0]
             output_npy['Y'] = dsa_pdata.Points[:,1]
             output_npy['Z'] = dsa_pdata.Points[:,2]
-            output_npy['Reflectance'] = dsa_pdata.PointData['reflectance']
+            output_npy['Reflectance'] = dsa_pdata.PointData['Reflectance']
         else:
             output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z'),
                                     'formats':(np.float32, np.float32, 
@@ -2068,7 +1887,7 @@ class Project:
         points. The filter steps through each point in the transformed
         dataset and compares it's z value with the mean of the z-values of
         the N closest points. If the difference exceeds z_diff then set the
-        flag_filter for that point to be 2. Also, there is a shadow around the
+        Classification for that point to be 2. Also, there is a shadow around the
         base of the scanner so all points within there must be spurious. We
         filter all points within r_min
 
@@ -2109,7 +1928,7 @@ class Project:
         it.
         
         All points that this filter identifies as snowflakes are set to
-        flag_filter=2
+        Classification=65
 
         Parameters
         ----------
@@ -2249,7 +2068,7 @@ class Project:
                                                                     z_max, 
                                                                 lower_threshold, 
                                                                 upper_threshold)
-            elif field=='flag_filter':
+            elif field=='Classification':
                 self.scan_dict[scan_name].create_filter_pipeline()
             else:
                 self.scan_dict[scan_name].create_reflectance_pipeline(z_min,
@@ -2263,7 +2082,7 @@ class Project:
             if field=='Elevation':
                 scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
                 renderer.AddActor2D(scalarBar)
-            elif field in ['reflectance', 'reflectance_radial']:
+            elif field in ['Reflectance', 'reflectance_radial']:
                 scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max,
                                                            name='plasma'))
                 renderer.AddActor2D(scalarBar)
@@ -3781,7 +3600,7 @@ class ScanArea:
         points. The filter steps through each point in the transformed
         dataset and compares it's z value with the mean of the z-values of
         the N closest points. If the difference exceeds z_diff then set the
-        flag_filter for that point to be 2. Also, there is a shadow around the
+        Classification for that point to be 65. Also, there is a shadow around the
         base of the scanner so all points within there must be spurious. We
         filter all points within r_min
 
