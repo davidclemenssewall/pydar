@@ -555,9 +555,9 @@ class SingleScan:
         flag_filter to 1.
     apply_snowflake_filter_2(z_diff, N, r_min):
         Filter snowflakes based on their vertical distance from nearby points.
-    apply_snowflake_filter_returnindex(N, multiplier)
-        Filter snowflakes based on their return index and distance from
-        nearby points. 
+    apply_snowflake_filter_returnindex(cylinder_rad, radial_precision)
+        Filter snowflakes based on their return index and whether they are on
+        the border of the visible region.
     clear_filter_flag
         Reset all filter_flag values to 0.
     create_normalized_heights(x, cdf)
@@ -622,7 +622,8 @@ class SingleScan:
         polys = os.listdir(self.project_path + self.project_name + '\\SCANS\\'
                            + self.scan_name + '\\POLYDATA\\')
         if read_scan:
-            reader.SetFileName(self.project_path + self.project_name + "_" +
+            reader.SetFileName(self.project_path + self.project_name + 
+                           "\\vtkfiles\\pointclouds\\" +
                            self.scan_name + '.vtp')
             reader.Update()
             self.polydata_raw = reader.GetOutput()
@@ -763,7 +764,8 @@ class SingleScan:
         # Create writer and write mesh
         writer = vtk.vtkXMLPolyDataWriter()
         writer.SetInputData(self.polydata_raw)
-        writer.SetFileName(self.project_path + self.project_name + "_" +
+        writer.SetFileName(self.project_path + self.project_name + 
+                           "\\vtkfiles\\pointclouds\\" +
                                self.scan_name + '.vtp')
         writer.Write()
         
@@ -785,7 +787,8 @@ class SingleScan:
             
         # Create Reader, read file
         reader = vtk.vtkXMLPolyDataReader()
-        reader.SetFileName(self.project_path + self.project_name + "_" +
+        reader.SetFileName(self.project_path + self.project_name + 
+                           "\\vtkfiles\\pointclouds\\" +
                            self.scan_name + '.vtp')
         reader.Update()
         self.polydata_raw = reader.GetOutput()
@@ -1415,6 +1418,7 @@ class SingleScan:
         self.mapper.SetScalarVisibility(1)
         
         # Create actor
+        #self.actor = vtk.vtkLODActor()
         self.actor = vtk.vtkActor()
         self.actor.SetMapper(self.mapper)
     
@@ -1869,6 +1873,9 @@ class Project:
         Apply the snowflake filter.
     apply_snowflake_filter_2(z_diff, N, r_min)
         Apply a snowflake filter based on z difference with nearby points.
+    apply_snowflake_filter_returnindex(cylinder_rad, radial_precision)
+        Filter snowflakes based on their return index and whether they are on
+        the border of the visible region.
     get_merged_points()
         Get the merged points as a polydata
     mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0)
@@ -1900,7 +1907,7 @@ class Project:
     """
     
     def __init__(self, project_path, project_name, poly='.1_.1_.01', 
-                 load_scans=True, read_scans=False):
+                 load_scans=True, read_scans=False, import_las=False):
         """
         Generates project, also inits singlescan objects
 
@@ -1921,6 +1928,9 @@ class Project:
             raw polydata from where RiSCAN saved it. If True, read the saved
             vtp file from in the scan area directory. Useful if we have saved
             already filtered scans. The default is False.
+        import_las: bool, optional
+            If true (and read_scan is False) read in the las file instead of
+            the polydata. The default is False.
 
         Returns
         -------
@@ -1943,20 +1953,38 @@ class Project:
             for scan_name in scan_names:
                 if os.path.isfile(self.project_path + self.project_name + '\\' 
                                   + scan_name + '.DAT'):
-                    polys = os.listdir(self.project_path + self.project_name +
-                                       '\\SCANS\\'+scan_name + '\\POLYDATA\\')
-                    match = False
-                    for name in polys:
-                        if re.search(poly + '$', name):
-                            match = True
-                            break
-                    if match:
+                    if read_scans:
                         scan = SingleScan(self.project_path, self.project_name,
                                           scan_name, poly=poly,
                                           read_scan=read_scans)
                         scan.add_sop()
                         
                         self.scan_dict.update({scan_name : scan})
+                    
+                    elif import_las:
+                        scan = SingleScan(self.project_path, self.project_name,
+                                          scan_name, poly=poly,
+                                          import_las=import_las)
+                        scan.add_sop()
+                        
+                        self.scan_dict.update({scan_name : scan})
+                    
+                    else:
+                        polys = os.listdir(self.project_path + self.project_name +
+                                           '\\SCANS\\'+scan_name + '\\POLYDATA\\')
+                        match = False
+                        for name in polys:
+                            if re.search(poly + '$', name):
+                                match = True
+                                break
+                        if match:
+                            scan = SingleScan(self.project_path, 
+                                              self.project_name,
+                                              scan_name, poly=poly,
+                                              read_scan=read_scans)
+                            scan.add_sop()
+                            
+                            self.scan_dict.update({scan_name : scan})
         
         # Load TiePointList
         self.tiepointlist = TiePointList(self.project_path, self.project_name)
@@ -2063,7 +2091,46 @@ class Project:
             self.scan_dict[scan_name].apply_snowflake_filter_2(z_diff, N,
                                                                r_min)
         self.filterName = "snowflake_2"
+    
+    def apply_snowflake_filter_returnindex(self, cylinder_rad=0.025*np.sqrt(2)
+                                           *np.pi/180, radial_precision=0):
+        """
+        Filter snowflakes using return index visible space.
         
+        Snowflakes are too small to fully occlude the laser pulse. Therefore
+        all snowflakes will be one of multiple returns (returnindex<-1).
+        However, the edges of shadows will also be one of multiple returns. To
+        address this we look at each early return and check if it's on the 
+        border of the visible area from the scanner's perspective. We do this
+        by finding all points within cylinder_rad of the point in question
+        in panorama space. Then, if the radial value of the point in question
+        is greater than any of these radial values that means the point
+        in question is on the border of the visible region and we should keep
+        it.
+        
+        All points that this filter identifies as snowflakes are set to
+        flag_filter=2
+
+        Parameters
+        ----------
+        cylinder_rad : float, optional
+            The radius of a cylinder, in radians around an early return
+            to look for last returns. The default is 0.025*np.sqrt(2)*np.pi/
+            180.
+        radial_precision : float, optional
+            If an early return's radius is within radial_precision of an
+            adjacent last return accept it as surface. The default is 0.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].apply_snowflake_filter_returnindex(
+                cylinder_rad, radial_precision)
+        self.filterName = "snowflake_returnindex"
     
     def add_transform(self, key, matrix):
         """
