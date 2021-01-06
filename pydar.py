@@ -33,6 +33,7 @@ import copy
 import json
 import pdal
 import math
+import warnings
 from vtk.util.numpy_support import vtk_to_numpy
 
 class TiePointList:
@@ -542,7 +543,7 @@ class SingleScan:
     Methods
     -------
     write_scan()
-        Writest he scan to a file to save the filters
+        Writes the scan to a file to save the filters
     read_scan()
         Reads the scan from a file, replacing the RiSCAN version.
     apply_transforms(transform_list)
@@ -586,6 +587,10 @@ class SingleScan:
     write_pdal_transformation_json(mode, input_dir, output_dir)
         Write a JSON string for PDAL such that it transforms raw scan data
         by self.transform.
+    create_dimensionality_pdal(temp_dir="", from_current=True, voxel=True,
+                               h_voxel=0.1, v_voxel=0.01, threads=8)
+        Create the four dimensionality variables from Demantke2011 and
+        Guinard2017. Uses pdal to do so.
     """
     
     def __init__(self, project_path, project_name, scan_name, poly='.1_.1_.01',
@@ -1156,6 +1161,149 @@ class SingleScan:
         self.transformFilter.Update()
         self.currentFilter.Update()
 
+    def create_dimensionality_pdal(self, temp_file="", from_current=True, 
+                                   voxel=True, h_voxel=0.1, v_voxel=0.01, 
+                                   threads=8):
+        """
+        Uses pdal functions to voxel downsample and create dimensionality
+        variables from Demantke2011 and Guinard2017.
+        
+        WARNING: This method replaces polydata_raw but does not modify
+        transforms
+        
+        If from_current, we write the current polydata-points with 
+        Classification of 0, 1, or 2 and transformed by the current transform-
+        to a pdal readable numpy file in temp_file. We then create a json
+        with the instructions to voxelize that data, run 
+        filters.optimalneighborhood and filters.covariancefeatures and make
+        the results available as numpy arrays. Finally, we replace the points
+        in polydata_raw with the matching PointId's and eliminate other points
+        in polydata_raw.
+
+        Parameters
+        ----------
+        temp_file : str, optional
+            Location to write numpy file to. If "" use self.project_path +
+            '\\temp\\temp_pdal.npy'. The default is "".
+        from_current : bool, optional
+            Whether to write the current polydata to file, if False will use
+            whichever file is currently in the temp directory. False should 
+            only be used for debugging. The default is True.
+        voxel : bool, optional
+            Whether to voxel nearest centroid downsample. The default is True.
+        h_voxel : float, optional
+            Horizontal voxel dimension in m. The default is 0.1.
+        v_voxel : float, optional
+            Vertical voxel dimension in m. The default is 0.01.
+        threads : int, optional
+            Number of threads to use in covariancefeatures
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Parse temp_file
+        if not temp_file:
+            temp_file = self.project_path + '\\temp\\temp_pdal.npy'
+         
+        if from_current:
+            # Write to temp_file
+            self.write_npy_pdal(temp_file, filename='', mode='filtered')
+        else:
+            warnings.warn("create_dimensionality_pdal is reading whichever " 
+                          + "file is in the temp directory, make sure this "
+                          + "is the desired behavior")
+        
+        # Create dimensionality in pdal and import back into python
+        json_list = []
+        # Stage for reading data
+        json_list.append(
+            {"filename": self.project_path + 'temp\\temp_pdal.npy',
+             "type": "readers.numpy"})
+        # Add voxel filter stages if desired
+        if voxel:
+            json_list.append(
+                {"type": "filters.transformation",
+                 "matrix": str(1/h_voxel) + " 0 0 0 0 " + str(1/h_voxel) + 
+                 " 0 0 0 0 " + str(1/v_voxel) + " 0 0 0 0 1"})
+            json_list.append(
+                {"type": "filters.voxelcentroidnearestneighbor",
+                 "cell": 1})
+            json_list.append({"type": "filters.transformation",
+                 "matrix": str(h_voxel) + " 0 0 0 0 " + str(h_voxel) + 
+                 " 0 0 0 0 " + str(v_voxel) + " 0 0 0 0 1"})
+        # Stage to calculate optimal NN
+        json_list.append(
+            {"type": "filters.optimalneighborhood",
+            "min_k": 8,
+            "max_k": 50})
+        # Stage to calculate dimensionality
+        json_list.append(
+            {"type": "filters.covariancefeatures",
+             "threads": threads,
+             "optimized": True})
+        # Create and execute pdal pipeline
+        json_data = json.dumps(json_list, indent=4)
+        pipeline = pdal.Pipeline(json_data)
+        _ = pipeline.execute()
+        
+        # Update Contents of PolydataRaw with the filter output
+        arr = pipeline.get_arrays()
+        # If we downsampled then we will change polydata raw
+        if voxel:
+            # Create PedigreeIds array to do selection
+            pedigreeIds = vtk.vtkTypeUInt32Array()
+            pedigreeIds.SetNumberOfComponents(1)
+            pedigreeIds.SetNumberOfTuples(arr[0].size)
+            np_pedigreeIds = vtk_to_numpy(pedigreeIds)
+            np_pedigreeIds[:] = arr[0]['PointId']
+            pedigreeIds.Modified()
+            
+            # Selection points from original polydata_raw by PedigreeId
+            selectionNode = vtk.vtkSelectionNode()
+            selectionNode.SetFieldType(1) # we want to select points
+            selectionNode.SetContentType(2) # 2 corresponds to pedigreeIds
+            selectionNode.SetSelectionList(pedigreeIds)
+            selection = vtk.vtkSelection()
+            selection.AddNode(selectionNode)
+            extractSelection = vtk.vtkExtractSelection()
+            extractSelection.SetInputData(0, self.polydata_raw)
+            extractSelection.SetInputData(1, selection)
+            extractSelection.Update()
+            pdata = extractSelection.GetOutput()
+            dsa_pdata = dsa.WrapDataObject(pdata)
+            
+            # vtk automatically sorts points by pedigree id, so apply same 
+            # sorting to our new dimensions and update
+            sort_inds = np.argsort(arr[0]['PointId'])
+            dims = ['Linearity', 'Planarity', 'Scattering', 'Verticality']
+            for dim in dims:
+                arr_vtk = vtk.vtkFloatArray()
+                arr_vtk.SetName(dim)
+                arr_vtk.SetNumberOfComponents(1)
+                arr_vtk.SetNumberOfTuples(pdata.GetNumberOfPoints())
+                pdata.GetPointData().AddArray(arr_vtk)
+                dsa_pdata.PointData[dim][:] = np.float32(arr[0][dim]
+                                                         [sort_inds])
+                
+            pdata.Modified()
+            
+            # Update polydata_raw
+            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            vertexGlyphFilter.SetInputData(pdata)
+            vertexGlyphFilter.Update()
+            self.polydata_raw = vertexGlyphFilter.GetOutput()
+            
+            # Update filters
+            self.transformFilter.SetInputData(self.polydata_raw)
+            self.transformFilter.Update()
+            self.currentFilter.Update()
+        else:
+            raise NotImplementedError("create_dimensionality_pdal must have"
+                                      + " voxel=True for now")
+        
     def create_filter_pipeline(self, colors={0 : (0, 1, 0, 1),
                                              1 : (0, 1, 0, 1),
                                              2 : (0, 1, 0, 1),
@@ -1539,22 +1687,42 @@ class SingleScan:
         
         n_pts = pdata.GetNumberOfPoints()
         
-        if 'Reflectance' in dsa_pdata.PointData.keys():
-            output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z', 
-                                                         'Reflectance'),
-                                    'formats':(np.float32, np.float32, 
-                                               np.float32, np.float32)})
-            output_npy['X'] = dsa_pdata.Points[:,0]
-            output_npy['Y'] = dsa_pdata.Points[:,1]
-            output_npy['Z'] = dsa_pdata.Points[:,2]
-            output_npy['Reflectance'] = dsa_pdata.PointData['Reflectance']
-        else:
-            output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z'),
-                                    'formats':(np.float32, np.float32, 
-                                               np.float32)})
-            output_npy['X'] = dsa_pdata.Points[:,0]
-            output_npy['Y'] = dsa_pdata.Points[:,1]
-            output_npy['Z'] = dsa_pdata.Points[:,2]
+        # Create numpy output
+        names = tuple(dsa_pdata.PointData.keys() + ['X', 'Y', 'Z'])
+        formats = []
+        for value in dsa_pdata.PointData:
+            formats.append(value.dtype)
+        formats.append(np.float32)
+        formats.append(np.float32)
+        formats.append(np.float32)
+        formats = tuple(formats)
+        output_npy = np.zeros(n_pts, dtype={'names':names, 'formats':formats})
+        for name in names:
+            if name=='X':
+                output_npy['X'] = dsa_pdata.Points[:,0]
+            elif name=='Y':
+                output_npy['Y'] = dsa_pdata.Points[:,1]
+            elif name=='Z':
+                output_npy['Z'] = dsa_pdata.Points[:,2]
+            else:
+                output_npy[name] = dsa_pdata.PointData[name]
+        
+        # if 'Reflectance' in dsa_pdata.PointData.keys():
+        #     output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z', 
+        #                                                  'Reflectance'),
+        #                             'formats':(np.float32, np.float32, 
+        #                                        np.float32, np.float32)})
+        #     output_npy['X'] = dsa_pdata.Points[:,0]
+        #     output_npy['Y'] = dsa_pdata.Points[:,1]
+        #     output_npy['Z'] = dsa_pdata.Points[:,2]
+        #     output_npy['Reflectance'] = dsa_pdata.PointData['Reflectance']
+        # else:
+        #     output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z'),
+        #                             'formats':(np.float32, np.float32, 
+        #                                        np.float32)})
+        #     output_npy['X'] = dsa_pdata.Points[:,0]
+        #     output_npy['Y'] = dsa_pdata.Points[:,1]
+        #     output_npy['Z'] = dsa_pdata.Points[:,2]
         
         if filename is None:
             filename = self.project_name + '_' + self.scan_name
