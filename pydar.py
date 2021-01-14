@@ -35,6 +35,8 @@ import pdal
 import math
 import warnings
 from vtk.util.numpy_support import vtk_to_numpy
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 
 class TiePointList:
     """Class to contain tiepointlist object and methods.
@@ -536,9 +538,35 @@ class SingleScan:
         64: High Elevation (Classified by elevation_filter)
         65: Snowflake (Classified by returnindex filter)
         66: Reflectance (high reflectance points and neighborhoods if desired)
-        
+        67: Pole
+        68: Human
+        69: Snowmobile
+        70: Road
+        71: Flag
     dsa_raw : vtk.numpy_interface.dataset_adapter.Polydata
         dataset adaptor object for interacting with polydata_raw
+    man_class : pandas dataframe
+        Dataframe containing information on manually classified points. The
+        dataframe is keyed on PointId and contains: 
+            X, Y, Z: position of the point in the scanner's own coordinate 
+                system
+            trans_XX: transformation matrix where the point was selected. To
+                simplify I/O we break into the 12 components 00-11. We don't
+                need 16 because the last row of a rigid transformation is
+                0 0 0 1.
+            Linearity, Planarity, Scattering, Verticality: the four
+                Demantke2011 dimensionalities in the reference frame 
+                corresponding to that transformation matrix. 
+            elev: The vertical position of the point in the given reference 
+                frame
+            dist: The distance from the scanner
+            Amplitude: measures of the pulse quality
+            Classification: Manual classification (number)
+        The expected usage here is that the scan was orginally loaded from a
+        LAS file and that the PointId field created on that original loading
+        is the same as the PointId's of the points we add to this dataframe.
+        Doing otherwise may cause duplicate points which could cause errors
+        later on.
     
     Methods
     -------
@@ -546,6 +574,8 @@ class SingleScan:
         Writes the scan to a file to save the filters
     read_scan()
         Reads the scan from a file, replacing the RiSCAN version.
+    load_man_class()
+        Load the manual classification table
     apply_transforms(transform_list)
         updates transform to be concatenation of transforms in transform list.
     add_sop()
@@ -570,6 +600,8 @@ class SingleScan:
         the border of the visible region.
     clear_classification
         Reset all Classification values to 0.
+    update_man_class(pdata, classification)
+        Update the points in man_class with the points in pdata.
     create_normalized_heights(x, cdf)
         Use normalize function to create normalized heights in new PointData
         array.
@@ -775,6 +807,16 @@ class SingleScan:
 
         """
         
+        # If the write directory doesn't exist, create it
+        if not os.path.isdir(self.project_path + self.project_name + 
+                             "\\vtkfiles"):
+            os.mkdir(self.project_path + self.project_name + 
+                     "\\vtkfiles")
+        if not os.path.isdir(self.project_path + self.project_name + 
+                             "\\vtkfiles\\pointclouds"):
+            os.mkdir(self.project_path + self.project_name + 
+                     "\\vtkfiles\\pointclouds")
+        
         # Create writer and write mesh
         writer = vtk.vtkXMLPolyDataWriter()
         writer.SetInputData(self.polydata_raw)
@@ -813,6 +855,118 @@ class SingleScan:
         self.transformFilter.SetInputData(self.polydata_raw)
         self.transformFilter.Update()
         self.currentFilter.Update()
+    
+    def load_man_class(self):
+        """
+        Load the man_class dataframe. Create if it does not exist.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Check if directory for manual classifications exists and create
+        # if it doesn't.
+        create_df = False
+        if os.path.isdir(self.project_path + self.project_name + 
+                         '\\manualclassification'):
+            # Check if file exists
+            if os.path.isfile(self.project_path + self.project_name + 
+                              '\\manualclassification\\' + self.scan_name +
+                              '.parquet'):
+                self.man_class = pd.read_parquet(self.project_path + 
+                                                 self.project_name + 
+                                                 '\\manualclassification\\' + 
+                                                 self.scan_name + '.parquet',
+                                                 engine="pyarrow")
+            # otherwise create dataframe
+            else:
+                create_df = True
+        else:
+            # Create directory and dataframe
+            create_df = True
+            os.mkdir(self.project_path + self.project_name + 
+                     '\\manualclassification')
+        
+        if create_df:
+            self.man_class = pd.DataFrame({'X':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Y':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Z':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'trans_00':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_01':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_02':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_03':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_04':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_05':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_06':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_07':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_08':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_09':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_10':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'trans_11':
+                                           pd.Series([], 
+                                                     dtype=np.double),
+                                           'Linearity':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Planarity':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Scattering':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Verticality':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Density':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Anisotropy':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Elevation':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'dist':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Amplitude':
+                                           pd.Series([], 
+                                                     dtype=np.float32),
+                                           'Classification':
+                                           pd.Series([], 
+                                                     dtype=np.uint8)})
+            self.man_class.index.name = 'PointId'
+        
     
     def add_tranform(self, key, matrix):
         """
@@ -938,6 +1092,117 @@ class SingleScan:
         self.transformFilter.Update()
         self.currentFilter.Update()
     
+    def update_man_class(self, pdata, classification):
+        """
+        Update the points in man_class with the points in pdata.
+        
+        See documentation under SingleScan for description of man_class
+
+        Parameters
+        ----------
+        pdata : vtkPolyData
+            PolyData containing the points to add to man_class.
+        classification : uint8
+            The classification code of the points. See SingleScan 
+            documentation for mapping from code to text
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Inverse Transform to get points in Scanners Own Coordinate System
+        invTransform = vtk.vtkTransformFilter()
+        invTransform.SetTransform(self.transform.GetInverse())
+        invTransform.SetInputData(pdata)
+        invTransform.Update()
+        pdata_inv = invTransform.GetOutput()
+        
+        # Create a dataframe from selected points
+        dsa_pdata = dsa.WrapDataObject(pdata_inv)
+        n_pts = pdata_inv.GetNumberOfPoints()
+        df_trans = pd.DataFrame({'X' : dsa_pdata.Points[:,0],
+                                 'Y' : dsa_pdata.Points[:,1],
+                                 'Z' : dsa_pdata.Points[:,2],
+                                 'trans_00' : (self.transform.GetMatrix()
+                                               .GetElement(0, 0) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_01' : (self.transform.GetMatrix()
+                                               .GetElement(0, 1) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_02' : (self.transform.GetMatrix()
+                                               .GetElement(0, 2) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_03' : (self.transform.GetMatrix()
+                                               .GetElement(0, 3) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_04' : (self.transform.GetMatrix()
+                                               .GetElement(1, 0) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_05' : (self.transform.GetMatrix()
+                                               .GetElement(1, 1) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_06' : (self.transform.GetMatrix()
+                                               .GetElement(1, 2) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_07' : (self.transform.GetMatrix()
+                                               .GetElement(1, 3) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_08' : (self.transform.GetMatrix()
+                                               .GetElement(2, 0) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_09' : (self.transform.GetMatrix()
+                                               .GetElement(2, 1) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_10' : (self.transform.GetMatrix()
+                                               .GetElement(2, 2) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'trans_11' : (self.transform.GetMatrix()
+                                               .GetElement(2, 3) * np.ones(
+                                                   n_pts, dtype=np.double)),
+                                 'Linearity' : (dsa_pdata
+                                                .PointData['Linearity']),
+                                 'Planarity' : (dsa_pdata
+                                                .PointData['Planarity']),
+                                 'Scattering' : (dsa_pdata
+                                                .PointData['Scattering']),
+                                 'Verticality' : (dsa_pdata
+                                                .PointData['Verticality']),
+                                 'Density' : (dsa_pdata
+                                                .PointData['Density']),
+                                 'Anisotropy' : (dsa_pdata
+                                                .PointData['Anisotropy']),
+                                 'Elevation' : (dsa_pdata
+                                                .PointData['Elevation']),
+                                 'dist' : np.sqrt(np.sum(
+                                     np.square(dsa_pdata.Points), axis=1)),
+                                 'Amplitude' : (dsa_pdata
+                                                .PointData['Amplitude']),
+                                 'Classification' : classification * np.ones(
+                                     n_pts, dtype=np.uint8)
+                                 },
+                                index=dsa_pdata.PointData['PointId'], 
+                                copy=True)
+        df_trans.index.name = 'PointId'
+        
+        # Join the dataframe with the existing one, overwrite points if we
+        # have repicked some points.
+        self.man_class = df_trans.combine_first(self.man_class)
+        
+        # drop columns that we don't have. Because they show up as 
+        # vtkNoneArray their datatype is object.
+        self.man_class = self.man_class.select_dtypes(exclude=['object'])
+        
+        # Write to file to save
+        self.man_class.to_parquet(self.project_path + 
+                                                 self.project_name + 
+                                                 '\\manualclassification\\' + 
+                                                 self.scan_name + '.parquet',
+                                                 engine="pyarrow", 
+                                                 compression=None)
+        
+    
     def apply_elevation_filter(self, z_max):
         """
         Set Classification for all points above z_max to be 1. 
@@ -970,7 +1235,7 @@ class SingleScan:
         Here we exploit the fact that snowflakes (and for that matter power
         cables and some other human objects) are higher than their nearby
         points. The filter steps through each point in the transformed
-        dataset and compares it's z value with the mean of the z-values of
+        dataset and compares its z value with the mean of the z-values of
         the N closest points. If the difference exceeds z_diff then set the
         Classification for that point to be 2. Also, there is a shadow around the
         base of the scanner so all points within there must be spurious. We
@@ -1243,7 +1508,8 @@ class SingleScan:
         json_list.append(
             {"type": "filters.covariancefeatures",
              "threads": threads,
-             "optimized": True})
+             "optimized": True,
+             "feature_set": "all"})
         # Create and execute pdal pipeline
         json_data = json.dumps(json_list, indent=4)
         pipeline = pdal.Pipeline(json_data)
@@ -1278,7 +1544,8 @@ class SingleScan:
             # vtk automatically sorts points by pedigree id, so apply same 
             # sorting to our new dimensions and update
             sort_inds = np.argsort(arr[0]['PointId'])
-            dims = ['Linearity', 'Planarity', 'Scattering', 'Verticality']
+            dims = ['Linearity', 'Planarity', 'Scattering', 'Verticality',
+                    'Density', 'Anisotropy']
             for dim in dims:
                 arr_vtk = vtk.vtkFloatArray()
                 arr_vtk.SetName(dim)
@@ -1295,6 +1562,7 @@ class SingleScan:
             vertexGlyphFilter.SetInputData(pdata)
             vertexGlyphFilter.Update()
             self.polydata_raw = vertexGlyphFilter.GetOutput()
+            self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
             
             # Update filters
             self.transformFilter.SetInputData(self.polydata_raw)
@@ -1304,11 +1572,19 @@ class SingleScan:
             raise NotImplementedError("create_dimensionality_pdal must have"
                                       + " voxel=True for now")
         
-    def create_filter_pipeline(self, colors={0 : (0, 1, 0, 1),
-                                             1 : (0, 1, 0, 1),
-                                             2 : (0, 1, 0, 1),
-                                             64 : (1, 0, 0, 1),
-                                             65 : (0, 0, 1, 1)}):
+    def create_filter_pipeline(self,colors={0 : (153/255, 153/255, 153/255, 1),
+                                            1 : (153/255, 153/255, 153/255, 1),
+                                            2 : (55/255, 126/255, 184/255, 1),
+                                            6 : (166/255, 86/255, 40/255, 1),
+                                            7 : (255/255, 255/255, 51/255, 1),
+                                            64: (255/255, 255/255, 51/255, 1),
+                                            65: (255/255, 255/255, 51/255, 1),
+                                            66: (255/255, 255/255, 51/255, 1),
+                                            67: (228/255, 26/255, 28/255, 1),
+                                            68: (77/255, 175/255, 74/255, 1),
+                                            69: (247/255, 129/255, 191/255, 1),
+                                            70: (152/255, 78/255, 163/255, 1),
+                                            71: (255/255, 127/255, 0/255, 1)}):
         """
         Create mapper and actor displaying points colored by Classification
 
@@ -3463,6 +3739,10 @@ class ScanArea:
         The order of the list determines the order that actions are performed.
     difference_dict : dict
         Dictionary containing the differences between pairs of scans
+    classifier : object
+        scikit learn classifier object with predict method
+    classifier_list : list
+        List of variable names that the classifier expects
         
     Methods
     -------
@@ -3495,7 +3775,8 @@ class ScanArea:
     """
     
     def __init__(self, project_path, project_names=[], registration_list=[],
-                 poly='.1_.1_.01', load_scans=True, read_scans=False):
+                 poly='.1_.1_.01', load_scans=True, read_scans=False,
+                 import_las=False):
         """
         init stores project_path and initializes project_dict
 
@@ -3536,12 +3817,13 @@ class ScanArea:
         
         for project_name in project_names:
             self.add_project(project_name, load_scans=load_scans,
-                             read_scans=read_scans, poly=poly)
+                             read_scans=read_scans, poly=poly, 
+                             import_las=import_las)
             
         self.registration_list = copy.deepcopy(registration_list)
     
     def add_project(self, project_name, poly='.1_.1_.01', load_scans=True, 
-                    read_scans=False):
+                    read_scans=False, import_las=False):
         """
         Add a new project to the project_dict (or overwrite existing project)
 
@@ -3571,7 +3853,8 @@ class ScanArea:
         self.project_dict[project_name] = Project(self.project_path, 
                                                   project_name, load_scans=
                                                   load_scans, read_scans=
-                                                  read_scans, poly=poly)
+                                                  read_scans, poly=poly,
+                                                  import_las=import_las)
     
     def compare_reflectors(self, project_name_0, project_name_1, 
                            delaunay=False, mode='dist', 

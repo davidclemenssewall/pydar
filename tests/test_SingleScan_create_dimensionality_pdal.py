@@ -30,11 +30,11 @@ ss.apply_transforms(['sop'])
 
 # %% Test function
 
-pipeline = ss.create_dimensionality_pdal()
+ss.create_dimensionality_pdal()
 
 # %% Display
 
-dim = 'Verticality'
+dim = 'Scattering'
 
 ss.create_reflectance_pipeline(0, 1, field=dim)
 
@@ -52,4 +52,3 @@ iren.Initialize()
 renderWindow.Render()
 iren.Start()
 
-    
