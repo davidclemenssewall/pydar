@@ -623,6 +623,8 @@ class SingleScan:
                                h_voxel=0.1, v_voxel=0.01, threads=8)
         Create the four dimensionality variables from Demantke2011 and
         Guinard2017. Uses pdal to do so.
+    add_dist()
+        Add distance from scanner to polydata_raw
     """
     
     def __init__(self, project_path, project_name, scan_name, poly='.1_.1_.01',
@@ -2054,6 +2056,28 @@ class SingleScan:
             
         else:
             raise UserWarning(self.scan_name + ' not found in ' + input_dir)
+    
+    def add_dist(self):
+        """
+        Add distance array to polydata_raw
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Add dist field to scan
+        arr = vtk.vtkFloatArray()
+        arr.SetName('dist')
+        arr.SetNumberOfComponents(1)
+        arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
+        self.polydata_raw.GetPointData().AddArray(arr)
+        self.dsa_raw.PointData['dist'][:] = np.sqrt(np.sum(np.square(
+            self.dsa_raw.Points), axis=1), dtype=np.float32)
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
 
 
 class Project:
@@ -3739,10 +3763,6 @@ class ScanArea:
         The order of the list determines the order that actions are performed.
     difference_dict : dict
         Dictionary containing the differences between pairs of scans
-    classifier : object
-        scikit learn classifier object with predict method
-    classifier_list : list
-        List of variable names that the classifier expects
         
     Methods
     -------
@@ -4550,6 +4570,146 @@ class ScanArea:
 
         """
     
+
+class Classifier:
+    """
+    Manage multiple scans from the same area.
+    
+    ...
+    
+    Attributes
+    ----------
+    df_labeled : pandas dataframe
+        A dataframe where each row is a classified point. Must contain column
+        'Classification'.
+    classifier : object
+        A classifier, initially probably 
+        sklearn.ensemble.RandomForestClassifer
+    feature_list : list
+        List of features used to train classifier. Need to save for prediction
+        step.
+        
+    Methods
+    -------
+    
+    
+    """
+    
+    def __init__(self, df_labeled=pd.DataFrame()):
+        """
+        Create object, can add df_labeled at this point if desired
+
+        Parameters
+        ----------
+        df_labeled : pandas dataframe, optional
+            A dataframe where each row is a classified point. Must contain 
+            column 'Classification'. If none is provided an empty one will be 
+            created. The default is pd.DataFrame().
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.df_labeled=df_labeled
+    
+    def init_randomforest(self, n_jobs=-1, **kwargs):
+        """
+        Initialize a RandomForestClassifer.
+
+        Parameters
+        ----------
+        n_jobs : int, optional
+            Number of . The default is -1.
+        **kwargs : dict
+            Additional keyword arguments to RandomForestClassifier.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.classifier = RandomForestClassifier(n_jobs=n_jobs, **kwargs)
+    
+    def train_classifier(self, feature_list, n_ground_multiplier=3, 
+                         strat_by_class=True, **kwargs):
+        """
+        Train classifier, kwargs go to train_test_split
+
+        Parameters
+        ----------
+        feature_list : list
+            List of feature names to use as independent variables. Must be
+            columns in df_labeled.
+        n_ground_multiplier : float
+            We have many more labeled ground points than others. So that
+            training doesn't take forever we only take n times as many ground
+            points as all other classes combined. The default is 3.
+        strat_by_class : bool, optional
+            Whether or not to stratify the split by 'Classification'. The 
+            default is True.
+        **kwargs : dict
+            Additional kwargs for train_test_split.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.feature_list = feature_list
+        
+        # Downsample ground points
+        n = int(n_ground_multiplier 
+                * (self.df_labeled['Classification']!=2).sum())
+        df_sub_list = []
+        for category in self.df_labeled['Classification'].unique():
+            if category==2:
+                df_sub_list.append(self.df_labeled[self.df_labeled[
+                    'Classification']==category].sample(n=n))
+            else:
+                df_sub_list.append(self.df_labeled[
+                    self.df_labeled['Classification']==category])
+        df_sub = pd.concat(df_sub_list)
+        
+        # Split labeled data
+        if strat_by_class:
+            X_train, X_test, y_train, y_test = train_test_split(df_sub[
+                feature_list], df_sub.Classification, 
+                stratify=df_sub.Classification, **kwargs)
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(df_sub[
+                feature_list], df_sub.Classification, **kwargs)
+        
+        # Train Classifier
+        self.classifier.fit(X_train, y_train)
+    
+    def classify_pdata(self, pdata):
+        """
+        Apply classifier to classify points in the pdata. Pdata's PointData
+        must contain all fields in feature_list
+
+        Parameters
+        ----------
+        pdata : vtkPolyData
+            vtkPolyData object to classify points in.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        X_points = np.zeros((pdata.GetNumberOfPoints(), 
+                             len(self.feature_list)), dtype=np.float32)
+        dsa_pdata = dsa.WrapDataObject(pdata)
+        for i in range(len(self.feature_list)):
+            X_points[:, i] = dsa_pdata.PointData[self.feature_list[i]]
+        dsa_pdata.PointData['Classification'][:] = self.classifier.predict(
+            X_points)
+        pdata.Modified()
 
 def mplcmap_to_vtkLUT(vmin, vmax, name='rainbow', N=256, color_under='fuchsia', 
                       color_over='white'):

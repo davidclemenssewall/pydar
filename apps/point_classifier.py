@@ -13,6 +13,7 @@ Created on Thu Jan  7 10:48:45 2021
 
 import sys
 import vtk
+import pandas as pd
 from PyQt5 import QtCore, QtGui
 from PyQt5 import Qt
 from collections import namedtuple
@@ -122,6 +123,25 @@ class MainWindow(Qt.QMainWindow):
         self.class_button.setEnabled(0)
         opt_layout.addWidget(self.class_button)
         
+        # Which fields to use for classifier
+        feature_list = ['Linearity', 'Planarity', 'Scattering', 'Verticality',
+                        'Density', 'Elevation', 'dist']
+        self.feature_check_dict = {}
+        feature_group_box = Qt.QGroupBox()
+        feature_layout = Qt.QVBoxLayout()
+        for feature in feature_list:
+            self.feature_check_dict[feature] = Qt.QCheckBox(feature)
+            self.feature_check_dict[feature].setChecked(0)
+            feature_layout.addWidget(self.feature_check_dict[feature])
+        feature_group_box.setLayout(feature_layout)
+        opt_layout.addWidget(feature_group_box)
+        
+        # Train Classifier and Apply Classifier buttons
+        train_button = Qt.QPushButton("Train Classifier")
+        opt_layout.addWidget(train_button)
+        apply_button = Qt.QPushButton("Classify")
+        opt_layout.addWidget(apply_button)
+        
         # Populate the main layout
         main_layout.addLayout(vis_layout)
         main_layout.addLayout(opt_layout)
@@ -139,6 +159,8 @@ class MainWindow(Qt.QMainWindow):
             self.on_scan_checkbox_changed)
         clear_button.clicked.connect(self.on_clear_button_click)
         self.class_button.clicked.connect(self.on_class_button_click)
+        train_button.clicked.connect(self.on_train_button_click)
+        apply_button.clicked.connect(self.on_apply_button_click)
         self.field_selector.currentTextChanged.connect(
             self.on_field_selector_changed)
         self.v_min.editingFinished.connect(self.on_v_edit)
@@ -308,11 +330,16 @@ class MainWindow(Qt.QMainWindow):
         self.selected_poly_dict.clear()
         
         for scan_name in self.project.scan_dict:
-            # Create an elevation filter linked to currentFilter
+            # Create an elevation filter linked to transformFilter
             self.elev_filt_dict[scan_name] = vtk.vtkSimpleElevationFilter()
             self.elev_filt_dict[scan_name].SetInputConnection(
-                self.project.scan_dict[scan_name].currentFilter.
+                self.project.scan_dict[scan_name].transformFilter.
                 GetOutputPort())
+            # We vtkSimpleElevationFilter will overwrite the active scalars
+            # so let's set active scalars to a dummy array
+            (self.elev_filt_dict[scan_name].GetInput().GetPointData().
+             SetActiveScalars("elev"))
+            self.elev_filt_dict[scan_name].GetInput().Modified()
             self.elev_filt_dict[scan_name].Update()
             
             # Create mapper and set scalar range
@@ -428,6 +455,71 @@ class MainWindow(Qt.QMainWindow):
         self.clear_selection()
         self.class_button.setEnabled(0)
     
+    def on_train_button_click(self, s):
+        """
+        Train a classifier using all of the manually classified points.
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # First we need to pull all of the manually classified points
+        df_list = []
+        for scan_name in self.project.scan_dict:
+            df_list.append(self.project.scan_dict[scan_name].man_class)
+        df = pd.concat(df_list, ignore_index=True)
+        
+        # Get feature list to train on
+        feature_list = []
+        for feature in self.feature_check_dict:
+            if self.feature_check_dict[feature].isChecked():
+                feature_list.append(feature)
+        
+        # Init and train classifier, just use default settings for now
+        # and hardcode feature list
+        self.classifier = pydar.Classifier(df_labeled=df)
+        self.classifier.init_randomforest()
+        self.classifier.train_classifier(feature_list)
+    
+    def on_apply_button_click(self, s):
+        """
+        Apply the classifier to all scans in the project.
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # We just care about displaying here, so we want to apply to the
+        # elevation filter output
+        for scan_name in self.elev_filt_dict:
+            # create dist field
+            self.project.scan_dict[scan_name].add_dist()
+            (self.elev_filt_dict[scan_name].GetInput().GetPointData().
+             SetActiveScalars("elev"))
+            self.elev_filt_dict[scan_name].Update()
+            pdata = self.elev_filt_dict[scan_name].GetOutput()
+            self.classifier.classify_pdata(pdata)
+        
+        # Update renderwindow
+        if self.field_selector.currentText()=='Classification':
+            self.vtkWidget.GetRenderWindow().Render()
+        else:
+            self.field_selector.setCurrentText('Classification')
+    
     def on_field_selector_changed(self, text):
         """
         When the field selector is changed, change the rendering to display
@@ -445,12 +537,58 @@ class MainWindow(Qt.QMainWindow):
         """
         
         if text=='Classification':
-            raise NotImplementedError('Cannot display classification yet')
+            #raise NotImplementedError('Cannot display classification yet')
+            # Create LookupTable
+            colors={0 : (153/255, 153/255, 153/255, 1),
+                    1 : (153/255, 153/255, 153/255, 1),
+                    2 : (55/255, 126/255, 184/255, 1),
+                    6 : (166/255, 86/255, 40/255, 1),
+                    7 : (255/255, 255/255, 51/255, 1),
+                    64: (255/255, 255/255, 51/255, 1),
+                    65: (255/255, 255/255, 51/255, 1),
+                    66: (255/255, 255/255, 51/255, 1),
+                    67: (228/255, 26/255, 28/255, 1),
+                    68: (77/255, 175/255, 74/255, 1),
+                    69: (247/255, 129/255, 191/255, 1),
+                    70: (152/255, 78/255, 163/255, 1),
+                    71: (255/255, 127/255, 0/255, 1)}
+            lut = vtk.vtkLookupTable()
+            lut.SetNumberOfTableValues(max(colors) + 1)
+            lut.SetTableRange(0, max(colors))
+            for key in colors:
+                lut.SetTableValue(key, colors[key])
+            lut.Build()
+            
+            # Apply to each scan
+            for scan_name in self.elev_filt_dict:
+                (self.elev_filt_dict[scan_name].GetOutput().GetPointData().
+                  SetActiveScalars(text))
+                self.elev_filt_dict[scan_name].GetOutput().Modified()
+                self.mapper_dict[scan_name].SetLookupTable(lut)
+                self.mapper_dict[scan_name].SetScalarRange(min(colors), 
+                                                            max(colors))
+                self.mapper_dict[scan_name].SetScalarVisibility(1)
+                self.mapper_dict[scan_name].SetColorModeToMapScalars()
+            
+            # Disable v_min and v_max
+            self.v_min.setEnabled(0)
+            self.v_max.setEnabled(0)
         else:
             for scan_name in self.elev_filt_dict:
                 (self.elev_filt_dict[scan_name].GetOutput().GetPointData().
                  SetActiveScalars(text))
                 self.elev_filt_dict[scan_name].GetOutput().Modified()
+                self.mapper_dict[scan_name].ScalarVisibilityOn()
+                self.mapper_dict[scan_name].SetLookupTable(
+                    pydar.mplcmap_to_vtkLUT(float(self.v_min.text()),
+                                            float(self.v_max.text())))
+                self.mapper_dict[scan_name].SetScalarRange(
+                    float(self.v_min.text()), float(self.v_max.text()))
+            
+            # Enable v_min and v_max
+            self.v_min.setEnabled(1)
+            self.v_max.setEnabled(1)
+        
         self.vtkWidget.GetRenderWindow().Render()
     
     def on_v_edit(self):
