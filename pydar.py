@@ -92,6 +92,11 @@ class TiePointList:
                                      '\\tiepoints.csv',
                                      index_col=0, usecols=[0,1,2,3])
         self.tiepoints.sort_index(inplace=True)
+        # Ignore any tiepoints that start with t
+        for label in self.tiepoints.index:
+            if label[0]=='t':
+                self.tiepoints.drop(label, inplace=True)
+        
         # Add the identity matrix to the transform list
         self.transforms = {('identity', '') : ([], np.eye(4), np.NaN)}
         
@@ -303,8 +308,9 @@ class TiePointList:
             if np.isclose(1, np.linalg.det(X)):
                 R = X
             elif np.isclose(-1, np.linalg.det(X)):
-                V_prime = np.array([[Vh[0,:]], [Vh[1,:]], [-1*Vh[2,:]]]).T
+                V_prime = np.array([Vh[0,:], Vh[1,:], -1*Vh[2,:]]).T
                 R = np.matmul(V_prime, U.T)
+                print(R)
         elif (mode=='Yaw'):
             # If we are locking the x-y plane we can modify the above process
             # to just find a rotation in 2 dimensions
@@ -970,7 +976,7 @@ class SingleScan:
             self.man_class.index.name = 'PointId'
         
     
-    def add_tranform(self, key, matrix):
+    def add_transform(self, key, matrix):
         """
         Adds a new transform to the transform_dict
 
@@ -1009,7 +1015,7 @@ class SingleScan:
         
         trans = np.genfromtxt(self.project_path + self.project_name + '\\' 
                               + self.scan_name + '.DAT', delimiter=' ')
-        self.add_tranform('sop', trans)
+        self.add_transform('sop', trans)
         
     def add_z_offset(self, z_offset):
         """
@@ -1028,7 +1034,7 @@ class SingleScan:
         
         trans = np.eye(4)
         trans[2, 3] = z_offset
-        self.add_tranform('z_offset', trans)
+        self.add_transform('z_offset', trans)
         
     def get_polydata(self):
         """
@@ -1181,6 +1187,10 @@ class SingleScan:
                                      np.square(dsa_pdata.Points), axis=1)),
                                  'Amplitude' : (dsa_pdata
                                                 .PointData['Amplitude']),
+                                 'HorizontalClosestPoint' : (dsa_pdata
+                                    .PointData['HorizontalClosestPoint']),
+                                 'VerticalClosestPoint' : (dsa_pdata
+                                    .PointData['VerticalClosestPoint']),
                                  'Classification' : classification * np.ones(
                                      n_pts, dtype=np.uint8)
                                  },
@@ -1473,7 +1483,7 @@ class SingleScan:
         
         # Parse temp_file
         if not temp_file:
-            temp_file = self.project_path + '\\temp\\temp_pdal.npy'
+            temp_file = self.project_path + 'temp\\temp_pdal.npy'
          
         if from_current:
             # Write to temp_file
@@ -2163,6 +2173,10 @@ class Project:
     apply_snowflake_filter_returnindex(cylinder_rad, radial_precision)
         Filter snowflakes based on their return index and whether they are on
         the border of the visible region.
+    create_scanwise_closest_point()
+        For each point in each scan, find the vertical and horizontal
+        distances to the closest point in all other scans. Useful for
+        filtering out snowmobiles and humans and things that move.
     get_merged_points()
         Get the merged points as a polydata
     mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0)
@@ -2419,6 +2433,96 @@ class Project:
                 cylinder_rad, radial_precision)
         self.filterName = "snowflake_returnindex"
     
+    def create_scanwise_closest_point(self):
+        """
+        Create VerticalClosestPoint and HorizontalClosestPoint fields.
+        
+        For each point in each scan, find the vertical and horizontal
+        distances to the closest point in all other scans. Useful for
+        filtering out snowmobiles and humans and things that move.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            print(scan_name)
+            pdata = self.scan_dict[scan_name].transformFilter.GetOutput()
+            
+            # Combine all other scans into a single polydata and build
+            n_other_points = 0
+            for s in self.scan_dict:
+                if s==scan_name:
+                    continue
+                else:
+                    n_other_points += (self.scan_dict[s].transformFilter
+                                       .GetOutput().GetNumberOfPoints())
+            
+            otherPoints = vtk.vtkPoints()
+            otherPoints.SetDataTypeToFloat()
+            otherPoints.SetNumberOfPoints(n_other_points)
+            ctr = 0
+            for s in self.scan_dict:
+                if s==scan_name:
+                    continue
+                else:
+                    n = (self.scan_dict[s].transformFilter.GetOutput()
+                         .GetNumberOfPoints())
+                    otherPoints.InsertPoints(ctr, n, 0, self.scan_dict[s]
+                                             .transformFilter.GetOutput()
+                                             .GetPoints())
+                    ctr += n
+            
+            otherPData = vtk.vtkPolyData()
+            otherPData.SetPoints(otherPoints)
+            locator = vtk.vtkOctreePointLocator()
+            locator.SetDataSet(otherPData)
+            otherPData.SetPointLocator(locator)
+            otherPData.BuildLocator()
+            
+            
+            # Create numpy array to hold points
+            closest_points_np = np.zeros((pdata.GetNumberOfPoints(), 3), 
+                                         dtype=np.float32)
+            for i in np.arange(pdata.GetNumberOfPoints()):
+                otherPData.GetPoint(locator.FindClosestPoint(pdata
+                                                             .GetPoint(i)),
+                                    closest_points_np[i,:])
+            
+            # Create arrays to hold horizontal and vertical distances
+            hArr = vtk.vtkFloatArray()
+            hArr.SetNumberOfComponents(1)
+            hArr.SetNumberOfTuples(pdata.GetNumberOfPoints())
+            hArr.SetName('HorizontalClosestPoint')
+            vArr = vtk.vtkFloatArray()
+            vArr.SetNumberOfComponents(1)
+            vArr.SetNumberOfTuples(pdata.GetNumberOfPoints())
+            vArr.SetName('VerticalClosestPoint')
+            
+            # Add arrays to polydata_raw
+            self.scan_dict[scan_name].polydata_raw.GetPointData().AddArray(
+                hArr)
+            self.scan_dict[scan_name].polydata_raw.GetPointData().AddArray(
+                vArr)
+            self.scan_dict[scan_name].polydata_raw.Modified()
+            
+            # Populate with vertical and horizontal distances
+            dsa_pdata = dsa.WrapDataObject(pdata)
+            self.scan_dict[scan_name].dsa_raw.PointData['VerticalClosestPoint'
+                                                        ][:] = (
+                dsa_pdata.Points[:,2] - closest_points_np[:,2]).squeeze()
+            self.scan_dict[scan_name].dsa_raw.PointData[
+                'HorizontalClosestPoint'][:] = (
+                np.sqrt(np.sum(np.square(dsa_pdata.Points[:,:2] 
+                                         - closest_points_np[:,:2]),
+                               axis=1)).squeeze())
+            
+            self.scan_dict[scan_name].polydata_raw.Modified()
+            self.scan_dict[scan_name].transformFilter.Update()
+            self.scan_dict[scan_name].currentFilter.Update()
+        
     def add_transform(self, key, matrix):
         """
         Add the provided transform to each single scan
@@ -2437,7 +2541,7 @@ class Project:
         """
         
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].add_tranform(key, matrix)
+            self.scan_dict[scan_name].add_transform(key, matrix)
     
     def add_transform_from_tiepointlist(self, key):
         """
@@ -2457,7 +2561,7 @@ class Project:
         """
         
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].add_tranform(key, 
+            self.scan_dict[scan_name].add_transform(key, 
                                                    self.tiepointlist.
                                                    get_transform(key))
             
