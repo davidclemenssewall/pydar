@@ -17,6 +17,7 @@ import pandas as pd
 from PyQt5 import QtCore, QtGui
 from PyQt5 import Qt
 from collections import namedtuple
+import re
 import os
 os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
@@ -40,7 +41,8 @@ class MainWindow(Qt.QMainWindow):
                            'Human' : 68,
                            'Snowmobile' : 69,
                            'Road' : 70,
-                           'Flag' : 71
+                           'Flag' : 71,
+                           'Wire' : 72
                            }
               
         # Create the main layout
@@ -133,7 +135,7 @@ class MainWindow(Qt.QMainWindow):
         self.class_combobox = Qt.QComboBox()
         self.class_combobox.addItems(['Ground', 'Building', 'Low Point (Noise)',
                                      'Snowflake', 'Pole', 'Human', 
-                                     'Snowmobile', 'Road', 'Flag'])
+                                     'Snowmobile', 'Road', 'Flag', 'Wire'])
         self.class_combobox.setCurrentText('Ground')
         opt_layout.addWidget(self.class_combobox)
         self.class_button = Qt.QPushButton("Set Class")
@@ -142,7 +144,7 @@ class MainWindow(Qt.QMainWindow):
         
         # Which fields to use for classifier
         feature_list = ['Linearity', 'Planarity', 'Scattering', 'Verticality',
-                        'Density', 'Elevation', 'dist', 
+                        'Density', 'HeightAboveGround', 'dist', 
                         'HorizontalClosestPoint', 'VerticalClosestPoint']
         self.feature_check_dict = {}
         feature_group_box = Qt.QGroupBox()
@@ -155,6 +157,9 @@ class MainWindow(Qt.QMainWindow):
         opt_layout.addWidget(feature_group_box)
         
         # Train Classifier and Apply Classifier buttons
+        self.train_combobox = Qt.QComboBox()
+        self.train_combobox.addItems(['This Scan', 'Scan Area', 'All'])
+        opt_layout.addWidget(self.train_combobox)
         train_button = Qt.QPushButton("Train Classifier")
         opt_layout.addWidget(train_button)
         apply_button = Qt.QPushButton("Classify")
@@ -173,7 +178,11 @@ class MainWindow(Qt.QMainWindow):
             class_layout.addWidget(self.class_check_dict[category])
         self.class_group_box.setLayout(class_layout)
         self.class_group_box.setEnabled(0)
-        opt_layout.addWidget(self.class_group_box)
+        #opt_layout.addWidget(self.class_group_box)
+        
+        # Add write scans button
+        write_button = Qt.QPushButton("Write Scans")
+        opt_layout.addWidget(write_button)
         
         # Populate the main layout
         main_layout.addLayout(vis_layout)
@@ -194,6 +203,7 @@ class MainWindow(Qt.QMainWindow):
         self.class_button.clicked.connect(self.on_class_button_click)
         train_button.clicked.connect(self.on_train_button_click)
         apply_button.clicked.connect(self.on_apply_button_click)
+        write_button.clicked.connect(self.on_write_button_click)
         self.field_selector.currentTextChanged.connect(
             self.on_field_selector_changed)
         self.v_min.editingFinished.connect(self.on_v_edit)
@@ -207,6 +217,7 @@ class MainWindow(Qt.QMainWindow):
         # VTK setup
         # Dicts to hold visualization pipeline objects
         self.elev_filt_dict = {}
+        self.class_filt_dict = {}
         self.mapper_dict = {}
         self.actor_dict = {}
         
@@ -315,63 +326,55 @@ class MainWindow(Qt.QMainWindow):
                              'mosaic_rov_02_090520.RiSCAN']
             
             registration_list = [Registration('mosaic_rov_190120.RiSCAN', 
-                                              'mosaic_rov_190120.RiSCAN'),
-                                 Registration('mosaic_rov_190120.RiSCAN',
-                                              'mosaic_rov_110120.RiSCAN',
-                                              ['r05', 'r28', 'r29', 'r31', 
-                                               'r32', 'r33',
-                                               'r34'],
-                                              'LS'),
-                                 Registration('mosaic_rov_190120.RiSCAN',
-                                              'mosaic_rov_040120.RiSCAN',
-                                              ['r28', 'r29', 'r30', 'r31', 
-                                               'r32', 'r33'],
-                                              'LS'),
-                                 Registration('mosaic_rov_190120.RiSCAN',
-                                              'mosaic_rov_250120.RiSCAN',
-                                              ['r28', 'r29', 'r30', 'r32', 
-                                               'r34', 'r35',
-                                               'r22'],
-                                              'LS'),
-                                 Registration('mosaic_rov_250120.RiSCAN',
-                                              'mosaic_rov_040220.RiSCAN',
-                                              ['r28', 'r29', 'r30', 'r31', 
-                                               'r32', 'r34', 
-                                               'r35', 'r36'],
-                                              'LS'),
-                                 Registration('mosaic_rov_040220.RiSCAN',
-                                              'mosaic_rov_220220.RiSCAN'
-                                              + '.RiSCAN',
-                                              ['r28', 'r31', 'r32', 'r34'],
-                                              'Yaw'),
-                                 Registration('mosaic_rov_220220.RiSCAN'
-                                              + '.RiSCAN',
-                                              'mosaic_02_040420.RiSCAN',
-                                              ['r29', 'r30', 'r33', 'r36'],
-                                              'LS'),
-                                 Registration('mosaic_02_040420.RiSCAN',
-                                              'mosaic_02_110420_rov.RiSCAN',
-                                              ['r29', 'r30', 'r33', 'r35', 
-                                               'r37'],
-                                              'LS'),
-                                 Registration('mosaic_02_110420_rov.RiSCAN',
-                                              'mosaic_rov_170420.RiSCAN',
-                                              ['r29', 'r30', 'r35'],
-                                              'Yaw'),
-                                 Registration('mosaic_rov_170420.RiSCAN',
-                                              'mosaic_rov_220420.RiSCAN',
-                                              ['r29', 'r30', 'r35', 'r36', 
-                                               'r37'],
-                                              'LS'),
-                                 Registration('mosaic_rov_220420.RiSCAN',
-                                              'mosaic_rov_290420.RiSCAN',
-                                              ['r30', 'r33', 'r35', 'r36'],
-                                              'LS'),
-                                 Registration('mosaic_rov_290420.RiSCAN',
-                                              'mosaic_rov_02_090520.RiSCAN',
-                                              ['r30', 'r33', 'r35', 'r36'],
-                                              'LS')
-                                 ]
+                                  'mosaic_rov_190120.RiSCAN'),
+                     Registration('mosaic_rov_190120.RiSCAN',
+                                  'mosaic_rov_110120.RiSCAN',
+                                  ['r05', 'r28', 'r29', 'r31', 'r32', 'r33',
+                                   'r34'],
+                                  'LS'),
+                     Registration('mosaic_rov_190120.RiSCAN',
+                                  'mosaic_rov_040120.RiSCAN',
+                                  ['r28', 'r29', 'r30', 'r31', 'r32', 'r33'],
+                                  'LS'),
+                     Registration('mosaic_rov_190120.RiSCAN',
+                                  'mosaic_rov_250120.RiSCAN',
+                                  ['r28', 'r29', 'r30', 'r32', 'r34', 'r35',
+                                   'r22'],
+                                  'LS'),
+                     Registration('mosaic_rov_250120.RiSCAN',
+                                  'mosaic_rov_040220.RiSCAN',
+                                  ['r28', 'r29', 'r30', 'r31', 'r32', 'r34', 
+                                   'r35', 'r36'],
+                                  'LS'),
+                     Registration('mosaic_rov_040220.RiSCAN',
+                                  'mosaic_rov_220220.RiSCAN.RiSCAN',
+                                  ['r28', 'r31', 'r32', 'r34'],
+                                  'Yaw'),
+                     Registration('mosaic_rov_220220.RiSCAN.RiSCAN',
+                                  'mosaic_02_040420.RiSCAN',
+                                  ['r29', 'r30', 'r33', 'r36'],
+                                  'LS'),
+                     Registration('mosaic_02_040420.RiSCAN',
+                                  'mosaic_02_110420_rov.RiSCAN',
+                                  ['r29', 'r30', 'r33', 'r35', 'r37'],
+                                  'LS'),
+                     Registration('mosaic_02_040420.RiSCAN',
+                                  'mosaic_rov_170420.RiSCAN',
+                                  ['r29', 'r30', 'r35', 'r36', 'r37'],
+                                  'LS'),
+                     Registration('mosaic_rov_170420.RiSCAN',
+                                  'mosaic_rov_220420.RiSCAN',
+                                  ['r29', 'r30', 'r35', 'r36', 'r37'],
+                                  'LS'),
+                     Registration('mosaic_rov_220420.RiSCAN',
+                                  'mosaic_rov_290420.RiSCAN',
+                                  ['r30', 'r33', 'r35', 'r36'],
+                                  'LS'),
+                     Registration('mosaic_rov_290420.RiSCAN',
+                                  'mosaic_rov_02_090520.RiSCAN',
+                                  ['r30', 'r33', 'r35', 'r36'],
+                                  'LS')
+                     ]
         else:
             raise ValueError("You have selected a nonexistant scan area."
                              " please start again")
@@ -429,6 +432,7 @@ class MainWindow(Qt.QMainWindow):
             self.renderer.RemoveActor(self.actor_dict[scan_name])
         self.vtkWidget.GetRenderWindow().Render()
         self.elev_filt_dict.clear()
+        self.class_filt_dict.clear()
         self.mapper_dict.clear()
         self.actor_dict.clear()
         self.selected_poly_dict.clear()
@@ -445,6 +449,13 @@ class MainWindow(Qt.QMainWindow):
              SetActiveScalars("elev"))
             self.elev_filt_dict[scan_name].GetInput().Modified()
             self.elev_filt_dict[scan_name].Update()
+            
+            # Now create a threshold filters for each of our classes and 
+            # set the outputs of these to go to the mapper and actor. The
+            # keys for these dictionaries will be (scan_name, category)
+            
+            #for category in self.class_dict:
+                
             
             # Create mapper and set scalar range
             self.mapper_dict[scan_name] = vtk.vtkPolyDataMapper()
@@ -564,10 +575,37 @@ class MainWindow(Qt.QMainWindow):
         """
         
         # First we need to pull all of the manually classified points
-        df_list = []
-        for scan_name in self.project.scan_dict:
-            df_list.append(self.project.scan_dict[scan_name].man_class)
-        df = pd.concat(df_list, ignore_index=True)
+        if self.train_combobox.currentText()=='This Scan':
+            df_list = []
+            for scan_name in self.project.scan_dict:
+                df_list.append(self.project.scan_dict[scan_name].man_class)
+            
+            df = pd.concat(df_list, ignore_index=True)
+        elif self.train_combobox.currentText()=='Scan Area':
+            project_tuples = []
+            with os.scandir(self.scan_area.project_path) as it:
+                for entry in it:
+                    if entry.is_dir():
+                        if re.search('.RiSCAN$', entry.name):
+                            project_tuples.append((self.scan_area.project_path
+                                                   , entry.name))
+            df = pydar.get_man_class(project_tuples)
+        elif self.train_combobox.currentText()=='All':
+            project_tuples = []
+            # Get the path to the scan area
+            scan_area_path = (self.scan_area.project_path.rsplit(sep='\\',
+                                                                maxsplit=2)[0]
+                              + '\\')
+            scan_areas = ['Snow1', 'Snow2', 'ROV']
+            for scan_area in scan_areas:
+                project_path = scan_area_path + scan_area + '\\'
+                with os.scandir(project_path) as it:
+                    for entry in it:
+                        if entry.is_dir():
+                            if re.search('.RiSCAN$', entry.name):
+                                project_tuples.append((project_path
+                                                       , entry.name))
+            df = pydar.get_man_class(project_tuples)
         
         # Get feature list to train on
         feature_list = []
@@ -601,17 +639,37 @@ class MainWindow(Qt.QMainWindow):
         for scan_name in self.elev_filt_dict:
             # create dist field
             self.project.scan_dict[scan_name].add_dist()
+            pdata = self.project.scan_dict[scan_name].polydata_raw
+            self.classifier.classify_pdata(pdata)
+            self.project.scan_dict[scan_name].transformFilter.Update()
+            self.project.scan_dict[scan_name].currentFilter.Update()
             (self.elev_filt_dict[scan_name].GetInput().GetPointData().
              SetActiveScalars("elev"))
             self.elev_filt_dict[scan_name].Update()
-            pdata = self.elev_filt_dict[scan_name].GetOutput()
-            self.classifier.classify_pdata(pdata)
+        # !!! Need to add elevation if we want it as feature
         
         # Update renderwindow
         if self.field_selector.currentText()=='Classification':
             self.vtkWidget.GetRenderWindow().Render()
         else:
             self.field_selector.setCurrentText('Classification')
+    
+    def on_write_button_click(self, s):
+        """
+        Write scan to vtp files.
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.project.write_scans()
     
     def on_field_selector_changed(self, text):
         """
@@ -644,7 +702,8 @@ class MainWindow(Qt.QMainWindow):
                     68: (77/255, 175/255, 74/255, 1),
                     69: (247/255, 129/255, 191/255, 1),
                     70: (152/255, 78/255, 163/255, 1),
-                    71: (255/255, 127/255, 0/255, 1)}
+                    71: (255/255, 127/255, 0/255, 1),
+                    72: (253/255, 191/255, 111/255, 1)}
             lut = vtk.vtkLookupTable()
             lut.SetNumberOfTableValues(max(colors) + 1)
             lut.SetTableRange(0, max(colors))

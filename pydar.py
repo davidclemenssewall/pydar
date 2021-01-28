@@ -549,6 +549,7 @@ class SingleScan:
         69: Snowmobile
         70: Road
         71: Flag
+        72: Wire
     dsa_raw : vtk.numpy_interface.dataset_adapter.Polydata
         dataset adaptor object for interacting with polydata_raw
     man_class : pandas dataframe
@@ -625,10 +626,15 @@ class SingleScan:
     write_pdal_transformation_json(mode, input_dir, output_dir)
         Write a JSON string for PDAL such that it transforms raw scan data
         by self.transform.
-    create_dimensionality_pdal(temp_dir="", from_current=True, voxel=True,
+    create_dimensionality_pdal(temp_file="", from_current=True, voxel=True,
                                h_voxel=0.1, v_voxel=0.01, threads=8)
         Create the four dimensionality variables from Demantke2011 and
         Guinard2017. Uses pdal to do so.
+    create_heightaboveground_pdal(resolution=1, temp_file="",
+                                  from_current=True, voxel=True, h_voxel=0.1,
+                                  v_voxel=0.1)
+        Create height above ground value for each point in scan. To start
+        we'll just rasterize all points but we may eventually add csf filter.
     add_dist()
         Add distance from scanner to polydata_raw
     """
@@ -799,11 +805,8 @@ class SingleScan:
         self.filterDict = {}
         
         # Create currentFilter
-        self.currentFilter = vtk.vtkThresholdPoints()
-        self.currentFilter.ThresholdBetween(-.5, 2.5)
-        self.currentFilter.AddInputConnection(
-            self.transformFilter.GetOutputPort())
-        self.currentFilter.Update()
+        self.currentFilter = ClassFilter(self.transformFilter.GetOutputPort())
+
     
     def write_scan(self):
         """
@@ -961,7 +964,7 @@ class SingleScan:
                                            'Anisotropy':
                                            pd.Series([], 
                                                      dtype=np.float32),
-                                           'Elevation':
+                                           'HeightAboveGround':
                                            pd.Series([], 
                                                      dtype=np.float32),
                                            'dist':
@@ -1181,8 +1184,9 @@ class SingleScan:
                                                 .PointData['Density']),
                                  'Anisotropy' : (dsa_pdata
                                                 .PointData['Anisotropy']),
-                                 'Elevation' : (dsa_pdata
-                                                .PointData['Elevation']),
+                                 'HeightAboveGround' : (dsa_pdata
+                                                .PointData['HeightAboveGround'
+                                                           ]),
                                  'dist' : np.sqrt(np.sum(
                                      np.square(dsa_pdata.Points), axis=1)),
                                  'Amplitude' : (dsa_pdata
@@ -1583,6 +1587,138 @@ class SingleScan:
         else:
             raise NotImplementedError("create_dimensionality_pdal must have"
                                       + " voxel=True for now")
+    
+    def create_heightaboveground_pdal(self, resolution=1, temp_file="",
+                                      temp_file_tif="", from_current=True, 
+                                      voxel=True, h_voxel=0.1, v_voxel=0.1,
+                                      create_dem=True):
+        """
+        Create height above ground value for each point in scan.
+
+        Parameters
+        ----------
+        resolution : float, optional
+            DEM resolution in m. The default is 1.
+        temp_file : str, optional
+            Location to write numpy file to. If "" use self.project_path +
+            '\\temp\\temp_pdal.npy'. The default is "".
+        temp_file_tif : str, optional
+            tempfile for storing dem, if "" defaults to temp_dir/project_name
+            _scan_name.tif. The default is "".
+        from_current : bool, optional
+            Whether to write the current polydata to file, if False will use
+            whichever file is currently in the temp directory. False should 
+            only be used for debugging. The default is True.
+        voxel : bool, optional
+            Whether to voxel nearest centroid downsample before creating the 
+            dem. The default is True.
+        h_voxel : float, optional
+            Horizontal voxel dimension in m. The default is 0.1.
+        v_voxel : float, optional
+            Vertical voxel dimension in m. The default is 0.01.
+        create_dem : bool, optional
+            Whether to create a dem from this SingleScan. If not you should
+            probably supply a temp_file_tif string to this function. The 
+            default is True.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Parse temp_file
+        if not temp_file:
+            temp_file = (self.project_path + 'temp\\' + self.project_name + 
+                         '_' + self.scan_name + '.npy')
+         
+        if from_current:
+            # Write to temp_file
+            self.write_npy_pdal(temp_file, filename='', mode='transformed',
+                                skip_fields='all')
+        else:
+            warnings.warn("create_heightaboveground_pdal is reading whichever" 
+                          + " file is in the temp directory, make sure this "
+                          + "is the desired behavior")
+        
+        # Parse temp_file_tif
+        if not temp_file_tif:
+            if not create_dem:
+                warnings.warn("create_heightaboveground_pdal is not creating"
+                              + " a dem but is reading an auto-generated " 
+                              "filename! Make sure this is desired")
+            temp_file_tif = (self.project_path + 'temp\\' + self.project_name 
+                             + '_' + self.scan_name + '.tif')
+        
+        if create_dem:
+            # Create DEM
+            json_list = []
+    
+            # Numpy reader
+            json_list.append({"filename": temp_file,
+                              "type": "readers.numpy"})
+            if voxel:
+                # Voxel filter
+                json_list.append({"type": "filters.transformation",
+                                 "matrix": str(1/h_voxel) + " 0 0 0 0 " + 
+                                 str(1/h_voxel) + 
+                                 " 0 0 0 0 " + str(1/v_voxel) + " 0 0 0 0 1"})
+                json_list.append({"type": "filters.voxelcentroidnearestneighbor",
+                                 "cell": 1})
+                json_list.append({"type": "filters.transformation",
+                                 "matrix": str(h_voxel) + " 0 0 0 0 " + 
+                                 str(h_voxel) + 
+                                 " 0 0 0 0 " + str(v_voxel) + " 0 0 0 0 1"})
+            
+            json_list.append({"type": "writers.gdal",
+                              "filename": temp_file_tif,
+                              "resolution": resolution,
+                              "data_type": "float32",
+                              "output_type": "idw"})
+            
+            json_data = json.dumps(json_list, indent=4)
+            
+            pipeline = pdal.Pipeline(json_data)
+            _ = pipeline.execute()
+        
+        # Apply HeightAboveGround filter
+        json_list = []
+
+        # Numpy reader
+        json_list.append({"filename": temp_file,
+                          "type": "readers.numpy"})
+        
+        # Height above ground stage
+        json_list.append({"type": "filters.hag_dem",
+                          "raster": temp_file_tif,
+                          "zero_ground": 'false'})
+        
+        json_data = json.dumps(json_list, indent=4)
+
+        pipeline = pdal.Pipeline(json_data)
+        _ = pipeline.execute()
+        
+        # Update Contents of polydata_raw with the filter output
+        arr = pipeline.get_arrays()
+        sort_inds = np.argsort(arr[0]['PointId'])
+        if not 'HeightAboveGround' in self.dsa_raw.PointData.keys():
+            arr_vtk = vtk.vtkFloatArray()
+            arr_vtk.SetName('HeightAboveGround')
+            arr_vtk.SetNumberOfComponents(1)
+            arr_vtk.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
+            self.polydata_raw.GetPointData().AddArray(arr_vtk)
+        self.dsa_raw.PointData['HeightAboveGround'][:] = np.float32(
+            arr[0]['HeightAboveGround'][sort_inds])
+        
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+        
+        # Delete temporary files to prevent bloat
+        del pipeline
+        os.remove(temp_file)
+        if create_dem:
+            os.remove(temp_file_tif)
         
     def create_filter_pipeline(self,colors={0 : (153/255, 153/255, 153/255, 1),
                                             1 : (153/255, 153/255, 153/255, 1),
@@ -1596,7 +1732,9 @@ class SingleScan:
                                             68: (77/255, 175/255, 74/255, 1),
                                             69: (247/255, 129/255, 191/255, 1),
                                             70: (152/255, 78/255, 163/255, 1),
-                                            71: (255/255, 127/255, 0/255, 1)}):
+                                            71: (255/255, 127/255, 0/255, 1),
+                                            72: (253/255, 191/255, 111/255, 1)
+                                            }):
         """
         Create mapper and actor displaying points colored by Classification
 
@@ -1940,7 +2078,8 @@ class SingleScan:
             self.transformFilter.Update()
             self.currentFilter.Update()
     
-    def write_npy_pdal(self, output_dir, filename=None, mode='transformed'):
+    def write_npy_pdal(self, output_dir, filename=None, mode='transformed',
+                       skip_fields=[]):
         """
         Write scan to structured numpy array that can be read by PDAL.
 
@@ -1954,6 +2093,9 @@ class SingleScan:
         mode : str, optional
             Whether to write 'raw' points, 'transformed' points, or 'filtered'
             points. The default is 'transformed'.
+        skip_fields : list, optional
+            Fields to skip in writing. If this is 'all' then only write x,
+            y, z. Otherwise should be a list of field names. The default is []
 
         Returns
         -------
@@ -1976,10 +2118,21 @@ class SingleScan:
         n_pts = pdata.GetNumberOfPoints()
         
         # Create numpy output
-        names = tuple(dsa_pdata.PointData.keys() + ['X', 'Y', 'Z'])
+        names = []
+        for name in dsa_pdata.PointData.keys():
+            if name=='PointId':
+                names.append(name)
+            else:
+                if skip_fields=='all':
+                    continue
+                elif name in skip_fields:
+                    continue
+                else:
+                    names.append(name)
         formats = []
-        for value in dsa_pdata.PointData:
-            formats.append(value.dtype)
+        for name in names:
+            formats.append(dsa_pdata.PointData[name].dtype)
+        names = tuple(names + ['X', 'Y', 'Z'])
         formats.append(np.float32)
         formats.append(np.float32)
         formats.append(np.float32)
@@ -1991,27 +2144,10 @@ class SingleScan:
             elif name=='Y':
                 output_npy['Y'] = dsa_pdata.Points[:,1]
             elif name=='Z':
-                output_npy['Z'] = dsa_pdata.Points[:,2]
+                output_npy['Z'] = dsa_pdata.Points[:,2]                
             else:
                 output_npy[name] = dsa_pdata.PointData[name]
-        
-        # if 'Reflectance' in dsa_pdata.PointData.keys():
-        #     output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z', 
-        #                                                  'Reflectance'),
-        #                             'formats':(np.float32, np.float32, 
-        #                                        np.float32, np.float32)})
-        #     output_npy['X'] = dsa_pdata.Points[:,0]
-        #     output_npy['Y'] = dsa_pdata.Points[:,1]
-        #     output_npy['Z'] = dsa_pdata.Points[:,2]
-        #     output_npy['Reflectance'] = dsa_pdata.PointData['Reflectance']
-        # else:
-        #     output_npy = np.zeros(n_pts, dtype={'names':('X', 'Y', 'Z'),
-        #                             'formats':(np.float32, np.float32, 
-        #                                        np.float32)})
-        #     output_npy['X'] = dsa_pdata.Points[:,0]
-        #     output_npy['Y'] = dsa_pdata.Points[:,1]
-        #     output_npy['Z'] = dsa_pdata.Points[:,2]
-        
+                
         if filename is None:
             filename = self.project_name + '_' + self.scan_name
         
@@ -2147,6 +2283,8 @@ class Project:
         Display project image in a vtk interactive window.
     write_merged_points(output_name=self.project_name + '_merged.vtp')
         Merge all transformed and filtered pointclouds and write to file.
+    write_las_pdal(output_dir, filename)
+        Merge all points and write to a las formatted output.
     write_mesh(output_name=self.project_name + '_mesh.vtp')
         Write mesh to vtp file.
     read_mesh(mesh_name=self.project_name + '_mesh.vtp')
@@ -2177,6 +2315,9 @@ class Project:
         For each point in each scan, find the vertical and horizontal
         distances to the closest point in all other scans. Useful for
         filtering out snowmobiles and humans and things that move.
+    create_heightaboveground_pdal(resolution=1, voxel=true, h_voxel=0.1,
+                                  v_voxel=0.1, project_dem=True)
+        Create height above ground value for each point in scan.
     get_merged_points()
         Get the merged points as a polydata
     mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0)
@@ -2523,6 +2664,94 @@ class Project:
             self.scan_dict[scan_name].transformFilter.Update()
             self.scan_dict[scan_name].currentFilter.Update()
         
+    def create_heightaboveground_pdal(self, resolution=1, voxel=True, 
+                                      h_voxel=0.1, v_voxel=0.1, 
+                                      project_dem=True):
+        """
+        Create height above ground for each point in each scan.
+        
+        For now we are just building a dem from inverse distance weighting
+        of all points. Will change to csf filter eventually.
+
+        Parameters
+        ----------
+        resolution : float, optional
+            DEM resolution in m. The default is 1.
+        voxel : bool, optional
+            Whether to voxel nearest centroid downsample before creating the 
+            dem. The default is True.
+        h_voxel : float, optional
+            Horizontal voxel dimension in m. The default is 0.1.
+        v_voxel : float, optional
+            Vertical voxel dimension in m. The default is 0.01.
+        project_dem : bool, optional
+            Whether to create a dem from all scans in the project. 
+            The default is True.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if project_dem:
+            filenames = []
+            dem_name = (self.project_path + 'temp\\' + self.project_name 
+                        + '.tif')
+            for scan_name in self.scan_dict:
+                # Write scan to numpy
+                filenames.append(self.project_path + 'temp\\' + 
+                                 self.project_name + '_' + scan_name 
+                                 + '.npy')
+                self.scan_dict[scan_name].write_npy_pdal(filenames[-1],
+                                                         filename='',
+                                                         mode='transformed',
+                                                         skip_fields='all')
+            
+            # Now create dem from all scans
+            json_list = []
+            for filename in filenames:
+                json_list.append({"filename": filename,
+                                  "type": "readers.numpy"})
+            json_list.append({"type": "filters.merge"})
+            if voxel:
+                # Voxel filter
+                json_list.append({"type": "filters.transformation",
+                                 "matrix": str(1/h_voxel) + " 0 0 0 0 " + 
+                                 str(1/h_voxel) + 
+                                 " 0 0 0 0 " + str(1/v_voxel) + " 0 0 0 0 1"})
+                json_list.append({"type": 
+                                  "filters.voxelcentroidnearestneighbor",
+                                 "cell": 1})
+                json_list.append({"type": "filters.transformation",
+                                 "matrix": str(h_voxel) + " 0 0 0 0 " + 
+                                 str(h_voxel) + 
+                                 " 0 0 0 0 " + str(v_voxel) + " 0 0 0 0 1"})
+            json_list.append({"type": "writers.gdal",
+                              "filename": dem_name,
+                              "resolution": resolution,
+                              "data_type": "float32",
+                              "output_type": "idw"})
+            
+            json_data = json.dumps(json_list, indent=4)
+            
+            pipeline = pdal.Pipeline(json_data)
+            _ = pipeline.execute()
+            del _
+            del pipeline
+            
+            # Now create heightaboveground for each scan
+            for filename, scan_name in zip(filenames, self.scan_dict):
+                self.scan_dict[scan_name].create_heightaboveground_pdal(
+                    create_dem=False, from_current=False, temp_file=filename,
+                    temp_file_tif=dem_name)
+            os.remove(dem_name)
+        else:
+            for scan_name in self.scan_dict:
+                self.scan_dict[scan_name].create_heightaboveground_pdal(
+                    resolution=resolution, voxel=voxel, h_voxel=h_voxel,
+                    v_voxel=v_voxel)
+    
     def add_transform(self, key, matrix):
         """
         Add the provided transform to each single scan
@@ -3315,6 +3544,54 @@ class Project:
         #writer.SetFileTypeToASCII()
         writer.Write()
     
+    def write_las_pdal(self, output_dir=None, filename=None):
+        """
+        Write the data in the project to LAS using pdal
+
+        Parameters
+        ----------
+        output_dir : str, optional
+            Directory to write to. If none defaults to project_path +
+            project_name + '\\lasfiles\\pdal_output\\'. The default is None
+        filename : str, optional
+            Filename, if none uses project name. The default is None.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Handle output dir
+        if output_dir is None:
+            if not os.path.isdir(self.project_path + self.project_name 
+                                 + '\\lasfiles\\pdal_output\\'):
+                os.mkdir(self.project_path + self.project_name 
+                          + '\\lasfiles\\pdal_output\\')
+            output_dir = (self.project_path + self.project_name 
+                          + '\\lasfiles\\pdal_output\\')
+        if filename is None:
+            filename = self.project_name
+        
+        # Write each scan individually to a numpy output
+        json_list = []
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].write_npy_pdal(output_dir)
+            json_list.append({"filename": output_dir + self.project_name + 
+                              '_' + scan_name + '.npy',
+                              "type": "readers.numpy"})
+        
+        # Create JSON to instruct merging and conversion
+        json_list.append({"type": "filters.merge"})
+        json_list.append({"type": "writers.las",
+                          "filename": output_dir + filename + '.las',
+                          "minor_version": 4,
+                          "dataformat_id": 0})
+        json_data = json.dumps(json_list, indent=4)
+        pipeline = pdal.Pipeline(json_data)
+        _ = pipeline.execute()
+        
+    
     def write_mesh(self, output_name=None):
         """
         Write the mesh out to a file
@@ -3322,8 +3599,8 @@ class Project:
         Parameters
         ----------
         output_name : str, optional
-            Output name for the file, if None use the project_name + 
-            '_mesh.vtp'. The default is None.
+            Output name for the file, if None use the mesh directory. 
+            The default is None.
 
         Returns
         -------
@@ -3337,8 +3614,17 @@ class Project:
         if output_name:
             writer.SetFileName(self.project_path + output_name)
         else:
+            # Create the mesh folder if it doesn't already exist
+            if not os.path.isdir(self.project_path + self.project_name + 
+                             "\\vtkfiles"):
+                os.mkdir(self.project_path + self.project_name + 
+                         "\\vtkfiles")
+            if not os.path.isdir(self.project_path + self.project_name + 
+                                 "\\vtkfiles\\meshes"):
+                os.mkdir(self.project_path + self.project_name + 
+                         "\\vtkfiles\\meshes")
             writer.SetFileName(self.project_path + self.project_name + 
-                               '_mesh.vtp')
+                               "\\vtkfiles\\meshes\\mesh.vtp")
         writer.Write()
         
     def read_mesh(self, mesh_path=None):
@@ -3348,8 +3634,8 @@ class Project:
         Parameters
         ----------
         mesh_path : str, optional
-            Path to the mesh, if none use project_path + project_name + 
-            '_mesh.vtp'. The default is None.
+            Path to the mesh, if none use the mesh directory. 
+            The default is None.
 
         Returns
         -------
@@ -3363,7 +3649,7 @@ class Project:
             reader.SetFileName(mesh_path)
         else:
             reader.SetFileName(self.project_path + self.project_name + 
-                               '_mesh.vtp')
+                               "\\vtkfiles\\meshes\\mesh.vtp")
         reader.Update()
         self.mesh = reader.GetOutput()
     
@@ -4199,7 +4485,7 @@ class ScanArea:
             self.project_dict[key].apply_snowflake_filter_2(z_diff, N, r_min)
     
     def merged_points_to_mesh(self, subgrid_x, subgrid_y, min_pts=100, 
-                              alpha=0, overlap=0.1):
+                              alpha=0, overlap=0.1, sub_list=[]):
         """
         Create mesh from all points in singlescans.
         
@@ -4224,6 +4510,8 @@ class ScanArea:
         overlap : float, optional
             Overlap value indicates how much overlap to permit between subgrid
             chunks in meters. The default is 0.1
+        sub_list : list, optional
+            List of project names to apply to if not whole project.
 
         Returns
         -------
@@ -4231,12 +4519,21 @@ class ScanArea:
 
         """
         
-        for key in self.project_dict:
-            print(key)
-            self.project_dict[key].merged_points_to_mesh(subgrid_x, subgrid_y,
-                                                         min_pts, alpha, 
-                                                         overlap)
-    
+        if len(sub_list)==0:
+            for key in self.project_dict:
+                print(key)
+                self.project_dict[key].merged_points_to_mesh(subgrid_x, 
+                                                             subgrid_y,
+                                                             min_pts, alpha, 
+                                                             overlap)
+        else:
+            for key in sub_list:
+                print(key)
+                self.project_dict[key].merged_points_to_mesh(subgrid_x, 
+                                                             subgrid_y,
+                                                             min_pts, alpha, 
+                                                             overlap)
+        
     def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0, sub_list=[]):
         """
         Interpolate mesh at regularly spaced points.
@@ -4674,7 +4971,100 @@ class ScanArea:
 
         """
     
+class ClassFilter:
+    """
+    Filter points according to the classification field
+    
+    Attributes
+    ----------
+    threshold_dict : dict
+        contains vtkThresholdPoints objects keyed on the classifications 
+        we want to keep
+    appendPolyData : vtkAppendPolyData
+        vtkAppendPolyData object for combining filter output.
+    
+    Methods
+    -------
+    Update()
+        update filters (e.g. call after upstream Modified)
+    GetOutputPort()
+        Returns the output port
+    GetOutput()
+        Returns the output as a PolyData
+        
+    """
+    
+    def __init__(self, input_connection, class_list=[0, 1, 2, 70]):
+        """
+        Create objects and pipeline
 
+        Parameters
+        ----------
+        input_connection : vtkAlgorithmOutput
+            vtk input connection to this filter
+        class_list : list, optional
+            List of categories to include in the output. The default is 
+            [0, 1, 2, 70].
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.threshold_dict = {}
+        self.appendPolyData = vtk.vtkAppendPolyData()
+        for category in class_list:
+            self.threshold_dict[category] = vtk.vtkThresholdPoints()
+            self.threshold_dict[category].SetInputConnection(input_connection)
+            self.threshold_dict[category].ThresholdBetween(float(category)-0.5,
+                                                           float(category)+0.5)
+            self.threshold_dict[category].SetInputArrayToProcess(0, 0, 0,
+                vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS,
+                'Classification')
+            self.threshold_dict[category].Update()
+            self.appendPolyData.AddInputConnection(
+                self.threshold_dict[category].GetOutputPort())
+        self.appendPolyData.Update()
+    
+    def Update(self):
+        """
+        Updates pipeline
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for category in self.threshold_dict:
+            self.threshold_dict[category].Update()
+        self.appendPolyData.Update()
+    
+    def GetOutput(self):
+        """
+        Returns polydata
+
+        Returns
+        -------
+        vtkPolyData
+
+        """
+        
+        return self.appendPolyData.GetOutput()
+    
+    def GetOutputPort(self):
+        """
+        Returns output port.
+
+        Returns
+        -------
+        vtkAlgorithmOutput
+
+        """
+        
+        return self.appendPolyData.GetOutputPort()
+    
 class Classifier:
     """
     Manage multiple scans from the same area.
@@ -4695,7 +5085,12 @@ class Classifier:
         
     Methods
     -------
-    
+    init_randomforest(n_jobs, **kwargs)
+        Creates random forest classifier
+    train_classifier()
+        Trains classifier, does some decimation of ground category.
+    classify_pdata()
+        Updates Classification field in pdata.
     
     """
     
@@ -4901,6 +5296,35 @@ def mosaic_date_parser(project_name):
         date = date + ' 12:00:00'
         
     return date
+
+def get_man_class(project_tuples):
+    """
+    Returns a dataframe with all of the requested manual classifications.
+
+    Parameters
+    ----------
+    project_tuples : list
+        List of tuples (project_path, project_name) to try loading manual
+        classifications from.
+
+    Returns
+    -------
+    pandas dataframe of manual classifications.
+
+    """
+    
+    df_list = []
+    
+    for project_tuple in project_tuples:
+        # if the manual classification folder exists
+        man_class_path = (project_tuple[0] + project_tuple[1] 
+                          + '\\manualclassification\\')
+        if os.path.isdir(man_class_path):
+            filenames = os.listdir(man_class_path)
+            for filename in filenames:
+                df_list.append(pd.read_parquet(man_class_path + filename,
+                                               engine="pyarrow"))
+    return pd.concat(df_list, ignore_index=True)
 
 def normalize(xx, x, cdf):
     """

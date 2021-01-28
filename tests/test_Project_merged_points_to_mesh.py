@@ -9,15 +9,19 @@ Created on Mon Sep 21 11:59:28 2020
 
 import vtk
 import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+import sys
+sys.path.append('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+#os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+#print(os.getcwd())
 import pydar
 
 # %% init
 
-project_path = 'D:\\mosaic_lidar\\Snow1\\'
-project_name = 'mosaic_01_102519.RiSCAN'
+project_path = 'D:\\mosaic_lidar\\ROV\\'
+project_name = 'mosaic_rov_040120.RiSCAN'
 
-project = pydar.Project(project_path, project_name)
+project = pydar.Project(project_path, project_name, load_scans=True,
+                        read_scans=True)
 
 project.apply_transforms(['sop'])
 
