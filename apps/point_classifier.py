@@ -19,7 +19,7 @@ from PyQt5 import Qt
 from collections import namedtuple
 import re
 import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+sys.path.append('C:\\Users\\thayer\\DavidCS\\code\\pydar\\')
 import pydar
 
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor

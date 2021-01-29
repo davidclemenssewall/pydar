@@ -609,6 +609,10 @@ class SingleScan:
         Reset all Classification values to 0.
     update_man_class(pdata, classification)
         Update the points in man_class with the points in pdata.
+    update_man_class_fields(update_fields='all', update_trans=True)
+        Update the man_class table with values from the fields currently in
+        polydata_raw. Useful, for example if we've improved the HAG filter and
+        don't want to have to repick all points.
     create_normalized_heights(x, cdf)
         Use normalize function to create normalized heights in new PointData
         array.
@@ -1123,6 +1127,11 @@ class SingleScan:
 
         """
         
+        # Raise exception if man class table doesn't exist
+        if not hasattr(self, 'man_class'):
+            raise RuntimeError('man_class table does not exist. '
+                               + 'load it first?')
+        
         # Inverse Transform to get points in Scanners Own Coordinate System
         invTransform = vtk.vtkTransformFilter()
         invTransform.SetTransform(self.transform.GetInverse())
@@ -1218,7 +1227,137 @@ class SingleScan:
                                                  engine="pyarrow", 
                                                  compression=None)
         
-    
+    def update_man_class_fields(self, update_fields='all', update_trans=True):
+        """
+        Update man_class table with the fields that are currently in
+        polydata_raw.
+        
+        Requires that PointId's haven't changed!!!
+        
+        Parameters
+        ----------
+        update_fields : list or 'all', optional
+            Which fields in man_class we want to update. If 'all' update all 
+            but Classification. The default is 'all'.
+        update_trans : bool, optional
+            Whether to update the transformation matrix values with the
+            current transformation. The default is True.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Raise exception if man class table doesn't exist
+        if not hasattr(self, 'man_class'):
+            raise RuntimeError('man_class table does not exist. '
+                               + 'load it first?')
+        
+        # Get PointID's of picked points
+        pedigreeIds = vtk.vtkTypeUInt32Array()
+        pedigreeIds.SetNumberOfComponents(1)
+        pedigreeIds.SetNumberOfTuples(self.man_class.shape[0])
+        np_pedigreeIds = vtk_to_numpy(pedigreeIds)
+        if np.max(self.man_class.index.values)>np.iinfo(np.uint32).max:
+            raise RuntimeError('PointId exceeds size of uint32')
+        np_pedigreeIds[:] = self.man_class.index.values.astype(np.uint32)
+        pedigreeIds.Modified()
+        
+        # Selection points from polydata_raw by PedigreeId
+        selectionNode = vtk.vtkSelectionNode()
+        selectionNode.SetFieldType(1) # we want to select points
+        selectionNode.SetContentType(2) # 2 corresponds to pedigreeIds
+        selectionNode.SetSelectionList(pedigreeIds)
+        selection = vtk.vtkSelection()
+        selection.AddNode(selectionNode)
+        extractSelection = vtk.vtkExtractSelection()
+        extractSelection.SetInputData(0, self.polydata_raw)
+        extractSelection.SetInputData(1, selection)
+        extractSelection.Update()
+        pdata = extractSelection.GetOutput()
+        dsa_pdata = dsa.WrapDataObject(pdata)
+        
+        # Handle if the update fields are all
+        if update_fields=='all':
+            update_fields = ['Linearity', 'Planarity', 'Scattering', 
+                             'Verticality', 'Density', 'Anisotropy', 
+                             'HeightAboveGround', 'dist', 'Amplitude',
+                             'HorizontalClosestPoint', 'VerticalClosestPoint']
+        
+        # If update_trans we also want to update the tranform matrix
+        n_pts = pdata.GetNumberOfPoints()
+        if update_trans:
+            df_dict = {
+                        'trans_00' : (self.transform.GetMatrix()
+                                      .GetElement(0, 0) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_01' : (self.transform.GetMatrix()
+                                      .GetElement(0, 1) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_02' : (self.transform.GetMatrix()
+                                      .GetElement(0, 2) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_03' : (self.transform.GetMatrix()
+                                      .GetElement(0, 3) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_04' : (self.transform.GetMatrix()
+                                      .GetElement(1, 0) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_05' : (self.transform.GetMatrix()
+                                      .GetElement(1, 1) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_06' : (self.transform.GetMatrix()
+                                      .GetElement(1, 2) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_07' : (self.transform.GetMatrix()
+                                      .GetElement(1, 3) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_08' : (self.transform.GetMatrix()
+                                      .GetElement(2, 0) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_09' : (self.transform.GetMatrix()
+                                      .GetElement(2, 1) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_10' : (self.transform.GetMatrix()
+                                      .GetElement(2, 2) * np.ones(
+                                          n_pts, dtype=np.double)),
+                        'trans_11' : (self.transform.GetMatrix()
+                                      .GetElement(2, 3) * np.ones(
+                                          n_pts, dtype=np.double))
+                        }
+        else:
+            df_dict = {}
+        
+        # Now add column for each field in update_fields
+        for column_name in update_fields:
+            df_dict[column_name] = dsa_pdata.PointData[column_name]
+        
+        # Create new data frame
+        df_new = pd.DataFrame(df_dict, index=dsa_pdata.PointData['PointId'],
+                              copy=True)
+        df_new.index.name = 'PointId'
+        
+        # drop columns that we don't have. Because they show up as 
+        # vtkNoneArray their datatype is object.
+        df_new = df_new.select_dtypes(exclude=['object'])
+        
+        # Join with self.man_class we want to replace any columns that are in 
+        # both dataframes with the columns in df_new
+        self.man_class = pd.merge(df_new, self.man_class, how='inner',
+                                  left_index=True, right_index=True, 
+                                  sort=False, suffixes=('', '_y'))
+        self.man_class.drop(self.man_class.filter(regex='_y$').columns
+                            .tolist(), axis=1, inplace=True)
+        
+        # Write to file to save
+        self.man_class.to_parquet(self.project_path + 
+                                                 self.project_name + 
+                                                 '\\manualclassification\\' + 
+                                                 self.scan_name + '.parquet',
+                                                 engine="pyarrow", 
+                                                 compression=None)
+        
     def apply_elevation_filter(self, z_max):
         """
         Set Classification for all points above z_max to be 1. 
@@ -2214,11 +2353,12 @@ class SingleScan:
         """
         
         # Add dist field to scan
-        arr = vtk.vtkFloatArray()
-        arr.SetName('dist')
-        arr.SetNumberOfComponents(1)
-        arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
-        self.polydata_raw.GetPointData().AddArray(arr)
+        if not 'dist' in self.dsa_raw.PointData.keys():
+            arr = vtk.vtkFloatArray()
+            arr.SetName('dist')
+            arr.SetNumberOfComponents(1)
+            arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
+            self.polydata_raw.GetPointData().AddArray(arr)
         self.dsa_raw.PointData['dist'][:] = np.sqrt(np.sum(np.square(
             self.dsa_raw.Points), axis=1), dtype=np.float32)
         self.polydata_raw.Modified()
@@ -2318,6 +2458,10 @@ class Project:
     create_heightaboveground_pdal(resolution=1, voxel=true, h_voxel=0.1,
                                   v_voxel=0.1, project_dem=True)
         Create height above ground value for each point in scan.
+    update_man_class_fields(update_fields='all', update_trans=True)
+        Update the man_class table with values from the fields currently in
+        polydata_raw. Useful, for example if we've improved the HAG filter and
+        don't want to have to repick all points.
     get_merged_points()
         Get the merged points as a polydata
     mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0)
@@ -2476,6 +2620,19 @@ class Project:
         
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].read_scan()
+    
+    def load_man_class(self):
+        """
+        Direct each single scan to load it's man_class table
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].load_man_class()
     
     def apply_snowflake_filter(self, shells):
         """
@@ -2751,6 +2908,32 @@ class Project:
                 self.scan_dict[scan_name].create_heightaboveground_pdal(
                     resolution=resolution, voxel=voxel, h_voxel=h_voxel,
                     v_voxel=v_voxel)
+    
+    def update_man_class_fields(self, update_fields='all', update_trans=True):
+        """
+        Update man_class table with the fields that are currently in
+        polydata_raw.
+        
+        Requires that PointId's haven't changed!!!
+        
+        Parameters
+        ----------
+        update_fields : list or 'all', optional
+            Which fields in man_class we want to update. If 'all' update all 
+            but Classification. The default is 'all'.
+        update_trans : bool, optional
+            Whether to update the transformation matrix values with the
+            current transformation. The default is True.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].update_man_class_fields(
+                update_fields=update_fields, update_trans=update_trans)
     
     def add_transform(self, key, matrix):
         """
