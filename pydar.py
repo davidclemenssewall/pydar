@@ -1253,6 +1253,8 @@ class SingleScan:
         if not hasattr(self, 'man_class'):
             raise RuntimeError('man_class table does not exist. '
                                + 'load it first?')
+        if self.man_class.shape[0]==0:
+            return
         
         # Get PointID's of picked points
         pedigreeIds = vtk.vtkTypeUInt32Array()
@@ -1727,9 +1729,8 @@ class SingleScan:
             raise NotImplementedError("create_dimensionality_pdal must have"
                                       + " voxel=True for now")
     
-    def create_heightaboveground_pdal(self, resolution=1, temp_file="",
+    def create_heightaboveground_pdal(self, temp_file="",
                                       temp_file_tif="", from_current=True, 
-                                      voxel=True, h_voxel=0.1, v_voxel=0.1,
                                       create_dem=True):
         """
         Create height above ground value for each point in scan.
@@ -1748,13 +1749,6 @@ class SingleScan:
             Whether to write the current polydata to file, if False will use
             whichever file is currently in the temp directory. False should 
             only be used for debugging. The default is True.
-        voxel : bool, optional
-            Whether to voxel nearest centroid downsample before creating the 
-            dem. The default is True.
-        h_voxel : float, optional
-            Horizontal voxel dimension in m. The default is 0.1.
-        v_voxel : float, optional
-            Vertical voxel dimension in m. The default is 0.01.
         create_dem : bool, optional
             Whether to create a dem from this SingleScan. If not you should
             probably supply a temp_file_tif string to this function. The 
@@ -1796,22 +1790,19 @@ class SingleScan:
             # Numpy reader
             json_list.append({"filename": temp_file,
                               "type": "readers.numpy"})
-            if voxel:
-                # Voxel filter
-                json_list.append({"type": "filters.transformation",
-                                 "matrix": str(1/h_voxel) + " 0 0 0 0 " + 
-                                 str(1/h_voxel) + 
-                                 " 0 0 0 0 " + str(1/v_voxel) + " 0 0 0 0 1"})
-                json_list.append({"type": "filters.voxelcentroidnearestneighbor",
-                                 "cell": 1})
-                json_list.append({"type": "filters.transformation",
-                                 "matrix": str(h_voxel) + " 0 0 0 0 " + 
-                                 str(h_voxel) + 
-                                 " 0 0 0 0 " + str(v_voxel) + " 0 0 0 0 1"})
+            
+            json_list.append({"type": "filters.smrf",
+                              "slope": 0.5,
+                              "scalar": 3,
+                              "threshold": 0.2,
+                              "window": 3})
+            
+            json_list.append({"type": "filters.range",
+                              "limits": "Classification[2:2]"})
             
             json_list.append({"type": "writers.gdal",
                               "filename": temp_file_tif,
-                              "resolution": resolution,
+                              "resolution": 0.5,
                               "data_type": "float32",
                               "output_type": "idw"})
             
@@ -1819,6 +1810,8 @@ class SingleScan:
             
             pipeline = pdal.Pipeline(json_data)
             _ = pipeline.execute()
+            del _
+            del pipeline
         
         # Apply HeightAboveGround filter
         json_list = []
@@ -2821,8 +2814,7 @@ class Project:
             self.scan_dict[scan_name].transformFilter.Update()
             self.scan_dict[scan_name].currentFilter.Update()
         
-    def create_heightaboveground_pdal(self, resolution=1, voxel=True, 
-                                      h_voxel=0.1, v_voxel=0.1, 
+    def create_heightaboveground_pdal(self, 
                                       project_dem=True):
         """
         Create height above ground for each point in each scan.
@@ -2832,15 +2824,6 @@ class Project:
 
         Parameters
         ----------
-        resolution : float, optional
-            DEM resolution in m. The default is 1.
-        voxel : bool, optional
-            Whether to voxel nearest centroid downsample before creating the 
-            dem. The default is True.
-        h_voxel : float, optional
-            Horizontal voxel dimension in m. The default is 0.1.
-        v_voxel : float, optional
-            Vertical voxel dimension in m. The default is 0.01.
         project_dem : bool, optional
             Whether to create a dem from all scans in the project. 
             The default is True.
@@ -2871,22 +2854,18 @@ class Project:
                 json_list.append({"filename": filename,
                                   "type": "readers.numpy"})
             json_list.append({"type": "filters.merge"})
-            if voxel:
-                # Voxel filter
-                json_list.append({"type": "filters.transformation",
-                                 "matrix": str(1/h_voxel) + " 0 0 0 0 " + 
-                                 str(1/h_voxel) + 
-                                 " 0 0 0 0 " + str(1/v_voxel) + " 0 0 0 0 1"})
-                json_list.append({"type": 
-                                  "filters.voxelcentroidnearestneighbor",
-                                 "cell": 1})
-                json_list.append({"type": "filters.transformation",
-                                 "matrix": str(h_voxel) + " 0 0 0 0 " + 
-                                 str(h_voxel) + 
-                                 " 0 0 0 0 " + str(v_voxel) + " 0 0 0 0 1"})
+            json_list.append({"type": "filters.smrf",
+                              "slope": 0.5,
+                              "scalar": 3,
+                              "threshold": 0.2,
+                              "window": 3})
+
+            json_list.append({"type": "filters.range",
+                              "limits": "Classification[2:2]"})
+            
             json_list.append({"type": "writers.gdal",
                               "filename": dem_name,
-                              "resolution": resolution,
+                              "resolution": 0.5,
                               "data_type": "float32",
                               "output_type": "idw"})
             
@@ -2905,9 +2884,7 @@ class Project:
             os.remove(dem_name)
         else:
             for scan_name in self.scan_dict:
-                self.scan_dict[scan_name].create_heightaboveground_pdal(
-                    resolution=resolution, voxel=voxel, h_voxel=h_voxel,
-                    v_voxel=v_voxel)
+                self.scan_dict[scan_name].create_heightaboveground_pdal()
     
     def update_man_class_fields(self, update_fields='all', update_trans=True):
         """
@@ -3708,7 +3685,7 @@ class Project:
         ----------
         output_name : str, optional
             Output name for the file, if None use the project_name + 
-            '_merged.vtp'. The default is None.
+            '_merged.xyz'. The default is None.
 
         Returns
         -------
@@ -3727,7 +3704,8 @@ class Project:
         #writer.SetFileTypeToASCII()
         writer.Write()
     
-    def write_las_pdal(self, output_dir=None, filename=None):
+    def write_las_pdal(self, output_dir=None, filename=None, 
+                       mode='transformed', skip_fields=[]):
         """
         Write the data in the project to LAS using pdal
 
@@ -3738,6 +3716,12 @@ class Project:
             project_name + '\\lasfiles\\pdal_output\\'. The default is None
         filename : str, optional
             Filename, if none uses project name. The default is None.
+        mode : str, optional
+            Whether to write 'raw' points, 'transformed' points, or 'filtered'
+            points. The default is 'transformed'.
+        skip_fields : list, optional
+            Fields to skip in writing. If this is 'all' then only write x,
+            y, z. Otherwise should be a list of field names. The default is []
 
         Returns
         -------
@@ -3759,7 +3743,8 @@ class Project:
         # Write each scan individually to a numpy output
         json_list = []
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].write_npy_pdal(output_dir)
+            self.scan_dict[scan_name].write_npy_pdal(output_dir, mode=mode,
+                                                     skip_fields=skip_fields)
             json_list.append({"filename": output_dir + self.project_name + 
                               '_' + scan_name + '.npy',
                               "type": "readers.numpy"})

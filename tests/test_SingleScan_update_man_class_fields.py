@@ -12,12 +12,12 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import sys
-sys.path.append('C:\\Users\\thayer\\DavidCS\\code\\pydar\\')
+sys.path.append('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
 
 # %% init
 
-project_path = 'C:\\Users\\thayer\\DavidCS\\mosaic_lidar\\Snow2\\'
+project_path = 'D:\\mosaic_lidar\\Snow2\\'
 project_name = 'mosaic_02_110619.RiSCAN'
 scan_name = 'ScanPos001'
 

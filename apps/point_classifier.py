@@ -14,12 +14,15 @@ Created on Thu Jan  7 10:48:45 2021
 import sys
 import vtk
 import pandas as pd
+import math
+import numpy as np
+from vtk.util.numpy_support import vtk_to_numpy
 from PyQt5 import QtCore, QtGui
 from PyQt5 import Qt
 from collections import namedtuple
 import re
 import os
-sys.path.append('C:\\Users\\thayer\\DavidCS\\code\\pydar\\')
+sys.path.append('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import pydar
 
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
@@ -71,12 +74,16 @@ class MainWindow(Qt.QMainWindow):
         self.far_label = Qt.QLineEdit('1000.0')
         self.far_label.setValidator(Qt.QDoubleValidator())
         look_down_button = Qt.QPushButton('Look Down')
+        self.show_class_checkbox = Qt.QCheckBox('Highlight Classified')
+        self.show_class_checkbox.setChecked(0)
+        self.show_class_checkbox.setEnabled(0)
         vis_tools_layout.addWidget(self.field_selector)
         vis_tools_layout.addWidget(self.v_min)
         vis_tools_layout.addWidget(self.v_max)
         vis_tools_layout.addWidget(self.near_label)
         vis_tools_layout.addWidget(self.far_label)
         vis_tools_layout.addWidget(look_down_button)
+        vis_tools_layout.addWidget(self.show_class_checkbox)
         
         # Populate the vis_layout
         self.vtkWidget = QVTKRenderWindowInteractor(self.frame)
@@ -211,6 +218,7 @@ class MainWindow(Qt.QMainWindow):
         self.near_label.editingFinished.connect(self.on_clip_changed)
         self.far_label.editingFinished.connect(self.on_clip_changed)
         look_down_button.clicked.connect(self.look_down)
+        self.show_class_checkbox.toggled.connect(self.on_show_class_toggled)
         
         self.show()
         
@@ -234,6 +242,21 @@ class MainWindow(Qt.QMainWindow):
         self.selected_actor.SetMapper(self.selected_mapper)
         self.selected_actor.GetProperty().SetColor(0, 1, 0)
         self.selected_actor.GetProperty().SetPointSize(2.0)
+        
+        # Classified dict, to show manually classified points
+        self.man_class_dict = {}
+        self.man_class_append = vtk.vtkAppendPolyData()
+        pdata = vtk.vtkPolyData()
+        self.man_class_append.AddInputData(pdata)
+        self.man_class_mapper = vtk.vtkPolyDataMapper()
+        self.man_class_mapper.SetInputConnection(
+            self.man_class_append.GetOutputPort())
+        self.man_class_mapper.ScalarVisibilityOff()
+        self.man_class_actor = vtk.vtkActor()
+        self.man_class_actor.SetMapper(self.man_class_mapper)
+        self.man_class_actor.GetProperty().SetColor(1, 1, 0)
+        self.man_class_actor.GetProperty().SetPointSize(1.9)
+        
         
         # Renderer and interactor
         self.renderer = vtk.vtkRenderer()
@@ -310,7 +333,116 @@ class MainWindow(Qt.QMainWindow):
                                               'LS')
                                  ]
         elif scan_area_name=='Snow1':
-            raise NotImplementedError("Haven't added Snow1 yet")
+            project_names = ['mosaic_01_101819.RiSCAN',
+                             'mosaic_01_102019.RiSCAN',
+                             'mosaic_01_102519.RiSCAN',
+                             'mosaic_01_110119.RiSCAN',
+                             'mosaic_01_110819.RiSCAN',
+                             'mosaic_01_111519.RiSCAN',
+                             'mosaic_01b_061219.RiSCAN.RiSCAN.RiSCAN',
+                             'mosaic_01_122719.RiSCAN',
+                             'mosaic_01_040120.RiSCAN',
+                             'mosaic_01_180120.RiSCAN',
+                             'mosaic_01_290120.RiSCAN',
+                             'mosaic_01_060220.RiSCAN',
+                             'mosaic_01_150220.RiSCAN.RiSCAN',
+                             'mosaic_01_280220.RiSCAN',
+                             'mosaic_01_220320.RiSCAN',
+                             'mosaic_01_080420.RiSCAN',
+                             'mosaic_01_080420b.RiSCAN',
+                             'mosaic_01_250420.RiSCAN.RiSCAN',
+                             'mosaic_01_260420.RiSCAN',
+                             'mosaic_01_030520.RiSCAN']
+            
+            registration_list = [Registration('mosaic_01_102019.RiSCAN', 
+                                              'mosaic_01_102019.RiSCAN'),
+                                 Registration('mosaic_01_102019.RiSCAN',
+                                              'mosaic_01_101819.RiSCAN',
+                                              ['r04', 'r05', 'r07', 'r09'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_102019.RiSCAN', 
+                                              'mosaic_01_102519.RiSCAN',
+                                              ['r01', 'r02', 'r03', 'r09', 
+                                               'r08'],
+                                              'LS'),
+                                 Registration('mosaic_01_102519.RiSCAN',
+                                              'mosaic_01_110119.RiSCAN',
+                                              ['r01', 'r03', 'r04', 'r05', 
+                                               'r06', 'r07'],
+                                              'LS'),
+                                 Registration('mosaic_01_110119.RiSCAN',
+                                              'mosaic_01_111519.RiSCAN',
+                                              ['r02', 'r03', 'r04'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_111519.RiSCAN',
+                                              'mosaic_01_110819.RiSCAN',
+                                              ['r02', 'r05', 'r06', 'r07', 
+                                               'r10'],
+                                              'LS'),
+                                 Registration('mosaic_01_111519.RiSCAN',
+                                              'mosaic_01b_061219.RiSCAN.'+
+                                              'RiSCAN.RiSCAN',
+                                              ['r01', 'r11'],
+                                              'Yaw'),
+                                 Registration('mosaic_01b_061219.RiSCAN.'+
+                                              'RiSCAN.RiSCAN',
+                                              'mosaic_01_122719.RiSCAN',
+                                              ['r02', 'r11'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_122719.RiSCAN',
+                                              'mosaic_01_040120.RiSCAN',
+                                              ['r01', 'r13', 'r14', 'r15'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_040120.RiSCAN',
+                                              'mosaic_01_180120.RiSCAN',
+                                              ['r03', 'r09', 'r10', 'r11', 
+                                               'r24'],
+                                              'LS'),
+                                 Registration('mosaic_01_180120.RiSCAN',
+                                              'mosaic_01_290120.RiSCAN',
+                                              ['r01', 'r02', 'r03', 'r09', 
+                                               'r10', 
+                                               'r12', 'r13', 'r14'],
+                                              'LS'),
+                                 Registration('mosaic_01_290120.RiSCAN',
+                                              'mosaic_01_060220.RiSCAN',
+                                              ['r01', 'r03', 'r09', 'r12', 
+                                               'r14', 'r23'],
+                                              'LS'),
+                                 Registration('mosaic_01_060220.RiSCAN',
+                                              'mosaic_01_150220.RiSCAN.RiSCAN',
+                                              ['r03', 'r09', 'r23'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_150220.RiSCAN.RiSCAN',
+                                              'mosaic_01_280220.RiSCAN',
+                                              ['r10', 'r11', 'r24', 'r12'],
+                                              'LS'),
+                                 Registration('mosaic_01_280220.RiSCAN',
+                                              'mosaic_01_220320.RiSCAN',
+                                              ['r10', 'r11', 'r24'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_220320.RiSCAN',
+                                              'mosaic_01_080420.RiSCAN',
+                                              ['r10', 'r11'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_080420.RiSCAN',
+                                              'mosaic_01_080420b.RiSCAN',
+                                              ['r24', 'r26'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_080420b.RiSCAN',
+                                              'mosaic_01_250420.RiSCAN.RiSCAN',
+                                              ['r24', 'r27'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_250420.RiSCAN.RiSCAN',
+                                              'mosaic_01_260420.RiSCAN',
+                                              ['r24', 'r27'],
+                                              'Yaw'),
+                                 Registration('mosaic_01_260420.RiSCAN',
+                                              'mosaic_01_030520.RiSCAN',
+                                              ['r25'],
+                                              'Trans',
+                                              math.pi*9/8)
+                                 ]
         elif scan_area_name=='ROV':
             project_names = ['mosaic_rov_040120.RiSCAN',
                              'mosaic_rov_110120.RiSCAN',
@@ -398,6 +530,15 @@ class MainWindow(Qt.QMainWindow):
         
         # Clear selections if there are any
         self.clear_selection()
+        
+        # Clear the man_class_dict
+        # uncheck the show class checkbox
+        if self.show_class_checkbox.isChecked():
+            self.show_class_checkbox.setChecked(0)
+        for scan_name in self.man_class_dict:
+            self.man_class_append.RemoveInputData(
+                self.man_class_dict[scan_name])
+        self.man_class_dict.clear()
 
         # Once we have selected a project we want to load that project into
         # memory
@@ -491,6 +632,10 @@ class MainWindow(Qt.QMainWindow):
         # Update scan checkboxes this is the step that will actually lead to
         # scans being rendered.
         self.update_scan_checks(self.project.scan_dict.keys())
+        
+        # Update man_class_dict
+        self.update_man_class_dict()
+        self.show_class_checkbox.setEnabled(1)
     
     def on_scan_checkbox_changed(self, button, checked):
         """
@@ -558,6 +703,8 @@ class MainWindow(Qt.QMainWindow):
         
         self.clear_selection()
         self.class_button.setEnabled(0)
+        # Update man_class_dict
+        self.update_man_class_dict()
     
     def on_train_button_click(self, s):
         """
@@ -791,6 +938,28 @@ class MainWindow(Qt.QMainWindow):
                                                       -5)
         self.vtkWidget.GetRenderWindow().Render()
     
+    def on_show_class_toggled(self, checked):
+        """
+        If we checked the checkbutton add the actor to the renderer
+
+        Parameters
+        ----------
+        checked : bool
+            Whether the show class checkbox was toggled.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if checked:
+            self.renderer.AddActor(self.man_class_actor)
+            self.vtkWidget.GetRenderWindow().Render()
+        else:
+            self.renderer.RemoveActor(self.man_class_actor)
+            self.vtkWidget.GetRenderWindow().Render()
+    
     def update_scan_checks(self, scan_name_list):
         """
         Remove all scan checkbox widgets and create new ones from
@@ -843,6 +1012,71 @@ class MainWindow(Qt.QMainWindow):
         
         self.vtkWidget.GetRenderWindow().Render()
     
+    def update_man_class_dict(self):
+        """
+        Updates the polydatas in man_class_dict
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.project.scan_dict:
+            # If this scan_name is already in man_class_dict remove it from
+            # append PolyData
+            if scan_name in self.man_class_dict:
+                self.man_class_append.RemoveInputData(
+                    self.man_class_dict[scan_name])
+            # Check if the man_class table is empty, if so create an empty
+            # polydata
+            if self.project.scan_dict[scan_name].man_class.shape[0]==0:
+                pdata = vtk.vtkPolyData()
+            else:
+                # Otherwise, use pedigreeID selection to get the manually
+                # classified points
+                # Get PointId's from index of man_class
+                pedigreeIds = vtk.vtkTypeUInt32Array()
+                pedigreeIds.SetNumberOfComponents(1)
+                pedigreeIds.SetNumberOfTuples(
+                    self.project.scan_dict[scan_name].man_class.shape[0])
+                np_pedigreeIds = vtk_to_numpy(pedigreeIds)
+                if np.max(self.project.scan_dict[scan_name].man_class
+                          .index.values)>np.iinfo(np.uint32).max:
+                    raise RuntimeError('PointId exceeds size of uint32')
+                np_pedigreeIds[:] = (self.project.scan_dict[scan_name]
+                                     .man_class.index.values.astype(np.uint32))
+                pedigreeIds.Modified()
+                # Use PedigreeId selection to get points
+                selectionNode = vtk.vtkSelectionNode()
+                selectionNode.SetFieldType(1) # we want to select points
+                selectionNode.SetContentType(2) # 2 corresponds to pedigreeIds
+                selectionNode.SetSelectionList(pedigreeIds)
+                selection = vtk.vtkSelection()
+                selection.AddNode(selectionNode)
+                extractSelection = vtk.vtkExtractSelection()
+                extractSelection.SetInputData(0, self.mapper_dict[scan_name].
+                                              GetInput())
+                extractSelection.SetInputData(1, selection)
+                extractSelection.Update()
+                vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+                vertexGlyphFilter.SetInputConnection(
+                    extractSelection.GetOutputPort())
+                vertexGlyphFilter.Update()
+                
+                pdata = vertexGlyphFilter.GetOutput()
+                
+            # Put the corresponding pdata in man_class_dict
+            self.man_class_dict[scan_name] = pdata
+            # And add to appendPolyData
+            self.man_class_append.AddInputData(self.man_class_dict[scan_name])
+        
+        # Updates
+        self.man_class_append.Update()
+        self.man_class_mapper.Update()
+        if self.show_class_checkbox.isChecked():
+            self.vtkWidget.GetRenderWindow().Render()
+                
     ### VTK methods ###
     def on_end_pick(self, obj, event):
         """
