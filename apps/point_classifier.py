@@ -763,8 +763,10 @@ class MainWindow(Qt.QMainWindow):
         # Init and train classifier, just use default settings for now
         # and hardcode feature list
         self.classifier = pydar.Classifier(df_labeled=df)
-        self.classifier.init_randomforest()
-        self.classifier.train_classifier(feature_list)
+        #self.classifier.init_randomforest()
+        self.classifier.init_histgradboost()
+        self.classifier.train_classifier(feature_list, reduce_ground=False,
+                                         surface_only=True)
     
     def on_apply_button_click(self, s):
         """

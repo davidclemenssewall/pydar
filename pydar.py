@@ -35,6 +35,8 @@ import pdal
 import math
 import warnings
 from vtk.util.numpy_support import vtk_to_numpy
+from sklearn.experimental import enable_hist_gradient_boosting
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
@@ -809,7 +811,8 @@ class SingleScan:
         self.filterDict = {}
         
         # Create currentFilter
-        self.currentFilter = ClassFilter(self.transformFilter.GetOutputPort())
+        self.currentFilter = ClassFilter(self.transformFilter.GetOutputPort(),
+                                         class_list=[0, 2, 70])
 
     
     def write_scan(self):
@@ -1792,10 +1795,11 @@ class SingleScan:
                               "type": "readers.numpy"})
             
             json_list.append({"type": "filters.smrf",
-                              "slope": 0.5,
-                              "scalar": 3,
-                              "threshold": 0.2,
-                              "window": 3})
+                              "slope": 0.667,
+                              "scalar": 2.18,
+                              "threshold": 0.894,
+                              "window": 14.8,
+                              "cell": 0.624})
             
             json_list.append({"type": "filters.range",
                               "limits": "Classification[2:2]"})
@@ -1804,7 +1808,8 @@ class SingleScan:
                               "filename": temp_file_tif,
                               "resolution": 0.5,
                               "data_type": "float32",
-                              "output_type": "idw"})
+                              "output_type": "idw",
+                              "window_size": 7})
             
             json_data = json.dumps(json_list, indent=4)
             
@@ -2855,10 +2860,11 @@ class Project:
                                   "type": "readers.numpy"})
             json_list.append({"type": "filters.merge"})
             json_list.append({"type": "filters.smrf",
-                              "slope": 0.5,
-                              "scalar": 3,
-                              "threshold": 0.2,
-                              "window": 3})
+                              "slope": 0.667,
+                              "scalar": 2.18,
+                              "threshold": 0.894,
+                              "window": 14.8,
+                              "cell": 0.624})
 
             json_list.append({"type": "filters.range",
                               "limits": "Classification[2:2]"})
@@ -2867,7 +2873,8 @@ class Project:
                               "filename": dem_name,
                               "resolution": 0.5,
                               "data_type": "float32",
-                              "output_type": "idw"})
+                              "output_type": "idw",
+                              "window_size": 7})
             
             json_data = json.dumps(json_list, indent=4)
             
@@ -5300,8 +5307,26 @@ class Classifier:
         
         self.classifier = RandomForestClassifier(n_jobs=n_jobs, **kwargs)
     
+    def init_histgradboost(self, **kwargs):
+        """
+        Initialize a HistGradientBoostingClassifier
+
+        Parameters
+        ----------
+        **kwargs : dict
+            Additional keyword arguments to HistGradientBoostingClassifer
+            
+
+        Returns
+        -------
+        None.
+
+        """
+        self.classifier = HistGradientBoostingClassifier(**kwargs)
+    
     def train_classifier(self, feature_list, n_ground_multiplier=3, 
-                         strat_by_class=True, **kwargs):
+                         strat_by_class=True, reduce_ground=True, 
+                         surface_only=False, **kwargs):
         """
         Train classifier, kwargs go to train_test_split
 
@@ -5317,6 +5342,12 @@ class Classifier:
         strat_by_class : bool, optional
             Whether or not to stratify the split by 'Classification'. The 
             default is True.
+        reduce_ground : bool, optional
+            Whether to reduce the number of ground points, the default
+            True.
+        surface_only : bool, optional
+            If true just perform binary classification into snow surface
+            or not (lump roads and ground together). The default is False.
         **kwargs : dict
             Additional kwargs for train_test_split.
 
@@ -5329,17 +5360,24 @@ class Classifier:
         self.feature_list = feature_list
         
         # Downsample ground points
-        n = int(n_ground_multiplier 
-                * (self.df_labeled['Classification']!=2).sum())
-        df_sub_list = []
-        for category in self.df_labeled['Classification'].unique():
-            if category==2:
-                df_sub_list.append(self.df_labeled[self.df_labeled[
-                    'Classification']==category].sample(n=n))
-            else:
-                df_sub_list.append(self.df_labeled[
-                    self.df_labeled['Classification']==category])
-        df_sub = pd.concat(df_sub_list)
+        if reduce_ground:
+            n = int(n_ground_multiplier 
+                    * (self.df_labeled['Classification']!=2).sum())
+            df_sub_list = []
+            for category in self.df_labeled['Classification'].unique():
+                if category==2:
+                    df_sub_list.append(self.df_labeled[self.df_labeled[
+                        'Classification']==category].sample(n=n))
+                else:
+                    df_sub_list.append(self.df_labeled[
+                        self.df_labeled['Classification']==category])
+            df_sub = pd.concat(df_sub_list)
+        else:
+            df_sub = copy.deepcopy(self.df_labeled)
+        if surface_only:
+            df_sub['Classification'] = (1 + np.isin(df_sub['Classification'
+                                                           ].values, [2, 70]
+                                                    ).astype(np.int8))
         
         # Split labeled data
         if strat_by_class:
@@ -5349,6 +5387,10 @@ class Classifier:
         else:
             X_train, X_test, y_train, y_test = train_test_split(df_sub[
                 feature_list], df_sub.Classification, **kwargs)
+        
+        nonground_weight_multiplier = (y_train==2).sum()/((y_train==1).sum())
+        weights = np.ones(y_train.shape)
+        weights[y_train==1] = nonground_weight_multiplier
         
         # Train Classifier
         self.classifier.fit(X_train, y_train)
