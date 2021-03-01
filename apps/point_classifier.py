@@ -22,7 +22,7 @@ from PyQt5 import Qt
 from collections import namedtuple
 import re
 import os
-sys.path.append('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
@@ -309,8 +309,9 @@ class MainWindow(Qt.QMainWindow):
         # Parse project path
         dir_list = str(dir_str).split('/')
         scan_area_name = dir_list[-1]
-        project_path = dir_str + '/'
-        project_path = project_path.replace('/', '\\')
+        project_path = dir_str
+        #project_path = dir_str + '/'
+        #project_path = project_path.replace('/', '\\')
         
         
         # Registration object
@@ -740,12 +741,13 @@ class MainWindow(Qt.QMainWindow):
         elif self.train_combobox.currentText()=='All':
             project_tuples = []
             # Get the path to the scan area
-            scan_area_path = (self.scan_area.project_path.rsplit(sep='\\',
-                                                                maxsplit=2)[0]
-                              + '\\')
+            scan_area_path = os.path.split(self.scan_area.project_path)[0]
+            #scan_area_path = (self.scan_area.project_path.rsplit(sep='\\',
+            #                                                    maxsplit=2)[0]
+            #                  + '\\')
             scan_areas = ['Snow1', 'Snow2', 'ROV']
             for scan_area in scan_areas:
-                project_path = scan_area_path + scan_area + '\\'
+                project_path = os.path.join(scan_area_path, scan_area)
                 with os.scandir(project_path) as it:
                     for entry in it:
                         if entry.is_dir():

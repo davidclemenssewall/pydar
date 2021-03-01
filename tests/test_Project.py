@@ -7,13 +7,17 @@ Created on Fri Sep 11 11:59:03 2020
 @author: d34763s
 """
 
-import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+#import os
+#os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+import sys
+sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 
 # %% Test init
 
-project_path = 'D:\\mosaic_lidar\\Snow1\\'
+#project_path = 'D:\\mosaic_lidar\\Snow1\\'
+project_path = '/media/thayer/Data/mosaic_lidar/Snow1/'
+
 project_name = 'mosaic_01_040120.RiSCAN'
 poly = 'all_within_16m'
 

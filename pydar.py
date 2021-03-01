@@ -34,7 +34,7 @@ import json
 import pdal
 import math
 import warnings
-from vtk.util.numpy_support import vtk_to_numpy
+from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 from sklearn.experimental import enable_hist_gradient_boosting
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.ensemble import RandomForestClassifier
@@ -90,8 +90,8 @@ class TiePointList:
         tiepoints into a pandas dataframe"""
         self.project_path = project_path
         self.project_name = project_name
-        self.tiepoints = pd.read_csv(project_path + project_name +
-                                     '\\tiepoints.csv',
+        self.tiepoints = pd.read_csv(os.path.join(project_path, project_name,
+                                     'tiepoints.csv'),
                                      index_col=0, usecols=[0,1,2,3])
         self.tiepoints.sort_index(inplace=True)
         # Ignore any tiepoints that start with t
@@ -646,7 +646,8 @@ class SingleScan:
     """
     
     def __init__(self, project_path, project_name, scan_name, poly='.1_.1_.01',
-                 read_scan=False, import_las=False):
+                 read_scan=False, import_las=False, create_id=True,
+                 las_fieldnames=['Points', 'ReturnIndex']):
         """
         Creates SingleScan object and transformation pipeline.
         
@@ -670,6 +671,12 @@ class SingleScan:
         import_las: bool, optional
             If true (and read_scan is False) read in the las file instead of
             the polydata. The default is False.
+        create_id: bool, optional
+            If true and PointID's do not exist create PointIDs. The default
+            is True.
+        las_fieldnames: list, optional
+            List of fieldnames to load if we are importing from a las file
+            Must include 'Points'. The default is ['Points', 'ReturnIndex'].
 
         Returns
         -------
@@ -685,36 +692,36 @@ class SingleScan:
         
         # Create reader, transformFilter
         reader = vtk.vtkXMLPolyDataReader()
-        polys = os.listdir(self.project_path + self.project_name + '\\SCANS\\'
-                           + self.scan_name + '\\POLYDATA\\')
+        polys = os.listdir(os.path.join(self.project_path, self.project_name, 'SCANS',
+                           self.scan_name, 'POLYDATA'))
         if read_scan:
-            reader.SetFileName(self.project_path + self.project_name + 
-                           "\\vtkfiles\\pointclouds\\" +
-                           self.scan_name + '.vtp')
+            reader.SetFileName(os.path.join(self.project_path, self.project_name, 
+                           "vtkfiles", "pointclouds",
+                           self.scan_name + '.vtp'))
             reader.Update()
             self.polydata_raw = reader.GetOutput()
         elif not import_las:
             # Match poly with polys
             for name in polys:
                 if re.search(poly + '$', name):
-                    reader.SetFileName(self.project_path + self.project_name 
-                                            + '\\SCANS\\' + self.scan_name 
-                                            + '\\POLYDATA\\' + name + 
-                                            '\\1.vtp')
+                    reader.SetFileName(os.path.join(self.project_path, self.project_name,
+                                            'SCANS', self.scan_name, 
+                                            'POLYDATA', name, 
+                                            '1.vtp'))
                     reader.Update()
                     self.polydata_raw = reader.GetOutput()
                     break
         elif import_las:
             # import las file from lasfiles directory in project_path
-            filenames = os.listdir(self.project_path + self.project_name + 
-                                   "\\lasfiles\\")
+            filenames = os.listdir(os.path.join(self.project_path, self.project_name, 
+                                   "lasfiles"))
             pattern = re.compile(self.scan_name + '.*las')
             matches = [pattern.fullmatch(filename) for filename in filenames]
             if any(matches):
                 # Create filename input
                 filename = next(f for f, m in zip(filenames, matches) if m)
-                json_list = [self.project_path + self.project_name + 
-                             "\\lasfiles\\" + filename]
+                json_list = [os.path.join(self.project_path, self.project_name, 
+                             "lasfiles", filename)]
                 json_data = json.dumps(json_list, indent=4)
                 # Load scan into numpy array
                 pipeline = pdal.Pipeline(json_data)
@@ -722,46 +729,50 @@ class SingleScan:
                 
                 # Create pdata and populate with points from las file
                 pdata = vtk.vtkPolyData()
-                points = vtk.vtkPoints()
-                points.SetDataTypeToFloat()
-                points.SetNumberOfPoints(pipeline.arrays[0].shape[0])
-                pdata.SetPoints(points)
-                arr_nret = vtk.vtkUnsignedCharArray()
-                arr_nret.SetName('NumberOfReturns')
-                arr_nret.SetNumberOfComponents(1)
-                arr_nret.SetNumberOfTuples(pipeline.arrays[0].shape[0])
-                pdata.GetPointData().AddArray(arr_nret)
-                arr_reti = vtk.vtkSignedCharArray()
-                arr_reti.SetName('ReturnIndex')
-                arr_reti.SetNumberOfComponents(1)
-                arr_reti.SetNumberOfTuples(pipeline.arrays[0].shape[0])
-                pdata.GetPointData().AddArray(arr_reti)
-                arr_refl = vtk.vtkFloatArray()
-                arr_refl.SetName('Reflectance')
-                arr_refl.SetNumberOfComponents(1)
-                arr_refl.SetNumberOfTuples(pipeline.arrays[0].shape[0])
-                pdata.GetPointData().AddArray(arr_refl)
-                arr_amp = vtk.vtkFloatArray()
-                arr_amp.SetName('Amplitude')
-                arr_amp.SetNumberOfComponents(1)
-                arr_amp.SetNumberOfTuples(pipeline.arrays[0].shape[0])
-                pdata.GetPointData().AddArray(arr_amp)
-                dsa_pdata = dsa.WrapDataObject(pdata)
-                dsa_pdata.Points[:,0] = np.float32(pipeline.arrays[0]['X'])
-                dsa_pdata.Points[:,1] = np.float32(pipeline.arrays[0]['Y'])
-                dsa_pdata.Points[:,2] = np.float32(pipeline.arrays[0]['Z'])
-                dsa_pdata.PointData['NumberOfReturns'][:] = (pipeline.arrays
-                                                    [0]['NumberOfReturns'])
-                ReturnIndex = np.int16(pipeline.arrays[0]['ReturnNumber'])
-                ReturnIndex[ReturnIndex==7] = 0
-                ReturnIndex = (ReturnIndex - 
-                               pipeline.arrays[0]['NumberOfReturns'])
-                dsa_pdata.PointData['ReturnIndex'][:] = ReturnIndex
-                dsa_pdata.PointData['Reflectance'][:] = np.float32(
-                    pipeline.arrays[0]['Reflectance'])
-                dsa_pdata.PointData['Amplitude'][:] = np.float32(
-                    pipeline.arrays[0]['Amplitude'])
-                pdata.Modified()
+                
+                # np_dict stores references to underlying np arrays so that
+                # they do not get garbage-collected
+                self.np_dict = {}
+                
+                for k in las_fieldnames:
+                    if k=='Points':
+                        self.np_dict[k] = np.hstack((
+                            np.float32(pipeline.arrays[0]['X'])[:, np.newaxis],
+                            np.float32(pipeline.arrays[0]['Y'])[:, np.newaxis],
+                            np.float32(pipeline.arrays[0]['Z'])[:, np.newaxis]
+                            ))
+                        pts = vtk.vtkPoints()
+                        pts.SetData(numpy_to_vtk(self.np_dict[k], 
+                                                 deep=False, 
+                                                 array_type=vtk.VTK_FLOAT))
+                        pdata.SetPoints(pts)
+                    elif k in ['NumberOfReturns', 'ReturnIndex']:
+                        if k=='ReturnIndex':
+                            self.np_dict[k] = pipeline.arrays[0][
+                                'ReturnNumber']
+                            # Fix that return number 7 should be 0
+                            self.np_dict[k][self.np_dict[k]==7] = 0
+                            # Now convert to return index, so -1 is last return
+                            # -2 is second to last return, etc
+                            self.np_dict[k] = (self.np_dict[k] - 
+                                               pipeline.arrays[0]
+                                               ['NumberOfReturns'])
+                            self.np_dict[k] = np.int8(self.np_dict[k])
+                        else:
+                            self.np_dict[k] = pipeline.arrays[0][k]
+        
+                        vtkarr = numpy_to_vtk(self.np_dict[k],
+                                              deep=False,
+                                              array_type=vtk.VTK_UNSIGNED_CHAR)
+                        vtkarr.SetName(k)
+                        pdata.GetPointData().AddArray(vtkarr)
+                    elif k in ['Reflectance', 'Amplitude']:
+                        self.np_dict[k] = pipeline.arrays[0][k]
+                        vtkarr = numpy_to_vtk(self.np_dict[k],
+                                              deep=False,
+                                              array_type=vtk.VTK_DOUBLE)
+                        vtkarr.SetName(k)
+                        pdata.GetPointData().AddArray(vtkarr)
                 
                 # Create VertexGlyphFilter so that we have vertices for
                 # displaying
@@ -784,7 +795,7 @@ class SingleScan:
             self.polydata_raw.GetPointData().SetActiveScalars('Classification')
         
         # Add PedigreeIds if they are not already present
-        if not 'PointId' in self.dsa_raw.PointData.keys():
+        if create_id and not 'PointId' in self.dsa_raw.PointData.keys():
             pedigreeIds = vtk.vtkTypeUInt32Array()
             pedigreeIds.SetName('PointId')
             pedigreeIds.SetNumberOfComponents(1)
@@ -826,21 +837,21 @@ class SingleScan:
         """
         
         # If the write directory doesn't exist, create it
-        if not os.path.isdir(self.project_path + self.project_name + 
-                             "\\vtkfiles"):
-            os.mkdir(self.project_path + self.project_name + 
-                     "\\vtkfiles")
-        if not os.path.isdir(self.project_path + self.project_name + 
-                             "\\vtkfiles\\pointclouds"):
-            os.mkdir(self.project_path + self.project_name + 
-                     "\\vtkfiles\\pointclouds")
+        if not os.path.isdir(os.path.join(self.project_path, self.project_name, 
+                             "vtkfiles")):
+            os.mkdir(os.path.join(self.project_path, self.project_name, 
+                     "vtkfiles"))
+        if not os.path.isdir(os.path.join(self.project_path, self.project_name, 
+                             "vtkfiles", "pointclouds")):
+            os.mkdir(os.path.join(self.project_path, self.project_name, 
+                     "vtkfiles", "pointclouds"))
         
         # Create writer and write mesh
         writer = vtk.vtkXMLPolyDataWriter()
         writer.SetInputData(self.polydata_raw)
-        writer.SetFileName(self.project_path + self.project_name + 
-                           "\\vtkfiles\\pointclouds\\" +
-                               self.scan_name + '.vtp')
+        writer.SetFileName(os.path.join(self.project_path, self.project_name, 
+                           "vtkfiles", "pointclouds",
+                               self.scan_name + '.vtp'))
         writer.Write()
         
     def read_scan(self):
@@ -861,9 +872,9 @@ class SingleScan:
             
         # Create Reader, read file
         reader = vtk.vtkXMLPolyDataReader()
-        reader.SetFileName(self.project_path + self.project_name + 
-                           "\\vtkfiles\\pointclouds\\" +
-                           self.scan_name + '.vtp')
+        reader.SetFileName(os.path.join(self.project_path, self.project_name, 
+                           "vtkfiles", "pointclouds",
+                           self.scan_name + '.vtp'))
         reader.Update()
         self.polydata_raw = reader.GetOutput()
         self.polydata_raw.Modified()
@@ -887,16 +898,16 @@ class SingleScan:
         # Check if directory for manual classifications exists and create
         # if it doesn't.
         create_df = False
-        if os.path.isdir(self.project_path + self.project_name + 
-                         '\\manualclassification'):
+        if os.path.isdir(os.path.join(self.project_path, self.project_name, 
+                         'manualclassification')):
             # Check if file exists
-            if os.path.isfile(self.project_path + self.project_name + 
-                              '\\manualclassification\\' + self.scan_name +
-                              '.parquet'):
-                self.man_class = pd.read_parquet(self.project_path + 
-                                                 self.project_name + 
-                                                 '\\manualclassification\\' + 
-                                                 self.scan_name + '.parquet',
+            if os.path.isfile(os.path.join(self.project_path, self.project_name, 
+                              'manualclassification', self.scan_name +
+                              '.parquet')):
+                self.man_class = pd.read_parquet(os.path.join(self.project_path, 
+                                                 self.project_name,
+                                                 'manualclassification', 
+                                                 self.scan_name + '.parquet'),
                                                  engine="pyarrow")
             # otherwise create dataframe
             else:
@@ -904,8 +915,8 @@ class SingleScan:
         else:
             # Create directory and dataframe
             create_df = True
-            os.mkdir(self.project_path + self.project_name + 
-                     '\\manualclassification')
+            os.mkdir(os.path.join(self.project_path, self.project_name, 
+                     'manualclassification'))
         
         if create_df:
             self.man_class = pd.DataFrame({'X':
@@ -1023,8 +1034,8 @@ class SingleScan:
 
         """
         
-        trans = np.genfromtxt(self.project_path + self.project_name + '\\' 
-                              + self.scan_name + '.DAT', delimiter=' ')
+        trans = np.genfromtxt(os.path.join(self.project_path, self.project_name, 
+                              self.scan_name + '.DAT'), delimiter=' ')
         self.add_transform('sop', trans)
         
     def add_z_offset(self, z_offset):
@@ -1223,10 +1234,10 @@ class SingleScan:
         self.man_class = self.man_class.select_dtypes(exclude=['object'])
         
         # Write to file to save
-        self.man_class.to_parquet(self.project_path + 
-                                                 self.project_name + 
-                                                 '\\manualclassification\\' + 
-                                                 self.scan_name + '.parquet',
+        self.man_class.to_parquet(os.path.join(self.project_path, 
+                                                 self.project_name, 
+                                                 'manualclassification', 
+                                                 self.scan_name + '.parquet'),
                                                  engine="pyarrow", 
                                                  compression=None)
         
@@ -1356,10 +1367,10 @@ class SingleScan:
                             .tolist(), axis=1, inplace=True)
         
         # Write to file to save
-        self.man_class.to_parquet(self.project_path + 
-                                                 self.project_name + 
-                                                 '\\manualclassification\\' + 
-                                                 self.scan_name + '.parquet',
+        self.man_class.to_parquet(os.path.join(self.project_path, 
+                                                 self.project_name, 
+                                                 'manualclassification', 
+                                                 self.scan_name + '.parquet'),
                                                  engine="pyarrow", 
                                                  compression=None)
         
@@ -1631,7 +1642,7 @@ class SingleScan:
         
         # Parse temp_file
         if not temp_file:
-            temp_file = self.project_path + 'temp\\temp_pdal.npy'
+            temp_file = os.path.join(self.project_path, 'temp', 'temp_pdal.npy')
          
         if from_current:
             # Write to temp_file
@@ -1645,7 +1656,7 @@ class SingleScan:
         json_list = []
         # Stage for reading data
         json_list.append(
-            {"filename": self.project_path + 'temp\\temp_pdal.npy',
+            {"filename": os.path.join(self.project_path, 'temp', 'temp_pdal.npy'),
              "type": "readers.numpy"})
         # Add voxel filter stages if desired
         if voxel:
@@ -1765,7 +1776,7 @@ class SingleScan:
         
         # Parse temp_file
         if not temp_file:
-            temp_file = (self.project_path + 'temp\\' + self.project_name + 
+            temp_file = os.path.join(self.project_path, 'temp', self.project_name + 
                          '_' + self.scan_name + '.npy')
          
         if from_current:
@@ -1783,7 +1794,7 @@ class SingleScan:
                 warnings.warn("create_heightaboveground_pdal is not creating"
                               + " a dem but is reading an auto-generated " 
                               "filename! Make sure this is desired")
-            temp_file_tif = (self.project_path + 'temp\\' + self.project_name 
+            temp_file_tif = os.path.join(self.project_path, 'temp', self.project_name 
                              + '_' + self.scan_name + '.tif')
         
         if create_dem:
@@ -1907,9 +1918,24 @@ class SingleScan:
         self.mapper.SetScalarVisibility(1)
         self.mapper.SetColorModeToMapScalars()
         
+        # Create subsampled for LOD rendering
+        maskPoints = vtk.vtkPMaskPoints()
+        maskPoints.ProportionalMaximumNumberOfPointsOn()
+        maskPoints.SetOnRatio(10)
+        maskPoints.GenerateVerticesOn()
+        maskPoints.SetInputConnection(self.transformFilter.GetOutputPort())
+        maskPoints.Update()
+        self.mapper_sub = vtk.vtkPolyDataMapper()
+        self.mapper_sub.SetInputConnection(maskPoints.GetOutputPort())
+        self.mapper_sub.SetLookupTable(lut)
+        self.mapper_sub.SetScalarRange(min(colors), max(colors))
+        self.mapper_sub.SetScalarVisibility(1)
+        self.mapper_sub.SetColorModeToMapScalars()
+        
         # Create actor
-        self.actor = vtk.vtkActor()
-        self.actor.SetMapper(self.mapper)
+        self.actor = vtk.vtkLODProp3D()
+        self.actor.AddLOD(self.mapper, 0.0)
+        self.actor.AddLOD(self.mapper_sub, 0.0)
         
     
     def create_elevation_pipeline(self, z_min, z_max, lower_threshold=-1000,
@@ -1955,10 +1981,24 @@ class SingleScan:
         self.mapper.SetScalarRange(z_min, z_max)
         self.mapper.SetScalarVisibility(1)
         
+        # Create subsampled for LOD rendering
+        maskPoints = vtk.vtkPMaskPoints()
+        maskPoints.ProportionalMaximumNumberOfPointsOn()
+        maskPoints.SetOnRatio(10)
+        maskPoints.GenerateVerticesOn()
+        maskPoints.SetInputConnection(thresholdFilter.GetOutputPort())
+        maskPoints.Update()
+        self.mapper_sub = vtk.vtkPolyDataMapper()
+        self.mapper_sub.SetInputConnection(maskPoints.GetOutputPort())
+        self.mapper_sub.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+        self.mapper_sub.SetScalarRange(z_min, z_max)
+        self.mapper_sub.SetScalarVisibility(1)
+        
+        
         # Create actor
-        #self.actor = vtk.vtkLODActor()
-        self.actor = vtk.vtkActor()
-        self.actor.SetMapper(self.mapper)
+        self.actor = vtk.vtkLODProp3D()
+        self.actor.AddLOD(self.mapper, 0.0)
+        self.actor.AddLOD(self.mapper_sub, 0.0)
     
     def create_normalized_heights(self, x, cdf):
         """
@@ -2058,9 +2098,25 @@ class SingleScan:
         self.mapper.SetScalarRange(v_min, v_max)
         self.mapper.SetScalarVisibility(1)
         
+        # Create subsampled for LOD rendering
+        maskPoints = vtk.vtkPMaskPoints()
+        maskPoints.ProportionalMaximumNumberOfPointsOn()
+        maskPoints.SetOnRatio(10)
+        maskPoints.GenerateVerticesOn()
+        maskPoints.SetInputConnection(self.currentFilter.GetOutputPort())
+        maskPoints.Update()
+        self.mapper_sub = vtk.vtkPolyDataMapper()
+        self.mapper_sub.SetInputConnection(maskPoints.GetOutputPort())
+        self.mapper_sub.GetInput().GetPointData().SetActiveScalars(field)
+        self.mapper_sub.SetLookupTable(mplcmap_to_vtkLUT(v_min, v_max,
+                                                         name='plasma'))
+        self.mapper_sub.SetScalarRange(v_min, v_max)
+        self.mapper_sub.SetScalarVisibility(1)
+        
         # Create actor
-        self.actor = vtk.vtkActor()
-        self.actor.SetMapper(self.mapper)
+        self.actor = vtk.vtkLODProp3D()
+        self.actor.AddLOD(self.mapper, 0.0)
+        self.actor.AddLOD(self.mapper_sub, 0.0)
     
     def correct_reflectance_radial(self, mode, r_min=None, r_max=None, 
                                    num=None, base=None):
@@ -2286,9 +2342,9 @@ class SingleScan:
                 output_npy[name] = dsa_pdata.PointData[name]
                 
         if filename is None:
-            filename = self.project_name + '_' + self.scan_name
+            filename = self.project_name + '_' + self.scan_name + '.npy'
         
-        np.save(output_dir + filename, output_npy)
+        np.save(os.path.join(output_dir, filename), output_npy)
     
     def write_pdal_transformation_json(self, mode='las', input_dir='./', 
                                        output_dir='./pdal_output/'):
@@ -2491,7 +2547,8 @@ class Project:
     """
     
     def __init__(self, project_path, project_name, poly='.1_.1_.01', 
-                 load_scans=True, read_scans=False, import_las=False):
+                 load_scans=True, read_scans=False, import_las=False
+                 , create_id=True, las_fieldnames=['Points', 'ReturnIndex']):
         """
         Generates project, also inits singlescan objects
 
@@ -2515,6 +2572,12 @@ class Project:
         import_las: bool, optional
             If true (and read_scan is False) read in the las file instead of
             the polydata. The default is False.
+        create_id: bool, optional
+            If true and PointID's do not exist create PointIDs. The default
+            is True.
+        las_fieldnames: list, optional
+            List of fieldnames to load if we are importing from a las file
+            Must include 'Points'. The default is ['Points', 'ReturnIndex'].
 
         Returns
         -------
@@ -2533,14 +2596,17 @@ class Project:
         # we will only add a singlescan if it has an SOP and a polydata that
         # matches the poly suffix
         if load_scans:
-            scan_names = os.listdir(project_path + project_name + '\\SCANS\\')
+            scan_names = os.listdir(os.path.join(project_path, project_name, 
+                                                 'SCANS'))
             for scan_name in scan_names:
-                if os.path.isfile(self.project_path + self.project_name + '\\' 
-                                  + scan_name + '.DAT'):
+                if os.path.isfile(os.path.join(self.project_path, 
+                                               self.project_name, 
+                                  scan_name + '.DAT')):
                     if read_scans:
                         scan = SingleScan(self.project_path, self.project_name,
                                           scan_name, poly=poly,
-                                          read_scan=read_scans)
+                                          read_scan=read_scans, 
+                                          create_id=create_id)
                         scan.add_sop()
                         
                         self.scan_dict.update({scan_name : scan})
@@ -2548,14 +2614,16 @@ class Project:
                     elif import_las:
                         scan = SingleScan(self.project_path, self.project_name,
                                           scan_name, poly=poly,
-                                          import_las=import_las)
+                                          import_las=import_las,
+                                          create_id=create_id,
+                                          las_fieldnames=las_fieldnames)
                         scan.add_sop()
                         
                         self.scan_dict.update({scan_name : scan})
                     
                     else:
-                        polys = os.listdir(self.project_path + self.project_name +
-                                           '\\SCANS\\'+scan_name + '\\POLYDATA\\')
+                        polys = os.listdir(os.path.join(self.project_path, self.project_name,
+                                           'SCANS', scan_name, 'POLYDATA'))
                         match = False
                         for name in polys:
                             if re.search(poly + '$', name):
@@ -2565,7 +2633,8 @@ class Project:
                             scan = SingleScan(self.project_path, 
                                               self.project_name,
                                               scan_name, poly=poly,
-                                              read_scan=read_scans)
+                                              read_scan=read_scans,
+                                              create_id=create_id)
                             scan.add_sop()
                             
                             self.scan_dict.update({scan_name : scan})
@@ -2841,13 +2910,13 @@ class Project:
         
         if project_dem:
             filenames = []
-            dem_name = (self.project_path + 'temp\\' + self.project_name 
+            dem_name = os.path.join(self.project_path, 'temp', self.project_name 
                         + '.tif')
             for scan_name in self.scan_dict:
                 # Write scan to numpy
-                filenames.append(self.project_path + 'temp\\' + 
+                filenames.append(os.path.join(self.project_path, 'temp', 
                                  self.project_name + '_' + scan_name 
-                                 + '.npy')
+                                 + '.npy'))
                 self.scan_dict[scan_name].write_npy_pdal(filenames[-1],
                                                          filename='',
                                                          mode='transformed',
@@ -3080,6 +3149,12 @@ class Project:
         renderWindow.Render()
         iren.AddObserver('UserEvent', cameraCallback)
         iren.Start()
+        
+        # Needed to get window to close on linux
+        renderWindow.Finalize()
+        iren.TerminateApp()
+        
+        del renderWindow, iren
     
     def project_to_image(self, z_min, z_max, focal_point, camera_position,
                          roll=0, image_scale=500, lower_threshold=-1000, 
@@ -3173,8 +3248,8 @@ class Project:
         w2if.Update()
     
         writer = vtk.vtkPNGWriter()
-        writer.SetFileName(self.project_path + 'snapshots\\' + 
-                           self.project_name + '_' + name + '.png')
+        writer.SetFileName(os.path.join(self.project_path, 'snapshots', 
+                           self.project_name + '_' + name + '.png'))
         writer.SetInputData(w2if.GetOutput())
         writer.Write()
     
@@ -3477,8 +3552,8 @@ class Project:
         w2if.Update()
     
         writer = vtk.vtkPNGWriter()
-        writer.SetFileName(self.project_path + 'snapshots\\' + 
-                           self.project_name + '_' + name + '.png')
+        writer.SetFileName(os.path.join(self.project_path, 'snapshots', 
+                           self.project_name + '_' + name + '.png'))
         writer.SetInputData(w2if.GetOutput())
         writer.Write()
     
@@ -3738,12 +3813,12 @@ class Project:
         
         # Handle output dir
         if output_dir is None:
-            if not os.path.isdir(self.project_path + self.project_name 
-                                 + '\\lasfiles\\pdal_output\\'):
-                os.mkdir(self.project_path + self.project_name 
-                          + '\\lasfiles\\pdal_output\\')
-            output_dir = (self.project_path + self.project_name 
-                          + '\\lasfiles\\pdal_output\\')
+            if not os.path.isdir(os.path.join(self.project_path, self.project_name, 
+                                 'lasfiles', 'pdal_output')):
+                os.mkdir(os.path.join(self.project_path, self.project_name, 
+                          'lasfiles', 'pdal_output'))
+            output_dir = os.path.join(self.project_path, self.project_name, 
+                          'lasfiles', 'pdal_output')
         if filename is None:
             filename = self.project_name
         
@@ -3790,16 +3865,16 @@ class Project:
             writer.SetFileName(self.project_path + output_name)
         else:
             # Create the mesh folder if it doesn't already exist
-            if not os.path.isdir(self.project_path + self.project_name + 
-                             "\\vtkfiles"):
-                os.mkdir(self.project_path + self.project_name + 
-                         "\\vtkfiles")
-            if not os.path.isdir(self.project_path + self.project_name + 
-                                 "\\vtkfiles\\meshes"):
-                os.mkdir(self.project_path + self.project_name + 
-                         "\\vtkfiles\\meshes")
-            writer.SetFileName(self.project_path + self.project_name + 
-                               "\\vtkfiles\\meshes\\mesh.vtp")
+            if not os.path.isdir(os.path.join(self.project_path, self.project_name, 
+                             "vtkfiles")):
+                os.mkdir(os.path.join(self.project_path, self.project_name, 
+                         "vtkfiles"))
+            if not os.path.isdir(os.path.join(self.project_path, self.project_name, 
+                                 "vtkfiles", "meshes")):
+                os.mkdir(os.path.join(self.project_path, self.project_name, 
+                         "vtkfiles","meshes"))
+            writer.SetFileName(os.path.join(self.project_path, self.project_name, 
+                               "vtkfiles", "meshes", "mesh.vtp"))
         writer.Write()
         
     def read_mesh(self, mesh_path=None):
@@ -3823,8 +3898,8 @@ class Project:
         if mesh_path:
             reader.SetFileName(mesh_path)
         else:
-            reader.SetFileName(self.project_path + self.project_name + 
-                               "\\vtkfiles\\meshes\\mesh.vtp")
+            reader.SetFileName(os.path.join(self.project_path, self.project_name, 
+                               "vtkfiles", "meshes", "mesh.vtp"))
         reader.Update()
         self.mesh = reader.GetOutput()
     
@@ -4361,7 +4436,8 @@ class ScanArea:
     
     def __init__(self, project_path, project_names=[], registration_list=[],
                  poly='.1_.1_.01', load_scans=True, read_scans=False,
-                 import_las=False):
+                 import_las=False,  create_id=True,
+                 las_fieldnames=['Points', 'ReturnIndex']):
         """
         init stores project_path and initializes project_dict
 
@@ -4403,12 +4479,14 @@ class ScanArea:
         for project_name in project_names:
             self.add_project(project_name, load_scans=load_scans,
                              read_scans=read_scans, poly=poly, 
-                             import_las=import_las)
+                             import_las=import_las,  create_id=create_id,
+                             las_fieldnames=las_fieldnames)
             
         self.registration_list = copy.deepcopy(registration_list)
     
     def add_project(self, project_name, poly='.1_.1_.01', load_scans=True, 
-                    read_scans=False, import_las=False):
+                    read_scans=False, import_las=False, create_id=True,
+                    las_fieldnames=['Points', 'ReturnIndex']):
         """
         Add a new project to the project_dict (or overwrite existing project)
 
@@ -4439,7 +4517,10 @@ class ScanArea:
                                                   project_name, load_scans=
                                                   load_scans, read_scans=
                                                   read_scans, poly=poly,
-                                                  import_las=import_las)
+                                                  import_las=import_las,
+                                                  create_id=create_id,
+                                                  las_fieldnames=
+                                                  las_fieldnames)
     
     def compare_reflectors(self, project_name_0, project_name_1, 
                            delaunay=False, mode='dist', 
@@ -5034,9 +5115,9 @@ class ScanArea:
     
         writer = vtk.vtkPNGWriter()
         if filename=="":
-            writer.SetFileName(self.project_path + 'snapshots\\' + 
+            writer.SetFileName(os.path.join(self.project_path, 'snapshots', 
                                project_name_0 + "_" + project_name_1 + 
-                               'warp_difference_' + name + '.png')
+                               'warp_difference_' + name + '.png'))
         else:
             writer.SetFileName(filename)
         
@@ -5113,8 +5194,8 @@ class ScanArea:
     
         writer = vtk.vtkPNGWriter()
         if filename=="":
-            writer.SetFileName(self.project_path + 'snapshots\\' + 
-                               project_name_0 + "_" + project_name_1 + '.png')
+            writer.SetFileName(os.path.join(self.project_path, 'snapshots', 
+                               project_name_0 + "_" + project_name_1 + '.png'))
         else:
             writer.SetFileName(filename)
         
@@ -5527,12 +5608,12 @@ def get_man_class(project_tuples):
     
     for project_tuple in project_tuples:
         # if the manual classification folder exists
-        man_class_path = (project_tuple[0] + project_tuple[1] 
-                          + '\\manualclassification\\')
+        man_class_path = os.path.join(project_tuple[0], project_tuple[1],
+                          'manualclassification')
         if os.path.isdir(man_class_path):
             filenames = os.listdir(man_class_path)
             for filename in filenames:
-                df_list.append(pd.read_parquet(man_class_path + filename,
+                df_list.append(pd.read_parquet(os.path.join(man_class_path, filename),
                                                engine="pyarrow"))
     return pd.concat(df_list, ignore_index=True)
 
