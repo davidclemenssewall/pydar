@@ -1936,6 +1936,49 @@ class SingleScan:
         self.actor = vtk.vtkLODProp3D()
         self.actor.AddLOD(self.mapper, 0.0)
         self.actor.AddLOD(self.mapper_sub, 0.0)
+    
+    def create_solid_pipeline(self, color='Green'):
+        """
+        Create vtk visualization pipeline with solid colors
+
+        Parameters
+        ----------
+        color : string, optional
+            Name of color (in vtkNamedColors). The default is 'Green'.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Named colors object
+        nc = vtk.vtkNamedColors()
+        
+        # Create mapper
+        self.mapper = vtk.vtkPolyDataMapper()
+        self.mapper.SetInputConnection(self.currentFilter.GetOutputPort())
+        self.mapper.SetScalarVisibility(0)
+        prop = vtk.vtkProperty()
+        prop.SetColor(nc.GetColor3d(color))
+        
+        # Create subsampled for LOD rendering
+        maskPoints = vtk.vtkPMaskPoints()
+        maskPoints.ProportionalMaximumNumberOfPointsOn()
+        maskPoints.SetOnRatio(10)
+        maskPoints.GenerateVerticesOn()
+        maskPoints.SetInputConnection(self.currentFilter.GetOutputPort())
+        maskPoints.Update()
+        self.mapper_sub = vtk.vtkPolyDataMapper()
+        self.mapper_sub.SetInputConnection(maskPoints.GetOutputPort())
+        self.mapper_sub.SetScalarVisibility(0)
+        prop_sub = vtk.vtkProperty()
+        prop_sub.SetColor(nc.GetColor3d(color))
+        
+        # Create actor
+        self.actor = vtk.vtkLODProp3D()
+        self.actor.AddLOD(self.mapper, prop, 0.0)
+        self.actor.AddLOD(self.mapper_sub, prop_sub, 0.0)
         
     
     def create_elevation_pipeline(self, z_min, z_max, lower_threshold=-1000,
