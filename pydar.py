@@ -1057,9 +1057,15 @@ class SingleScan:
         trans[2, 3] = z_offset
         self.add_transform('z_offset', trans)
         
-    def get_polydata(self):
+    def get_polydata(self, port=False):
         """
         Returns vtkPolyData of scan with current transforms and filters.
+        
+        Parameters
+        ----------
+        port : bool, optional
+            Whether to return an output connection instead of a polydata.
+            The default is False
 
         Returns
         -------
@@ -1067,7 +1073,10 @@ class SingleScan:
 
         """
         
-        return self.currentFilter.GetOutput()
+        if port:
+            return self.currentFilter.GetOutputPort()
+        else:
+            return self.currentFilter.GetOutput()
     
     def apply_transforms(self, transform_list):
         """
@@ -3779,9 +3788,15 @@ class Project:
         # Store result in mesh
         self.mesh = appendPolyData.GetOutput()
         
-    def get_merged_points(self):
+    def get_merged_points(self, port=False):
         """
         Returns a polydata with merged points from all single scans
+        
+        Parameters
+        ----------
+        port : bool, optional
+            Whether to return an output connection instead of a polydata.
+            The default is False
 
         Returns
         -------
@@ -3793,12 +3808,18 @@ class Project:
         appendPolyData = vtk.vtkAppendPolyData()
         for key in self.scan_dict:
             self.scan_dict[key].transformFilter.Update()
-            appendPolyData.AddInputData(self.scan_dict[key].
-                                        get_polydata())
+            appendPolyData.AddInputConnection(self.scan_dict[key].
+                                              get_polydata(port=True))
         
         appendPolyData.Update()
         
-        return appendPolyData.GetOutput()
+        if port:
+            # If we want to create a connection we need to persist the
+            # append polydata object, otherwise it segfaults
+            self.appendPolyData = appendPolyData
+            return self.appendPolyData.GetOutputPort()
+        else:
+            return appendPolyData.GetOutput()
 
     def write_merged_points(self, output_name=None):
         """

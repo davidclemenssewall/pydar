@@ -6,6 +6,8 @@ rigid_alignment.py
 An application for examining the offset between successive scans and
 exploring rigid transformations.
 
+matplotlib from https://www.learnpyqt.com/tutorials/plotting-matplotlib/
+
 Created on Thu Jan  7 10:48:45 2021
 
 @author: d34763s
@@ -17,6 +19,7 @@ import math
 import copy
 import numpy as np
 from vtk.util.numpy_support import vtk_to_numpy
+from vtk.numpy_interface import dataset_adapter as dsa
 from PyQt5 import QtCore, QtGui
 from PyQt5 import Qt
 from collections import namedtuple
@@ -24,8 +27,20 @@ import re
 import os
 sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
+import matplotlib
+matplotlib.use('Qt5Agg')
 
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+
+class MplCanvas(FigureCanvasQTAgg):
+
+    def __init__(self, parent=None, width=8, height=8, dpi=600):
+        fig = Figure(figsize=(width, height), dpi=dpi)
+        self.axes = fig.add_subplot(111)
+        super(MplCanvas, self).__init__(fig)
 
 class MainWindow(Qt.QMainWindow):
     
@@ -38,25 +53,62 @@ class MainWindow(Qt.QMainWindow):
         self.frame = Qt.QFrame()
         main_layout = Qt.QHBoxLayout()
         
-        # Create the visualization layout, will contain the renderwindow
-        # and a toolbar with options
-        vis_layout = Qt.QVBoxLayout()
-        
-        # Create the vis_tools_layout to sit beneath the renderwindow
-        vis_tools_layout = Qt.QHBoxLayout()
-        
-        # Populate the vis_tools_layout
-        look_down_button = Qt.QPushButton('Look Down')
-        vis_tools_layout.addWidget(look_down_button)
-        
         # Populate the vis_layout
         self.vtkWidget = QVTKRenderWindowInteractor(self.frame)
         self.vtkWidget.setSizePolicy(Qt.QSizePolicy.Expanding, 
                                      Qt.QSizePolicy.Expanding)
+
+        # Create the vis_tools_layout to sit beneath the renderwindow
+        vis_tools_layout = Qt.QHBoxLayout()
         
+        # Populate the vis_tools_layout
+        # Look down button
+        look_down_button = Qt.QPushButton('Look Down')
+        vis_tools_layout.addWidget(look_down_button)
+        # Radio dial for which point we want to pick
+        self.point_button_group = Qt.QButtonGroup()
+        p0_radio = Qt.QRadioButton('p0')
+        p0_radio.setChecked(1)
+        self.point_button_group.addButton(p0_radio, 0)
+        vis_tools_layout.addWidget(p0_radio)
+        p1_radio = Qt.QRadioButton('p1')
+        self.point_button_group.addButton(p1_radio, 1)
+        vis_tools_layout.addWidget(p1_radio)
+
+        # Transect endpoints
+        t_list = ['x0', 'y0', 'z0', 'x1', 'y1', 'z1', 'd']
+        self.transect_dict = {}
+        for t in t_list:
+            t_label = Qt.QLabel(t + ': ')
+            vis_tools_layout.addWidget(t_label)
+            self.transect_dict[t] = Qt.QLineEdit('0.0')
+            self.transect_dict[t].setValidator(Qt.QDoubleValidator())
+            vis_tools_layout.addWidget(self.transect_dict[t])
+        plot_transect_button = Qt.QPushButton('Plot Transect')
+        vis_tools_layout.addWidget(plot_transect_button)
+        
+        # Create a matplotlib plot widget to plot transects in
+        self.mpl_widget = MplCanvas(self)
+        # Create toolbar for interacting with plot
+        toolbar = NavigationToolbar(self.mpl_widget, self)
+
+        # Create the visualization layout, will contain the renderwindow
+        # and a toolbar with options
+        vis_layout = Qt.QVBoxLayout()
+
         vis_layout.addWidget(self.vtkWidget)
         vis_layout.addLayout(vis_tools_layout)
-        
+        vis_layout.addWidget(toolbar)
+
+        # Need to add vis_layout to a widget to use QSplitter
+        vis_widget = Qt.QWidget()
+        vis_widget.setLayout(vis_layout)
+
+        # now create Qsplitter and add vis_widget and plot
+        vis_splitter = Qt.QSplitter(0) # 0 here creates vertical splitter
+        vis_splitter.addWidget(vis_widget)
+        vis_splitter.addWidget(self.mpl_widget)
+
         # Create the Options layout, which will contain tools to select files
         # classify points, etc
         opt_layout = Qt.QVBoxLayout()
@@ -114,7 +166,7 @@ class MainWindow(Qt.QMainWindow):
         opt_layout.addWidget(reset_param_button)
 
         # Populate the main layout
-        main_layout.addLayout(vis_layout, stretch=5)
+        main_layout.addWidget(vis_splitter, stretch=5)
         main_layout.addLayout(opt_layout)
         
         # Set layout for the frame and set central widget
@@ -129,24 +181,61 @@ class MainWindow(Qt.QMainWindow):
         self.scan_combobox.currentTextChanged.connect(self.on_scan_changed)
         reset_param_button.clicked.connect(self.on_reset_param_button_click)
         look_down_button.clicked.connect(self.look_down)
+        for t in t_list:
+            self.transect_dict[t].editingFinished.connect(
+                self.update_trans_endpoints)
+        plot_transect_button.clicked.connect(self.plot_transect)
         
         self.show()
         
         # VTK setup
         
+        # Transect endpoints
+        pts0 = vtk.vtkPoints()
+        pts0.SetNumberOfPoints(1)
+        pts0.SetPoint(0, 0.0, 0.0, 0.0)
+        pt_0 = vtk.vtkPolyData()
+        pt_0.SetPoints(pts0)
+        self.vgf_pt_0 = vtk.vtkVertexGlyphFilter()
+        self.vgf_pt_0.SetInputData(pt_0)
+        self.vgf_pt_0.Update()
+        mapper_pt_0 = vtk.vtkPolyDataMapper()
+        mapper_pt_0.SetInputConnection(self.vgf_pt_0.GetOutputPort())
+        actor_pt_0 = vtk.vtkActor()
+        actor_pt_0.SetMapper(mapper_pt_0)
+        actor_pt_0.GetProperty().RenderPointsAsSpheresOn()
+        actor_pt_0.GetProperty().SetPointSize(20)
+        actor_pt_0.GetProperty().SetColor(1, 1, 0)
+
+        pts1 = vtk.vtkPoints()
+        pts1.SetNumberOfPoints(1)
+        pts1.SetPoint(0, 0.0, 0.0, 0.0)
+        pt_1 = vtk.vtkPolyData()
+        pt_1.SetPoints(pts1)
+        self.vgf_pt_1 = vtk.vtkVertexGlyphFilter()
+        self.vgf_pt_1.SetInputData(pt_1)
+        self.vgf_pt_1.Update()
+        mapper_pt_1 = vtk.vtkPolyDataMapper()
+        mapper_pt_1.SetInputConnection(self.vgf_pt_1.GetOutputPort())
+        actor_pt_1 = vtk.vtkActor()
+        actor_pt_1.SetMapper(mapper_pt_1)
+        actor_pt_1.GetProperty().RenderPointsAsSpheresOn()
+        actor_pt_1.GetProperty().SetPointSize(20)
+        actor_pt_1.GetProperty().SetColor(1, 0, 0)
+
         # Renderer and interactor
         self.renderer = vtk.vtkRenderer()
+        self.renderer.AddActor(actor_pt_0)
+        self.renderer.AddActor(actor_pt_1)
         self.vtkWidget.GetRenderWindow().AddRenderer(self.renderer)
-        #self.vtkWidget.GetRenderWindow().AddObserver("ModifiedEvent", 
-        #                                             self.
-        #                                             on_modified_renderwindow)
-        #style = vtk.vtkInteractorStyleRubberBandPick()
-        #areaPicker = vtk.vtkAreaPicker()
-        #areaPicker.AddObserver("EndPickEvent", self.on_end_pick)
+        style = vtk.vtkInteractorStyleTrackballCamera()
+        pointPicker = vtk.vtkPointPicker()
+        pointPicker.SetTolerance(0.25)
+        pointPicker.AddObserver("EndPickEvent", self.on_end_pick)
         self.iren = self.vtkWidget.GetRenderWindow().GetInteractor()
-        #self.iren.SetPicker(areaPicker)
+        self.iren.SetPicker(pointPicker)
         self.iren.Initialize()
-        #self.iren.SetInteractorStyle(style)
+        self.iren.SetInteractorStyle(style)
         self.iren.Start()
     
     def on_sel_scan_area_button_click(self, s):
@@ -522,9 +611,167 @@ class MainWindow(Qt.QMainWindow):
                                                       camera_pos[1],
                                                       -5)
         self.vtkWidget.GetRenderWindow().Render()
-                
-    ### VTK methods ###
+    
+    def plot_transect(self):
+        """
+        Plot the transect with the current endpoints
 
+        Returns
+        -------
+        None.
+
+        """
+
+        # Step 1, let's plot the transect line on the viewport
+        # If there's already a t_actor present remove it and clear plot
+        if hasattr(self, 't_actor'):
+            self.renderer.RemoveActor(self.t_actor)
+            del self.t_actor
+            # Clear plot canvas
+            self.mpl_widget.axes.cla()
+        line = vtk.vtkLineSource()
+        line.SetPoint1(float(self.transect_dict['x0'].text()),
+                       float(self.transect_dict['y0'].text()),
+                       float(self.transect_dict['z0'].text()))
+        line.SetPoint2(float(self.transect_dict['x1'].text()),
+                       float(self.transect_dict['y1'].text()),
+                       float(self.transect_dict['z1'].text()))
+        t_mapper = vtk.vtkPolyDataMapper()
+        t_mapper.SetInputConnection(line.GetOutputPort())
+        self.t_actor = vtk.vtkActor()
+        self.t_actor.SetMapper(t_mapper)
+        self.t_actor.GetProperty().SetColor(1.0, 0.0, 0.0)
+        self.t_actor.GetProperty().SetOpacity(0.8)
+        self.t_actor.GetProperty().RenderLinesAsTubesOn()
+        self.t_actor.GetProperty().SetLineWidth(5)
+        self.renderer.AddActor(self.t_actor)
+        self.vtkWidget.GetRenderWindow().Render()
+        print('Line Created')
+
+        # Step 2 Extract Points
+        length = np.sqrt((float(self.transect_dict['x1'].text())
+                          -float(self.transect_dict['x0'].text()))**2 + 
+                         (float(self.transect_dict['y1'].text())
+                          -float(self.transect_dict['y0'].text()))**2)
+        # we need a transformation first brings point 0 to the origin, then yaws
+        # transect axis onto x-axis
+        t_trans = vtk.vtkTransform()
+        # set mode to post multiply, so we will first translate and then rotate
+        t_trans.PostMultiply()
+        t_trans.Translate(-1*float(self.transect_dict['x0'].text()), 
+                          -1*float(self.transect_dict['y0'].text()), 0)
+        # Get yaw angle of line
+        yaw = np.arctan2(float(self.transect_dict['y1'].text())
+                         -float(self.transect_dict['y0'].text()), 
+                         float(self.transect_dict['x1'].text())
+                         -float(self.transect_dict['x0'].text())) * 180/np.pi
+        t_trans.RotateZ(-1*yaw)
+        # Transform points, for project_0 we have to aggregate
+        t_trans_filter_0 = vtk.vtkTransformFilter()
+        t_trans_filter_0.SetTransform(t_trans)
+        t_trans_filter_0.SetInputConnection(self.project_0.
+                                            get_merged_points(port=True))
+        t_trans_filter_0.Update()
+        t_trans_filter_1 = vtk.vtkTransformFilter()
+        t_trans_filter_1.SetTransform(t_trans)
+        t_trans_filter_1.SetInputConnection(self.ss.currentFilter.
+                                            GetOutputPort())
+        t_trans_filter_1.Update()
+        # Extract transformed points
+        box = vtk.vtkBox()
+        box.SetBounds(0, length, -1*float(self.transect_dict['d'].text())
+                      , float(self.transect_dict['d'].text()), -1000, 1000)
+        extractPoints_0 = vtk.vtkExtractPoints()
+        extractPoints_0.SetImplicitFunction(box)
+        extractPoints_0.SetInputConnection(t_trans_filter_0.GetOutputPort())
+        extractPoints_0.Update()
+        extractPoints_1 = vtk.vtkExtractPoints()
+        extractPoints_1.SetImplicitFunction(box)
+        extractPoints_1.SetInputConnection(t_trans_filter_1.GetOutputPort())
+        extractPoints_1.Update()
+        # Store output so we can use it for other things (and it's not garbage
+        # collected?)
+        self.t_pdata_0 = extractPoints_0.GetOutput()
+        self.t_pdata_1 = extractPoints_1.GetOutput()
+        # dataset adapters for points arrays
+        t_dsa_0 = dsa.WrapDataObject(self.t_pdata_0)
+        t_dsa_1 = dsa.WrapDataObject(self.t_pdata_1)
+        print('Extracted Points')
+
+        # Step 3 plot points
+        self.mpl_widget.axes.scatter(t_dsa_0.Points[:,0],
+                                     t_dsa_0.Points[:,2],
+                                     c='Cyan', s=0.1)
+        self.mpl_widget.axes.scatter(t_dsa_1.Points[:,0],
+                                     t_dsa_1.Points[:,2],
+                                     c='Lime', s=0.1)
+        self.mpl_widget.axes.set_facecolor('k')
+        self.mpl_widget.draw()
+
+
+    ### VTK methods ###
+    def on_end_pick(self, obj, event):
+        """
+        When a pick is made set it to be an endpoint of the transect
+
+        Parameters
+        ----------
+        obj: vtkPointPicker
+            vtkPointPicker object containing picked location
+        event: str
+            event name, not used.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        # Get the picked point
+        pt = obj.GetPickPosition()
+        
+        # Depending on which point we want to update, update that point
+        if self.point_button_group.checkedId()==0:
+            self.transect_dict['x0'].setText(str(pt[0]))
+            self.transect_dict['y0'].setText(str(pt[1]))
+            self.transect_dict['z0'].setText(str(pt[2]))
+        else:
+            self.transect_dict['x1'].setText(str(pt[0]))
+            self.transect_dict['y1'].setText(str(pt[1]))
+            self.transect_dict['z1'].setText(str(pt[2]))
+        self.update_trans_endpoints()
+
+    def update_trans_endpoints(self):
+        """
+        Update the spheres marking the transect endpoints
+
+        Returns
+        -------
+        None.
+
+        """
+
+        # Update the transect endpoints
+        pts0 = vtk.vtkPoints()
+        pts0.SetNumberOfPoints(1)
+        pts0.SetPoint(0, float(self.transect_dict['x0'].text()),
+                         float(self.transect_dict['y0'].text()),
+                         float(self.transect_dict['z0'].text()))
+        pt_0 = vtk.vtkPolyData()
+        pt_0.SetPoints(pts0)
+        self.vgf_pt_0.SetInputData(pt_0)
+        self.vgf_pt_0.Update()
+        pts1 = vtk.vtkPoints()
+        pts1.SetNumberOfPoints(1)
+        pts1.SetPoint(0, float(self.transect_dict['x1'].text()),
+                         float(self.transect_dict['y1'].text()),
+                         float(self.transect_dict['z1'].text()))
+        pt_1 = vtk.vtkPolyData()
+        pt_1.SetPoints(pts1)
+        self.vgf_pt_1.SetInputData(pt_1)
+        self.vgf_pt_1.Update()
+        
+        self.vtkWidget.GetRenderWindow().Render()
 
 if __name__ == "__main__":
     app = Qt.QApplication(sys.argv)
