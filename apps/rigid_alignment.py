@@ -179,6 +179,7 @@ class MainWindow(Qt.QMainWindow):
         self.sel_proj_button.clicked.connect(self.on_sel_proj_button_click)
         self.proj_dialog.fileSelected.connect(self.on_scan_area_selected)
         self.scan_combobox.currentTextChanged.connect(self.on_scan_changed)
+        update_param_button.clicked.connect(self.on_update_param_button_click)
         reset_param_button.clicked.connect(self.on_reset_param_button_click)
         look_down_button.clicked.connect(self.look_down)
         for t in t_list:
@@ -230,7 +231,7 @@ class MainWindow(Qt.QMainWindow):
         self.vtkWidget.GetRenderWindow().AddRenderer(self.renderer)
         style = vtk.vtkInteractorStyleTrackballCamera()
         pointPicker = vtk.vtkPointPicker()
-        pointPicker.SetTolerance(0.25)
+        #pointPicker.SetTolerance(0.25)
         pointPicker.AddObserver("EndPickEvent", self.on_end_pick)
         self.iren = self.vtkWidget.GetRenderWindow().GetInteractor()
         self.iren.SetPicker(pointPicker)
@@ -561,7 +562,60 @@ class MainWindow(Qt.QMainWindow):
 
         # Call on_reset_param_button_click to update entry fields and render
         self.on_reset_param_button_click(1)
-    
+
+    def on_update_param_button_click(self, s):
+        """
+        Set transformation for ss to match user defined parameters.
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        # Step 1
+        # Create a 4x4 homologous transform from the user defined parameters
+        u = np.float32(self.param_dict['roll'].text())
+        v = np.float32(self.param_dict['pitch'].text())
+        w = np.float32(self.param_dict['yaw'].text())
+        dx = np.float32(self.param_dict['dx'].text())
+        dy = np.float32(self.param_dict['dy'].text())
+        dz = np.float32(self.param_dict['dz'].text())
+        c = np.cos
+        s = np.sin
+        
+        Rx = np.array([[1, 0, 0, 0],
+                      [0, c(u), -s(u), 0],
+                      [0, s(u), c(u), 0],
+                      [0, 0, 0, 1]])
+        Ry = np.array([[c(v), 0, s(v), 0],
+                       [0, 1, 0, 0],
+                       [-s(v), 0, c(v), 0],
+                       [0, 0, 0, 1]])
+        Rz = np.array([[c(w), -s(w), 0, 0],
+                      [s(w), c(w), 0, 0],
+                      [0, 0, 1, 0],
+                      [0, 0, 0, 1]])
+        # Order of rotations in vtk is Pitch, then Roll, then Yaw
+        M = Rz @ Rx @ Ry
+        # Now add translation components
+        M[0, 3] = dx
+        M[1, 3] = dy
+        M[2, 3] = dz
+
+        # Step 2:
+        # Add transform matrix to ss's transform dict, apply it and update
+        # renderwindow
+        self.ss.add_transform('app', M)
+        self.ss.apply_transforms(['app'])
+        self.vtkWidget.GetRenderWindow().Render()
+
+
     def on_reset_param_button_click(self, s):
         """
         Reset transformation parameters to those derived from reflectors.
@@ -726,6 +780,7 @@ class MainWindow(Qt.QMainWindow):
         None.
 
         """
+        print('pick made')
 
         # Get the picked point
         pt = obj.GetPickPosition()
