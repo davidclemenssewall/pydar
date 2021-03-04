@@ -476,8 +476,8 @@ class MainWindow(Qt.QMainWindow):
         
         # Init scan_area
         self.scan_area = pydar.ScanArea(project_path, project_names,
-                                        registration_list, load_scans=False,
-                                        read_scans=False, import_las=False)
+                                        registration_list, import_mode=
+                                        'empty', class_list='all')
         
         # Update proj_comboboxes with available scans
         self.proj_combobox_0.addItems(project_names)
@@ -508,13 +508,13 @@ class MainWindow(Qt.QMainWindow):
 
         # Parse project path and names and load projects
         project_name_0 = self.proj_combobox_0.currentText()
-        self.scan_area.add_project(project_name_0, import_las=True, 
-                                   create_id=False,
-                                   las_fieldnames=['Points'])
+        self.scan_area.add_project(project_name_0, import_mode='import_npy',
+                                   las_fieldnames=['Points'], create_id=False,
+                                   class_list='all')
         project_name_1 = self.proj_combobox_1.currentText()
-        self.scan_area.add_project(project_name_1, import_las=True, 
-                                   create_id=False,
-                                   las_fieldnames=['Points'])
+        self.scan_area.add_project(project_name_1, import_mode='import_npy',
+                                   las_fieldnames=['Points'], create_id=False,
+                                   class_list='all')
         self.scan_area.register_all()
         self.project_0 = self.scan_area.project_dict[project_name_0]
         self.project_1 = self.scan_area.project_dict[project_name_1]

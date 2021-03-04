@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+explore_selection_by_value.py
+
+Created on Thu Mar  4 15:21:21 2021
+
+@author: thayer
+"""
+
+import numpy as np
+import vtk
+from vtk.util.numpy_support import numpy_to_vtk, vtk_to_numpy
+
+
+filepath = ('/media/thayer/Data/mosaic_lidar/ROV/mosaic_rov_190120.RiSCAN/' +
+            'vtkfiles/pointclouds/ScanPos001.vtp')
+
+reader = vtk.vtkXMLPolyDataReader()
+reader.SetFileName(filepath)
+reader.Update()
+pdata = reader.GetOutput()
+
+#print(np.unique(vtk_to_numpy(pdata.GetPointData().GetScalars())))
+
+# Test createing a vtkPolyDataAlgorithm as a dummy filter
+dummyFilter = vtk.vtkTransformPolyDataFilter()
+dummyFilter.SetInputConnection(reader.GetOutputPort())
+dummyFilter.SetTransform(vtk.vtkTransform())
+dummyFilter.Update()
+
+# %% create a selection node object
+
+selectionList = vtk.vtkUnsignedCharArray()
+selectionList.InsertNextValue(2)
+selectionList.InsertNextValue(70)
+
+selectionNode = vtk.vtkSelectionNode()
+selectionNode.SetFieldType(vtk.vtkSelectionNode.POINT)
+selectionNode.SetContentType(vtk.vtkSelectionNode.VALUES)
+selectionNode.SetSelectionList(selectionList)
+
+selection = vtk.vtkSelection()
+selection.AddNode(selectionNode)
+
+extractSelection = vtk.vtkExtractSelection()
+extractSelection.SetInputConnection(0, dummyFilter.GetOutputPort())
+extractSelection.SetInputData(1, selection)
+extractSelection.Update()
+
+print(np.sum(vtk_to_numpy(pdata.GetPointData().GetScalars())==2))
+print(np.sum(vtk_to_numpy(pdata.GetPointData().GetScalars())==70))
+print(np.sum(vtk_to_numpy(pdata.GetPointData().GetScalars())==2)
+      + np.sum(vtk_to_numpy(pdata.GetPointData().GetScalars())==70))
+print(extractSelection.GetOutput().GetNumberOfPoints())

@@ -39,6 +39,7 @@ from sklearn.experimental import enable_hist_gradient_boosting
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+import tracemalloc
 
 class TiePointList:
     """Class to contain tiepointlist object and methods.
@@ -648,7 +649,8 @@ class SingleScan:
     def __init__(self, project_path, project_name, scan_name, 
                  import_mode=None, poly='.1_.1_.01',
                  read_scan=False, import_las=False, create_id=True,
-                 las_fieldnames=['Points', 'ReturnIndex']):
+                 las_fieldnames=['Points', 'ReturnIndex'], 
+                 class_list=[0, 1, 2, 70]):
         """
         Creates SingleScan object and transformation pipeline.
         
@@ -668,8 +670,9 @@ class SingleScan:
             Options are: 'poly' (read from Riscan generated poly), 'read_scan'
             (read saved vtp file), 'import_las' (use pdal to import from las
             file generate by Riscan), 'empty' (create an empty polydata, 
-            useful if we just want to work with transformations). If value is
-            None, then code will interpret values of read_scan and import_las
+            useful if we just want to work with transformations). 'import_npy'
+            (import from npyfiles directories) If value is None, then code 
+            will interpret values of read_scan and import_las
             (deprecated method of specifying which to import) to maintain
             backwards compatibility. The default is None.
         poly : str, optional
@@ -688,12 +691,17 @@ class SingleScan:
         las_fieldnames: list, optional
             List of fieldnames to load if we are importing from a las file
             Must include 'Points'. The default is ['Points', 'ReturnIndex'].
+        class_list : list
+            List of categories this filter will return, if special value: 
+            'all' Then we do not have a selection filter and we pass through 
+            all points. The default is [0, 1, 2, 70].
 
         Returns
         -------
         None.
 
         """
+        # tracemalloc.start()
         
         # Store instance attributes
         self.project_path = project_path
@@ -701,18 +709,34 @@ class SingleScan:
         self.scan_name = scan_name
         self.poly = poly
         
+        if import_mode is None:
+            # Issue a deprecated warning
+            warnings.warn("Use import_mode to indicate how SingleScan object" +
+                          " should load polydata.", FutureWarning)
+            if read_scan:
+                import_mode = 'read_scan'
+            elif not import_las:
+                import_mode = 'poly'
+            elif import_las:
+                import_mode = 'import_las'
+            else:
+                raise RuntimeError("You have specified an invalid combination"
+                                   + " of import flags")
+
         # Create reader, transformFilter
-        reader = vtk.vtkXMLPolyDataReader()
-        polys = os.listdir(os.path.join(self.project_path, self.project_name, 'SCANS',
-                           self.scan_name, 'POLYDATA'))
-        if read_scan:
+        if import_mode=='read_scan':
+            reader = vtk.vtkXMLPolyDataReader()
             reader.SetFileName(os.path.join(self.project_path, self.project_name, 
                            "vtkfiles", "pointclouds",
                            self.scan_name + '.vtp'))
             reader.Update()
             self.polydata_raw = reader.GetOutput()
-        elif not import_las:
+        elif import_mode=='poly':
             # Match poly with polys
+            reader = vtk.vtkXMLPolyDataReader()
+            polys = os.listdir(os.path.join(self.project_path, 
+                                            self.project_name, 'SCANS', 
+                                            self.scan_name, 'POLYDATA'))
             for name in polys:
                 if re.search(poly + '$', name):
                     reader.SetFileName(os.path.join(self.project_path, self.project_name,
@@ -722,10 +746,11 @@ class SingleScan:
                     reader.Update()
                     self.polydata_raw = reader.GetOutput()
                     break
-        elif import_las:
+        elif import_mode=='import_las':
             # import las file from lasfiles directory in project_path
-            filenames = os.listdir(os.path.join(self.project_path, self.project_name, 
-                                   "lasfiles"))
+            filenames = os.listdir(os.path.join(self.project_path, 
+                                                self.project_name, 
+                                                "lasfiles"))
             pattern = re.compile(self.scan_name + '.*las')
             matches = [pattern.fullmatch(filename) for filename in filenames]
             if any(matches):
@@ -774,7 +799,7 @@ class SingleScan:
         
                         vtkarr = numpy_to_vtk(self.np_dict[k],
                                               deep=False,
-                                              array_type=vtk.VTK_UNSIGNED_CHAR)
+                                              array_type=vtk.VTK_SIGNED_CHAR)
                         vtkarr.SetName(k)
                         pdata.GetPointData().AddArray(vtkarr)
                     elif k in ['Reflectance', 'Amplitude']:
@@ -791,12 +816,67 @@ class SingleScan:
                 vertexGlyphFilter.SetInputData(pdata)
                 vertexGlyphFilter.Update()
                 self.polydata_raw = vertexGlyphFilter.GetOutput()
+            else:
+                raise RuntimeError('Requested LAS file not found')
+        elif import_mode=='empty':
+            # Just to smooth things out, let's create a polydata with just
+            # one point (and no cells)
+            pts = vtk.vtkPoints()
+            pts.SetNumberOfPoints(1)
+            pts.SetPoint(0, 0, 0, 0)
+            self.polydata_raw = vtk.vtkPolyData()
+            self.polydata_raw.SetPoints(pts)
+        elif import_mode=='import_npy':
+            # Import directly from numpy files that we've already saved
+            npy_path = os.path.join(self.project_path, self.project_name,
+                                    'npyfiles', self.scan_name)
+            if not os.path.isdir(npy_path):
+                raise ValueError('npyfiles directory does not exist')
+            pdata = vtk.vtkPolyData()
+            self.np_dict = {}
+            for k in las_fieldnames:
+                self.np_dict[k] = np.load(os.path.join(npy_path, k + '.npy'))
+                if k=='Points':
+                    pts = vtk.vtkPoints()
+                    pts.SetData(numpy_to_vtk(self.np_dict[k], deep=False,
+                                             array_type=vtk.VTK_FLOAT))
+                    pdata.SetPoints(pts)
+                elif k=='NumberOfReturns':
+                    vtkarr = numpy_to_vtk(self.np_dict[k], deep=False,
+                                          array_type=vtk.VTK_UNSIGNED_CHAR)
+                    vtkarr.SetName(k)
+                    pdata.GetPointData().AddArray(vtkarr)
+                elif k=='ReturnIndex':
+                    vtkarr = numpy_to_vtk(self.np_dict[k], deep=False,
+                                          array_type=vtk.VTK_SIGNED_CHAR)
+                    vtkarr.SetName(k)
+                    pdata.GetPointData().AddArray(vtkarr)
+                elif k in ['Reflectance', 'Amplitude']:
+                    vtkarr = numpy_to_vtk(self.np_dict[k], deep=False,
+                                          array_type=vtk.VTK_DOUBLE)
+                    vtkarr.SetName(k)
+                    pdata.GetPointData().AddArray(vtkarr)
+                else:
+                    raise ValueError('Array ' + k + 'not available to import')
+            # Create VertexGlyphFilter so that we have vertices for
+            # displaying
+            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            vertexGlyphFilter.SetInputData(pdata)
+            vertexGlyphFilter.Update()
+            self.polydata_raw = vertexGlyphFilter.GetOutput()
+            # Delete no longer needed filter and pdata (this may break things)
+            # del vertexGlyphFilter, pdata, pts
+            # that makes no difference in memory and speed so let's leave it
+            # out and trust python's GC to catch it.
+            
+        else:
+            raise ValueError('Invalid import_mode provided')
         
         # Create dataset adaptor for interacting with polydata_raw
         self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
         
         # Add Classification array to polydata_raw if it's not present
-        if not 'Classification' in self.dsa_raw.PointData.keys():
+        if not self.polydata_raw.GetPointData().HasArray('Classification'):
             arr = vtk.vtkUnsignedCharArray()
             arr.SetName('Classification')
             arr.SetNumberOfComponents(1)
@@ -826,6 +906,7 @@ class SingleScan:
         self.transformFilter = vtk.vtkTransformPolyDataFilter()
         self.transformFilter.SetTransform(self.transform)
         self.transformFilter.SetInputData(self.polydata_raw)
+        self.transformFilter.Update()
         
         # Create other attributes
         self.transform_dict = {}
@@ -833,9 +914,32 @@ class SingleScan:
         self.filterDict = {}
         
         # Create currentFilter
-        self.currentFilter = ClassFilter(self.transformFilter.GetOutputPort(),
-                                         class_list=[0, 2, 70])
-
+        # self.currentFilter = ClassFilter(self.transformFilter.GetOutputPort(),
+        #                                  class_list=class_list)
+        if class_list=='all':
+            self.currentFilter = self.transformFilter
+        else:
+            selectionList = vtk.vtkUnsignedCharArray()
+            for v in class_list:
+                selectionList.InsertNextValue(v)
+            selectionNode = vtk.vtkSelectionNode()
+            selectionNode.SetFieldType(vtk.vtkSelectionNode.POINT)
+            selectionNode.SetContentType(vtk.vtkSelectionNode.VALUES)
+            selectionNode.SetSelectionList(selectionList)
+            
+            selection = vtk.vtkSelection()
+            selection.AddNode(selectionNode)
+            
+            self.currentFilter = vtk.vtkExtractSelection()
+            self.currentFilter.SetInputData(1, selection)
+            self.currentFilter.SetInputConnection(0, 
+                                        self.transformFilter.GetOutputPort())
+            self.currentFilter.Update()
+        # current, peak = tracemalloc.get_traced_memory()
+        # print('RAM Used in init')
+        # print(current)
+        # print(peak)
+        # tracemalloc.stop()
     
     def write_scan(self):
         """
@@ -2610,8 +2714,10 @@ class Project:
     """
     
     def __init__(self, project_path, project_name, poly='.1_.1_.01', 
-                 load_scans=True, read_scans=False, import_las=False
-                 , create_id=True, las_fieldnames=['Points', 'ReturnIndex']):
+                 import_mode=None, load_scans=True, read_scans=False, 
+                 import_las=False, create_id=True, 
+                 las_fieldnames=['Points', 'ReturnIndex'], 
+                 class_list=[0, 1, 2, 70]):
         """
         Generates project, also inits singlescan objects
 
@@ -2621,6 +2727,16 @@ class Project:
             Directory location of the project.
         project_name : str
             Filename of the RiSCAN project.
+        import_mode : str, optional
+            How to create polydata_raw, the base data for this SingleScan. 
+            Options are: 'poly' (read from Riscan generated poly), 'read_scan'
+            (read saved vtp file), 'import_las' (use pdal to import from las
+            file generate by Riscan), 'empty' (create an empty polydata, 
+            useful if we just want to work with transformations). 'import_npy'
+            (import from npyfiles directories) If value is None, then code 
+            will interpret values of read_scan and import_las
+            (deprecated method of specifying which to import) to maintain
+            backwards compatibility. The default is None.
         poly : str, optional
             The suffix describing which polydata to load. The default is
             '.1_.1_.01'.
@@ -2641,6 +2757,10 @@ class Project:
         las_fieldnames: list, optional
             List of fieldnames to load if we are importing from a las file
             Must include 'Points'. The default is ['Points', 'ReturnIndex'].
+        class_list : list
+            List of categories this filter will return, if special value: 
+            'all' Then we do not have a selection filter and we pass through 
+            all points. The default is [0, 1, 2, 70].
 
         Returns
         -------
@@ -2655,52 +2775,81 @@ class Project:
         self.project_date = mosaic_date_parser(project_name)
         self.current_transform_list = []
         
+        if import_mode is None:
+            # Issue a deprecated warning
+            warnings.warn("Use import_mode to indicate how SingleScan object" +
+                          " should load polydata.", FutureWarning)
+            if not load_scans:
+                import_mode = 'empty'
+            elif read_scans:
+                import_mode = 'read_scan'
+            elif not import_las:
+                import_mode = 'poly'
+            elif import_las:
+                import_mode = 'import_las'
+            else:
+                raise RuntimeError("You have specified an invalid combination"
+                                   + " of import flags")
+        
         # Add SingleScans, including their SOPs, 
-        # we will only add a singlescan if it has an SOP and a polydata that
-        # matches the poly suffix
-        if load_scans:
-            scan_names = os.listdir(os.path.join(project_path, project_name, 
+        # we will only add a singlescan if it has an SOP
+        scan_names = os.listdir(os.path.join(project_path, project_name, 
                                                  'SCANS'))
-            for scan_name in scan_names:
+        for scan_name in scan_names:
                 if os.path.isfile(os.path.join(self.project_path, 
                                                self.project_name, 
                                   scan_name + '.DAT')):
-                    if read_scans:
-                        scan = SingleScan(self.project_path, self.project_name,
-                                          scan_name, poly=poly,
-                                          read_scan=read_scans, 
-                                          create_id=create_id)
-                        scan.add_sop()
+                    scan = SingleScan(self.project_path, self.project_name,
+                                      scan_name, import_mode=import_mode,
+                                      poly=poly, create_id=create_id,
+                                      las_fieldnames=las_fieldnames,
+                                      class_list=class_list)
+                    scan.add_sop()
+                    self.scan_dict[scan_name] = scan
+        
+        # if load_scans:
+        #     scan_names = os.listdir(os.path.join(project_path, project_name, 
+        #                                          'SCANS'))
+        #     for scan_name in scan_names:
+        #         if os.path.isfile(os.path.join(self.project_path, 
+        #                                        self.project_name, 
+        #                           scan_name + '.DAT')):
+        #             if read_scans:
+        #                 scan = SingleScan(self.project_path, self.project_name,
+        #                                   scan_name, poly=poly,
+        #                                   read_scan=read_scans, 
+        #                                   create_id=create_id)
+        #                 scan.add_sop()
                         
-                        self.scan_dict.update({scan_name : scan})
+        #                 self.scan_dict.update({scan_name : scan})
                     
-                    elif import_las:
-                        scan = SingleScan(self.project_path, self.project_name,
-                                          scan_name, poly=poly,
-                                          import_las=import_las,
-                                          create_id=create_id,
-                                          las_fieldnames=las_fieldnames)
-                        scan.add_sop()
+        #             elif import_las:
+        #                 scan = SingleScan(self.project_path, self.project_name,
+        #                                   scan_name, poly=poly,
+        #                                   import_las=import_las,
+        #                                   create_id=create_id,
+        #                                   las_fieldnames=las_fieldnames)
+        #                 scan.add_sop()
                         
-                        self.scan_dict.update({scan_name : scan})
+        #                 self.scan_dict.update({scan_name : scan})
                     
-                    else:
-                        polys = os.listdir(os.path.join(self.project_path, self.project_name,
-                                           'SCANS', scan_name, 'POLYDATA'))
-                        match = False
-                        for name in polys:
-                            if re.search(poly + '$', name):
-                                match = True
-                                break
-                        if match:
-                            scan = SingleScan(self.project_path, 
-                                              self.project_name,
-                                              scan_name, poly=poly,
-                                              read_scan=read_scans,
-                                              create_id=create_id)
-                            scan.add_sop()
+        #             else:
+        #                 polys = os.listdir(os.path.join(self.project_path, self.project_name,
+        #                                    'SCANS', scan_name, 'POLYDATA'))
+        #                 match = False
+        #                 for name in polys:
+        #                     if re.search(poly + '$', name):
+        #                         match = True
+        #                         break
+        #                 if match:
+        #                     scan = SingleScan(self.project_path, 
+        #                                       self.project_name,
+        #                                       scan_name, poly=poly,
+        #                                       read_scan=read_scans,
+        #                                       create_id=create_id)
+        #                     scan.add_sop()
                             
-                            self.scan_dict.update({scan_name : scan})
+        #                     self.scan_dict.update({scan_name : scan})
         
         # Load TiePointList
         self.tiepointlist = TiePointList(self.project_path, self.project_name)
@@ -4510,9 +4659,10 @@ class ScanArea:
     """
     
     def __init__(self, project_path, project_names=[], registration_list=[],
-                 poly='.1_.1_.01', load_scans=True, read_scans=False,
-                 import_las=False,  create_id=True,
-                 las_fieldnames=['Points', 'ReturnIndex']):
+                 import_mode=None, poly='.1_.1_.01', load_scans=True, 
+                 read_scans=False, import_las=False,  create_id=True,
+                 las_fieldnames=['Points', 'ReturnIndex'], 
+                 class_list=[0, 1, 2, 70]):
         """
         init stores project_path and initializes project_dict
 
@@ -4527,6 +4677,16 @@ class ScanArea:
             If given this is the list of registration actions. Note, we make
             a deep copy of this list to avoid reference issues. The default is
             [].
+        import_mode : str, optional
+            How to create polydata_raw, the base data for this SingleScan. 
+            Options are: 'poly' (read from Riscan generated poly), 'read_scan'
+            (read saved vtp file), 'import_las' (use pdal to import from las
+            file generate by Riscan), 'empty' (create an empty polydata, 
+            useful if we just want to work with transformations). 'import_npy'
+            (import from npyfiles directories) If value is None, then code 
+            will interpret values of read_scan and import_las
+            (deprecated method of specifying which to import) to maintain
+            backwards compatibility. The default is None.
         poly : str, optional
             The suffix describing which polydata to load. The default is
             '.1_.1_.01'.
@@ -4539,6 +4699,19 @@ class ScanArea:
             raw polydata from where RiSCAN saved it. If True, read the saved
             vtp file from in the scan area directory. Useful if we have saved
             already filtered scans. The default is False.
+        import_las: bool, optional
+            If true (and read_scan is False) read in the las file instead of
+            the polydata. The default is False.
+        create_id: bool, optional
+            If true and PointID's do not exist create PointIDs. The default
+            is True.
+        las_fieldnames: list, optional
+            List of fieldnames to load if we are importing from a las file
+            Must include 'Points'. The default is ['Points', 'ReturnIndex'].
+        class_list : list
+            List of categories this filter will return, if special value: 
+            'all' Then we do not have a selection filter and we pass through 
+            all points. The default is [0, 1, 2, 70].
         
         Returns
         -------
@@ -4552,16 +4725,19 @@ class ScanArea:
         self.difference_dsa_dict = {}
         
         for project_name in project_names:
-            self.add_project(project_name, load_scans=load_scans,
-                             read_scans=read_scans, poly=poly, 
-                             import_las=import_las,  create_id=create_id,
+            self.add_project(project_name, import_mode=import_mode, 
+                             load_scans=load_scans, read_scans=read_scans,
+                             poly=poly, import_las=import_las, 
+                             create_id=create_id,
                              las_fieldnames=las_fieldnames)
             
         self.registration_list = copy.deepcopy(registration_list)
     
-    def add_project(self, project_name, poly='.1_.1_.01', load_scans=True, 
+    def add_project(self, project_name, import_mode=None, 
+                    poly='.1_.1_.01', load_scans=True, 
                     read_scans=False, import_las=False, create_id=True,
-                    las_fieldnames=['Points', 'ReturnIndex']):
+                    las_fieldnames=['Points', 'ReturnIndex'],
+                    class_list=[0, 1, 2, 70]):
         """
         Add a new project to the project_dict (or overwrite existing project)
 
@@ -4572,6 +4748,16 @@ class ScanArea:
         poly : str, optional
             The suffix describing which polydata to load. The default is
             '.1_.1_.01'.
+        import_mode : str, optional
+            How to create polydata_raw, the base data for this SingleScan. 
+            Options are: 'poly' (read from Riscan generated poly), 'read_scan'
+            (read saved vtp file), 'import_las' (use pdal to import from las
+            file generate by Riscan), 'empty' (create an empty polydata, 
+            useful if we just want to work with transformations). 'import_npy'
+            (import from npyfiles directories) If value is None, then code 
+            will interpret values of read_scan and import_las
+            (deprecated method of specifying which to import) to maintain
+            backwards compatibility. The default is None.
         load_scans : bool, optional
             Whether to actually load the scans. Often if we're just
             aligning successive scans loading all of them causes overhead.
@@ -4581,6 +4767,19 @@ class ScanArea:
             raw polydata from where RiSCAN saved it. If True, read the saved
             vtp file from in the scan area directory. Useful if we have saved
             already filtered scans. The default is False.
+        import_las: bool, optional
+            If true (and read_scan is False) read in the las file instead of
+            the polydata. The default is False.
+        create_id: bool, optional
+            If true and PointID's do not exist create PointIDs. The default
+            is True.
+        las_fieldnames: list, optional
+            List of fieldnames to load if we are importing from a las file
+            Must include 'Points'. The default is ['Points', 'ReturnIndex'].
+        class_list : list
+            List of categories this filter will return, if special value: 
+            'all' Then we do not have a selection filter and we pass through 
+            all points. The default is [0, 1, 2, 70].
 
         Returns
         -------
@@ -4589,13 +4788,16 @@ class ScanArea:
         """
         
         self.project_dict[project_name] = Project(self.project_path, 
-                                                  project_name, load_scans=
+                                                  project_name, 
+                                                  import_mode=import_mode,
+                                                  load_scans=
                                                   load_scans, read_scans=
                                                   read_scans, poly=poly,
                                                   import_las=import_las,
                                                   create_id=create_id,
                                                   las_fieldnames=
-                                                  las_fieldnames)
+                                                  las_fieldnames, class_list=
+                                                  class_list)
     
     def compare_reflectors(self, project_name_0, project_name_1, 
                            delaunay=False, mode='dist', 
@@ -5308,14 +5510,21 @@ class ClassFilter:
     
     Attributes
     ----------
-    threshold_dict : dict
-        contains vtkThresholdPoints objects keyed on the classifications 
-        we want to keep
-    appendPolyData : vtkAppendPolyData
-        vtkAppendPolyData object for combining filter output.
+    input_connection : vtkAlgorithmOutput
+    class_list : list
+        List of categories this filter will return, if special value: 'all'
+        Then we do not have a selection filter and we pass through all points
+    filter : vtkPolyDataAlgorithm
+        The filter
+    selectionNode : vtkSelectionNode
+        Selection node object for selecting points
+    selection : vtkSelection
+        selection object
     
     Methods
     -------
+    CreateFilter(class_list)
+        Creates the desired filter. Overwrites existing if present.
     Update()
         update filters (e.g. call after upstream Modified)
     GetOutputPort()
@@ -5334,8 +5543,8 @@ class ClassFilter:
         input_connection : vtkAlgorithmOutput
             vtk input connection to this filter
         class_list : list, optional
-            List of categories to include in the output. The default is 
-            [0, 1, 2, 70].
+            List of categories to include in the output. If 'all' then we will
+            do no filtering. The default is [0, 1, 2, 70].
 
         Returns
         -------
@@ -5343,20 +5552,45 @@ class ClassFilter:
 
         """
         
-        self.threshold_dict = {}
-        self.appendPolyData = vtk.vtkAppendPolyData()
-        for category in class_list:
-            self.threshold_dict[category] = vtk.vtkThresholdPoints()
-            self.threshold_dict[category].SetInputConnection(input_connection)
-            self.threshold_dict[category].ThresholdBetween(float(category)-0.5,
-                                                           float(category)+0.5)
-            self.threshold_dict[category].SetInputArrayToProcess(0, 0, 0,
-                vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS,
-                'Classification')
-            self.threshold_dict[category].Update()
-            self.appendPolyData.AddInputConnection(
-                self.threshold_dict[category].GetOutputPort())
-        self.appendPolyData.Update()
+        self.input_connection = input_connection
+        self.CreateFilter(class_list)
+    
+    def CreateFilter(self, class_list):
+        """
+        Create desired filter replaces existing if one exists.
+
+        Parameters
+        ----------
+        class_list : list, optional
+            List of categories to include in the output. If 'all' then we will
+            do no filtering. The default is [0, 1, 2, 70].
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.class_list = class_list
+        if class_list=='all':
+            self.filter = vtk.vtkTransformPolyDataFilter()
+            self.filter.SetTransform(vtk.vtkTransform())
+        else:
+            self.selectionList = vtk.vtkUnsignedCharArray()
+            for v in self.class_list:
+                self.selectionList.InsertNextValue(v)
+            self.selectionNode = vtk.vtkSelectionNode()
+            self.selectionNode.SetFieldType(vtk.vtkSelectionNode.POINT)
+            self.selectionNode.SetContentType(vtk.vtkSelectionNode.VALUES)
+            self.selectionNode.SetSelectionList(self.selectionList)
+            
+            self.selection = vtk.vtkSelection()
+            self.selection.AddNode(self.selectionNode)
+            
+            self.filter = vtk.vtkExtractSelection()
+            self.filter.SetInputData(1, self.selection)
+        self.filter.SetInputConnection(0, self.input_connection)
+        self.filter.Update()
     
     def Update(self):
         """
@@ -5368,9 +5602,7 @@ class ClassFilter:
 
         """
         
-        for category in self.threshold_dict:
-            self.threshold_dict[category].Update()
-        self.appendPolyData.Update()
+        self.filter.Update()
     
     def GetOutput(self):
         """
@@ -5382,7 +5614,7 @@ class ClassFilter:
 
         """
         
-        return self.appendPolyData.GetOutput()
+        return self.filter.GetOutput()
     
     def GetOutputPort(self):
         """
@@ -5394,7 +5626,7 @@ class ClassFilter:
 
         """
         
-        return self.appendPolyData.GetOutputPort()
+        return self.filter.GetOutputPort()
     
 class Classifier:
     """
