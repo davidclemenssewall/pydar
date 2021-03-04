@@ -645,7 +645,8 @@ class SingleScan:
         Add distance from scanner to polydata_raw
     """
     
-    def __init__(self, project_path, project_name, scan_name, poly='.1_.1_.01',
+    def __init__(self, project_path, project_name, scan_name, 
+                 import_mode=None, poly='.1_.1_.01',
                  read_scan=False, import_las=False, create_id=True,
                  las_fieldnames=['Points', 'ReturnIndex']):
         """
@@ -662,12 +663,22 @@ class SingleScan:
             Name of Riscan project.
         scan_name : str
             Typically ScanPos0XX where XX is the scan number.
+        import_mode : str, optional
+            How to create polydata_raw, the base data for this SingleScan. 
+            Options are: 'poly' (read from Riscan generated poly), 'read_scan'
+            (read saved vtp file), 'import_las' (use pdal to import from las
+            file generate by Riscan), 'empty' (create an empty polydata, 
+            useful if we just want to work with transformations). If value is
+            None, then code will interpret values of read_scan and import_las
+            (deprecated method of specifying which to import) to maintain
+            backwards compatibility. The default is None.
         poly : str, optional
             The suffix describing which polydata to load. The default is
             '.1_.1_.01'.
         read_scan : bool, optional
             Whether to read a saved scan from file. Typically useful for
-            handling filtered scans. The default is False
+            handling filtered scans. The default is False. Deprecated,
+            use import_mode.
         import_las: bool, optional
             If true (and read_scan is False) read in the las file instead of
             the polydata. The default is False.
