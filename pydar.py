@@ -20,6 +20,7 @@ from scipy import ndimage
 from scipy.spatial import Delaunay
 from scipy.special import erf, erfinv
 from scipy.signal import fftconvolve
+from scipy.stats import mode
 from numpy.linalg import svd
 import cv2 as cv
 import scipy.sparse as sp
@@ -40,6 +41,12 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 import tracemalloc
+import pyximport
+pyximport.install(inplace=True, language_level=3)
+try:
+    import cython_util
+except ModuleNotFoundError:
+    print('cython_util was not imported, functions relying on it will fail')
 
 class TiePointList:
     """Class to contain tiepointlist object and methods.
@@ -930,10 +937,17 @@ class SingleScan:
             selection = vtk.vtkSelection()
             selection.AddNode(selectionNode)
             
-            self.currentFilter = vtk.vtkExtractSelection()
-            self.currentFilter.SetInputData(1, selection)
-            self.currentFilter.SetInputConnection(0, 
+            self.extractSelection = vtk.vtkExtractSelection()
+            self.extractSelection.SetInputData(1, selection)
+            self.extractSelection.SetInputConnection(0, 
                                         self.transformFilter.GetOutputPort())
+            self.extractSelection.Update()
+            
+            # Unfortunately, extractSelection produces a vtkUnstructuredGrid
+            # so we need to use vtkGeometryFilter to convert to polydata
+            self.currentFilter = vtk.vtkGeometryFilter()
+            self.currentFilter.SetInputConnection(self.extractSelection
+                                                  .GetOutputPort())
             self.currentFilter.Update()
         # current, peak = tracemalloc.get_traced_memory()
         # print('RAM Used in init')
@@ -2438,15 +2452,16 @@ class SingleScan:
             self.transformFilter.Update()
             self.currentFilter.Update()
     
-    def write_npy_pdal(self, output_dir, filename=None, mode='transformed',
-                       skip_fields=[]):
+    def write_npy_pdal(self, output_dir=None, filename=None, 
+                       mode='transformed', skip_fields=[]):
         """
         Write scan to structured numpy array that can be read by PDAL.
 
         Parameters
         ----------
-        output_dir : str
-            Directory to write to.
+        output_dir : str, optional
+            Directory to write to. If none will write to the 'temp' folder
+            under the project name.
         filename : str, optional
             Filename to write, if None will write PROJECT_NAME_SCAN_NAME. 
             The default is None.
@@ -2508,6 +2523,8 @@ class SingleScan:
             else:
                 output_npy[name] = dsa_pdata.PointData[name]
                 
+        if output_dir is None:
+            output_dir = os.path.join(self.project_path, 'temp')
         if filename is None:
             filename = self.project_name + '_' + self.scan_name + '.npy'
         
@@ -4729,7 +4746,8 @@ class ScanArea:
                              load_scans=load_scans, read_scans=read_scans,
                              poly=poly, import_las=import_las, 
                              create_id=create_id,
-                             las_fieldnames=las_fieldnames)
+                             las_fieldnames=las_fieldnames,
+                             class_list=class_list)
             
         self.registration_list = copy.deepcopy(registration_list)
     
@@ -4961,6 +4979,328 @@ class ScanArea:
         # Apply sop and our new transform to each SingleScan
         self.project_dict[project_name_1].apply_transforms(['sop', 
                                                             transform_name])
+    def z_align_all(self, w0=10, w1=10,
+                           min_pt_dens=10, max_diff=0.1, 
+                           frac_exceed_diff_cutoff=0.1, bin_reduc_op='min',
+                           diff_mode='mean'):
+        """
+        Align successive scans on the basis of their gridded minima
+
+        !This function does not modify the tiepoint locations so it should 
+        only be run after all tiepoint registration steps are done. It also
+        requires that there hasn't been ice deformation and will try to not
+        run if the fraction that changed by more than the diff cutoff exceeds
+        frac_exceed_diff_cutoff.
+        Parameters
+        ----------
+        w0 : float, optional
+            Grid cell width in x dimension (m). The default is 10.
+        w1 : float, optional
+            Grid cell width in y dimension (m). The default is 10.
+        min_pt_dens : float, optional
+            minimum density of points/m^2 for us to compare grid cells from
+            projects 0 and 1. The default is 30.
+        max_diff : float, optional
+            Maximum difference in minima to consider (higher values must be
+            noise) in m. The default is 0.1.
+        frac_exceed_diff_cutoff : float, optional
+            If the max_diff cutoff is causing us to discard greater than this
+            fraction of the gridcells that meet the point density requirements
+            that probably means the ice has moved, so raise a warning
+        bin_reduc_op : str, optional
+            What type of gridded reduction to apply. Options are 'min', 'mean'
+            and 'mode'. The default is 'min'
+        diff_mode : str, optional
+            Which property of the difference distribution to set to zero. The
+            options are 'mean', 'median' and 'mode'. The default is 'mean'
+            
+        Returns
+        -------
+        None.
+
+        """
+
+        for registration_tuple in self.registration_list:
+            self.z_alignment(registration_tuple.project_name_0,
+                                    registration_tuple.project_name_1,
+                                    w0, w1, min_pt_dens, max_diff, 
+                                    frac_exceed_diff_cutoff, bin_reduc_op,
+                                    diff_mode)
+
+    def z_alignment(self, project_name_0, project_name_1, w0=10, w1=10,
+                           min_pt_dens=10, max_diff=0.15, 
+                           frac_exceed_diff_cutoff=0.1, bin_reduc_op='min',
+                           diff_mode='mean'):
+        """
+        Align successive scans on the basis of their gridded values
+
+        !This function does not modify the tiepoint locations so it should 
+        only be run after all tiepoint registration steps are done. It also
+        requires that there hasn't been ice deformation and will try to not
+        run if the fraction that changed by more than the diff cutoff exceeds
+        frac_exceed_diff_cutoff.
+        Parameters
+        ----------
+        project_name_0 : str
+            The reference project we're trying to align project_1 with
+        project_name_1 : str
+            The project we're aligning with project_0
+        w0 : float, optional
+            Grid cell width in x dimension (m). The default is 10.
+        w1 : float, optional
+            Grid cell width in y dimension (m). The default is 10.
+        min_pt_dens : float, optional
+            minimum density of points/m^2 for us to compare grid cells from
+            projects 0 and 1. The default is 30.
+        max_diff : float, optional
+            Maximum difference in minima to consider (higher values must be
+            noise) in m. The default is 0.1.
+        frac_exceed_diff_cutoff : float, optional
+            If the max_diff cutoff is causing us to discard greater than this
+            fraction of the gridcells that meet the point density requirements
+            that probably means the ice has moved, so raise a warning
+        bin_reduc_op : str, optional
+            What type of gridded reduction to apply. Options are 'min', 'mean'
+            and 'mode'. The default is 'min'
+        diff_mode : str, optional
+            Which property of the difference distribution to set to zero. The
+            options are 'mean', 'median' and 'mode'. The default is 'mean'
+        
+        Returns
+        -------
+        None.
+
+        """
+        if project_name_0==project_name_1:
+            self.project_dict[project_name_0].add_z_offset(0)
+            transform_list = copy.deepcopy(self.project_dict[project_name_0].
+                                           current_transform_list)
+            transform_list.append('z_offset')
+            self.project_dict[project_name_0].apply_transforms(transform_list)
+            return
+        
+        w = [w0, w1]
+        min_counts = min_pt_dens * w[0] * w[1]
+        
+        project_0 = self.project_dict[project_name_0]
+        project_1 = self.project_dict[project_name_1]
+
+        # Get the merged points polydata, by not using port we should prevent
+        # this memory allocation from persisting
+        pdata_merged_project_0 = project_0.get_merged_points()
+        project_0_points_np = vtk_to_numpy(pdata_merged_project_0
+                                           .GetPoints().GetData())
+        bounds = pdata_merged_project_0.GetBounds()
+
+        # Create grid
+        edges = 2*[None]
+        nbin = np.empty(2, np.int_)
+
+        for i in range(2):
+            edges[i] = np.arange(int(np.ceil((bounds[2*i + 1] - 
+                                              bounds[2*i])/w[i]))
+                                 + 1, dtype=np.float32) * w[i] + bounds[2*i]
+            # Adjust lower edge so we don't miss lower most point
+            edges[i][0] = edges[i][0] - 0.0001
+            # Adjust uppermost edge so the bin width is appropriate
+            edges[i][-1] = bounds[2*i + 1] + 0.0001
+            nbin[i] = len(edges[i]) + 1
+
+        # Get gridded counts and bin reduc
+        if bin_reduc_op=='min':
+            project_0_counts, project_0_arr = gridded_counts_mins(
+                project_0_points_np, edges, np.float32(bounds[5] + 1))
+        elif bin_reduc_op=='mean':
+            project_0_counts, project_0_arr = gridded_counts_means(
+                project_0_points_np, edges)
+        elif bin_reduc_op=='mode':
+            project_0_counts, project_0_arr = gridded_counts_modes(
+                project_0_points_np, edges)
+        else:
+            raise ValueError('bin_reduc_op must be min, mean or mode')
+        
+        # Now for each SingleScan in project_1, use the same grid to get minima
+        # and compare with project_0, then compute a z_offset and add to
+        # transform_dict
+        for scan_name in project_1.scan_dict:
+            ss = project_1.scan_dict[scan_name]
+
+            # Get points as an array
+            ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
+                                        .GetData())
+            # Get gridded counts and reduc op (using the same grid)
+            if bin_reduc_op=='min':
+                ss_counts, ss_arr = gridded_counts_mins(
+                    ss_points_np, edges, np.float32(bounds[5] + 1))
+            elif bin_reduc_op=='mean':
+                ss_counts, ss_arr = gridded_counts_means(
+                    ss_points_np, edges)
+            elif bin_reduc_op=='mode':
+                ss_counts, ss_arr = gridded_counts_modes(
+                    ss_points_np, edges)
+
+            # Compute differences of gridded minima
+            diff = ss_arr - project_0_arr
+            diff[project_0_counts < min_counts] = np.nan
+            diff[ss_counts < min_counts] = np.nan
+            if np.isnan(diff).all():
+                ss.add_z_offset(0)
+                warnings.warn("No overlap for " + project_name_1 + scan_name +
+                              " set z_offset to 0", UserWarning)
+            else:
+                frac_exceed_max_diff = ((np.abs(diff) > max_diff).sum()
+                                        / np.logical_not(np.isnan(diff)).sum())
+                if frac_exceed_max_diff > frac_exceed_diff_cutoff:
+                    ss.add_z_offset(0)
+                    num_density = np.logical_not(np.isnan(diff)).sum()
+                    warnings.warn("The fraction of the " + str(num_density) +
+                                  " cells that meet the " 
+                            + "density criteria but exceed the max_diff is " +
+                            str(frac_exceed_max_diff) + " assuming ice " +
+                            "motion and setting the offset to zero for " +
+                            project_name_1 + scan_name, UserWarning)
+                else:
+                    diff[np.abs(diff) > max_diff] = np.nan
+                    diff_notnan = np.ravel(diff)[np.logical_not(np.isnan(
+                        np.ravel(diff)))]
+                    if diff_mode=='mean':
+                        ss.add_z_offset(-1*diff_notnan.mean())
+                    elif diff_mode=='median':
+                        ss.add_z_offset(-1*np.median(diff_notnan))
+                    elif diff_mode=='mode':
+                        m, _ = mode(np.around(diff_notnan, 3))
+                        ss.add_z_offset(-1*m)
+                    else:
+                        raise ValueError('diff_mode must be mean, median, or'
+                                         + ' mode')
+
+        # Apply the transforms
+        transform_list = copy.deepcopy(project_1.current_transform_list)
+        transform_list.append('z_offset')
+        project_1.apply_transforms(transform_list)
+        return
+    
+    def z_alignment_ss(self, project_name_0, project_name_1, scan_name,
+                              w0=10, w1=10, min_pt_dens=10, max_diff=0.15,
+                              bin_reduc_op='min'):
+        """
+        Align successive scans on the basis of their gridded minima
+        
+        ss version is for looking at the change in just a singlescan
+
+        !This function does not modify the tiepoint locations so it should 
+        only be run after all tiepoint registration steps are done. It also
+        requires that there hasn't been ice deformation and will try to not
+        run if the fraction that changed by more than the diff cutoff exceeds
+        frac_exceed_diff_cutoff.
+        Parameters
+        ----------
+        project_name_0 : str
+            The reference project we're trying to align project_1 with
+        project_name_1 : str
+            The project we're aligning with project_0
+        w0 : float, optional
+            Grid cell width in x dimension (m). The default is 10.
+        w1 : float, optional
+            Grid cell width in y dimension (m). The default is 10.
+        min_pt_dens : float, optional
+            minimum density of points/m^2 for us to compare grid cells from
+            projects 0 and 1. The default is 30.
+        max_diff : float, optional
+            Maximum difference in minima to consider (higher values must be
+            noise) in m. The default is 0.1.
+        bin_reduc_op : str, optional
+            What type of gridded reduction to apply. Options are 'min', 'mean'
+            and 'mode'. The default is 'min'
+
+        Returns
+        -------
+        diff : ndarray
+            Array containing gridded minima differences
+
+        """
+        if project_name_0==project_name_1:
+            self.project_dict[project_name_0].add_z_offset(0)
+            transform_list = copy.deepcopy(self.project_dict[project_name_0].
+                                           current_transform_list)
+            transform_list.append('z_offset')
+            self.project_dict[project_name_0].apply_transforms(transform_list)
+            return
+        
+        w = [w0, w1]
+        min_counts = min_pt_dens * w[0] * w[1]
+        
+        project_0 = self.project_dict[project_name_0]
+        project_1 = self.project_dict[project_name_1]
+
+        # Get the merged points polydata, by not using port we should prevent
+        # this memory allocation from persisting
+        pdata_merged_project_0 = project_0.get_merged_points()
+        project_0_points_np = vtk_to_numpy(pdata_merged_project_0
+                                           .GetPoints().GetData())
+        bounds = pdata_merged_project_0.GetBounds()
+
+        # Create grid
+        edges = 2*[None]
+        nbin = np.empty(2, np.int_)
+
+        for i in range(2):
+            edges[i] = np.arange(int(np.ceil((bounds[2*i + 1] - 
+                                              bounds[2*i])/w[i]))
+                                 + 1, dtype=np.float32) * w[i] + bounds[2*i]
+            # Adjust lower edge so we don't miss lower most point
+            edges[i][0] = edges[i][0] - 0.0001
+            # Adjust uppermost edge so the bin width is appropriate
+            edges[i][-1] = bounds[2*i + 1] + 0.0001
+            nbin[i] = len(edges[i]) + 1
+
+        # Get gridded counts and bin reduc
+        if bin_reduc_op=='min':
+            project_0_counts, project_0_arr = gridded_counts_mins(
+                project_0_points_np, edges, np.float32(bounds[5] + 1))
+        elif bin_reduc_op=='mean':
+            project_0_counts, project_0_arr = gridded_counts_means(
+                project_0_points_np, edges)
+        elif bin_reduc_op=='mode':
+            project_0_counts, project_0_arr = gridded_counts_modes(
+                project_0_points_np, edges)
+        else:
+            raise ValueError('bin_reduc_op must be min, mean or mode')
+        
+        # Now use the same grid to get on ss
+        ss = project_1.scan_dict[scan_name]
+
+        # Get points as an array
+        ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
+                                    .GetData())
+        # Get gridded counts and reduc op (using the same grid)
+        if bin_reduc_op=='min':
+            ss_counts, ss_arr = gridded_counts_mins(
+                ss_points_np, edges, np.float32(bounds[5] + 1))
+        elif bin_reduc_op=='mean':
+            ss_counts, ss_arr = gridded_counts_means(
+                ss_points_np, edges)
+        elif bin_reduc_op=='mode':
+            ss_counts, ss_arr = gridded_counts_modes(
+                ss_points_np, edges)
+
+        # Compute differences of gridded minima
+        diff = ss_arr - project_0_arr
+        diff[project_0_counts < min_counts] = np.nan
+        diff[ss_counts < min_counts] = np.nan
+        if np.isnan(diff).all():
+            frac_exceed_max_diff = np.nan
+            warnings.warn("No overlap for " + project_name_1 + scan_name +
+                          " set z_offset to 0", UserWarning)
+        else:
+            frac_exceed_max_diff = ((np.abs(diff) > max_diff).sum()
+                                    /np.logical_not(np.isnan(diff)).sum())
+            diff[np.abs(diff) > max_diff] = np.nan
+            if np.isnan(diff).all():
+                warnings.warn("All diffs exceed max_diff")
+
+        # Return the diff
+        return frac_exceed_max_diff, diff
     
     def apply_snowflake_filter(self, shells):
         """
@@ -6565,3 +6905,149 @@ def radial_spacing(r, dtheta=0.025, dphi=0.025, scanner_height=2.5, slope=0):
         dx = r_g - r_g_prime
     
     return spac
+
+##### Functions that require cython_util
+
+def gridded_counts_mins(points, edges, init_val=np.float32(1000)):
+    """
+    Grids a point cloud in x and y and returns the cellwise counts and min z
+
+    Parameters
+    ----------
+    points : float[:, :]
+        Pointcloud, Nx3 array of type np.float32
+    edges : list
+        2 item list containing edges for gridding
+    init_val : float
+        Initial values in mins array. Pick something larger than largest z
+        in Points. In mins output, all bins that don't have any points in them
+        will take on this value.
+
+    Returns:
+    --------
+    counts : long[:, :]
+        Gridded array with the counts for each bin
+    mins : float[:, :]
+        Gridded array with the min z value for each bin.
+    """
+
+    Ncount = tuple(np.searchsorted(edges[i], points[:,i], 
+                               side='right') for i in range(2))
+
+    nbin = np.empty(2, np.int_)
+    nbin[0] = len(edges[0]) + 1
+    nbin[1] = len(edges[1]) + 1
+
+    xy = np.ravel_multi_index(Ncount, nbin)
+
+    # Compute gridded mins and counts
+    counts, mins = cython_util.create_counts_mins_cy(nbin[0], nbin[1],
+                                                     points,
+                                                     np.int_(xy), init_val)
+    counts = counts.reshape(nbin)
+    mins = mins.reshape(nbin)
+    core = 2*(slice(1, -1),)
+    counts = counts[core]
+    mins = mins[core]
+    mins[mins==init_val] = np.nan
+
+    return counts, mins
+
+def gridded_counts_means(points, edges):
+    """
+    Grids a point cloud in x and y and returns the cellwise counts and mean z
+
+    Parameters
+    ----------
+    points : float[:, :]
+        Pointcloud, Nx3 array of type np.float32
+    edges : list
+        2 item list containing edges for gridding
+
+    Returns:
+    --------
+    counts : long[:, :]
+        Gridded array with the counts for each bin
+    means : float[:, :]
+        Gridded array with the mean z value for each bin.
+    """
+
+    Ncount = tuple(np.searchsorted(edges[i], points[:,i], 
+                               side='right') for i in range(2))
+
+    nbin = np.empty(2, np.int_)
+    nbin[0] = len(edges[0]) + 1
+    nbin[1] = len(edges[1]) + 1
+
+    xy = np.ravel_multi_index(Ncount, nbin)
+
+    # Compute gridded mins and counts
+    counts, sums = cython_util.create_counts_sums_cy(nbin[0], nbin[1],
+                                                     points,
+                                                     np.int_(xy))
+    counts = counts.reshape(nbin)
+    sums = sums.reshape(nbin)
+    core = 2*(slice(1, -1),)
+    counts = counts[core]
+    sums = sums[core]
+    means = sums
+    means[counts==0] = np.nan
+    means = means/counts
+
+    return counts, means
+
+def gridded_counts_modes(points, edges, dz_hist=0.01):
+    """
+    Grids a point cloud in x and y and returns the cellwise counts and mode z
+
+    Parameters
+    ----------
+    points : float[:, :]
+        Pointcloud, Nx3 array of type np.float32
+    edges : list
+        2 item list containing edges for gridding
+    dz_hist : float, optional
+        Bin width, in m for the z histogram (resolution of modal values)
+        The default is 0.01.
+
+    Returns:
+    --------
+    counts : long[:, :]
+        Gridded array with the counts for each bin
+    modes : float[:, :]
+        Gridded array with the modal z value for each bin.
+    """
+
+    Ncount = tuple(np.searchsorted(edges[i], points[:,i], 
+                               side='right') for i in range(2))
+
+    nbin = np.empty(2, np.int_)
+    nbin[0] = len(edges[0]) + 1
+    nbin[1] = len(edges[1]) + 1
+
+    xy = np.ravel_multi_index(Ncount, nbin)
+
+    # Create histogram bins
+    flr_min_z = np.floor(points.min(axis=0)[2])
+    z_edges = np.arange(int(np.ceil((points.max(axis=0)[2] - flr_min_z)/dz_hist)
+                            ) + 1, 
+                         dtype=np.float32) * dz_hist + flr_min_z
+    nbin_h = np.int_(len(z_edges) + 1)
+    # modify z values of points array such that we get the z hist bin index
+    h_ind = ((points[:, 2] - flr_min_z)/dz_hist).astype(np.int_)
+
+
+    # Compute gridded hists and counts
+    counts, hists = cython_util.create_counts_hists_cy(nbin[0], nbin[1], h_ind, 
+                                                       np.int_(xy), nbin_h)
+    counts = counts.reshape(nbin)
+    # The argmax of the histogram is the index of the mode, z_edges[that index]
+    # is the mode (or at least to the nearest lower edge)
+    modes = z_edges[hists.argmax(axis=1)]
+    modes = modes.reshape(nbin)
+    core = 2*(slice(1, -1),)
+    counts = counts[core]
+    modes = modes[core]
+    modes[counts==0] = np.nan
+
+    return counts, modes

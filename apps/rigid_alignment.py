@@ -16,15 +16,12 @@ Created on Thu Jan  7 10:48:45 2021
 import sys
 import vtk
 import math
-import copy
 import numpy as np
+from scipy.stats import mode
 from vtk.util.numpy_support import vtk_to_numpy
 from vtk.numpy_interface import dataset_adapter as dsa
-from PyQt5 import QtCore, QtGui
 from PyQt5 import Qt
 from collections import namedtuple
-import re
-import os
 sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 import matplotlib
@@ -146,6 +143,45 @@ class MainWindow(Qt.QMainWindow):
         self.scan_combobox.setEnabled(0)
         self.scan_combobox.setSizeAdjustPolicy(0)
         opt_layout.addWidget(self.scan_combobox)
+        
+        # Create interface for Gridded minima alignment
+        self.z_align_dict = {}
+        z_align_list = ['cell_w', 'min_dens', 'max_diff']
+        for param in z_align_list:
+            temp_layout = Qt.QHBoxLayout()
+            temp_label = Qt.QLabel(param + ": ")
+            self.z_align_dict[param] = Qt.QLineEdit('0.0')
+            self.z_align_dict[param].setValidator(Qt.QDoubleValidator())
+            temp_layout.addWidget(temp_label)
+            temp_layout.addWidget(self.z_align_dict[param])
+            opt_layout.addLayout(temp_layout)
+        temp_layout = Qt.QHBoxLayout()
+        temp_label = Qt.QLabel("Bin Reduc Mode: ")
+        self.z_align_mode = Qt.QComboBox()
+        self.z_align_mode.addItems(['min', 'mean', 'mode'])
+        temp_layout.addWidget(temp_label)
+        temp_layout.addWidget(self.z_align_mode)
+        opt_layout.addLayout(temp_layout)
+        z_align_button = Qt.QPushButton("Compute Z Align")
+        opt_layout.addWidget(z_align_button)
+        self.frac_exceed_label = Qt.QLabel('frac>max_diff: nan')
+        opt_layout.addWidget(self.frac_exceed_label)
+        diff_mode_list = ['mean', 'median', 'mode']
+        self.diff_mode_dict = {}
+        self.diff_mode_buttongroup = Qt.QButtonGroup()
+        for param in diff_mode_list:
+            temp_layout = Qt.QHBoxLayout()
+            temp_label = Qt.QLabel(param + ": ")
+            self.diff_mode_dict[param] = Qt.QPushButton('')
+            self.diff_mode_buttongroup.addButton(self.diff_mode_dict[param])
+            temp_layout.addWidget(temp_label)
+            temp_layout.addWidget(self.diff_mode_dict[param])
+            opt_layout.addLayout(temp_layout)
+        self.z_change = Qt.QLineEdit('0.0')
+        self.z_change.setValidator(Qt.QDoubleValidator())
+        opt_layout.addWidget(self.z_change)
+        z_update_button = Qt.QPushButton("Apply Z Change")
+        opt_layout.addWidget(z_update_button)
 
         # Create interface for modifying rigid transformation parameters
         self.param_dict = {}
@@ -179,6 +215,9 @@ class MainWindow(Qt.QMainWindow):
         self.sel_proj_button.clicked.connect(self.on_sel_proj_button_click)
         self.proj_dialog.fileSelected.connect(self.on_scan_area_selected)
         self.scan_combobox.currentTextChanged.connect(self.on_scan_changed)
+        z_align_button.clicked.connect(self.on_z_align_button_clicked)
+        self.diff_mode_buttongroup.buttonPressed.connect(self.diff_mode_changed)
+        z_update_button.clicked.connect(self.on_z_update_button_clicked)
         update_param_button.clicked.connect(self.on_update_param_button_click)
         reset_param_button.clicked.connect(self.on_reset_param_button_click)
         look_down_button.clicked.connect(self.look_down)
@@ -563,6 +602,90 @@ class MainWindow(Qt.QMainWindow):
         # Call on_reset_param_button_click to update entry fields and render
         self.on_reset_param_button_click(1)
 
+    def on_z_align_button_clicked(self, s):
+        """
+        Run align z between the ss and project by gridded minima
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Get gridded difference
+        frac_exceed_max_diff, diff = self.scan_area.z_alignment_ss(
+            self.project_0.project_name, self.project_1.project_name, 
+            self.ss.scan_name, float(self.z_align_dict['cell_w'].text()),
+            float(self.z_align_dict['cell_w'].text()), 
+            float(self.z_align_dict['min_dens'].text()), 
+            float(self.z_align_dict['max_diff'].text()),
+            bin_reduc_op=self.z_align_mode.currentText())
+        # Update text output
+        self.frac_exceed_label.setText('frac>max_diff: ' 
+                                       + str(frac_exceed_max_diff))
+        # Set the text for each of the diff_mode buttons
+        diff_notnan = np.ravel(diff)[np.logical_not(np.isnan(
+                        np.ravel(diff)))]
+        self.diff_mode_dict['mean'].setText(str(round(
+            -1*diff_notnan.mean(), 3)))
+        self.diff_mode_dict['median'].setText(str(round(
+            -1*np.median(diff_notnan), 3)))
+        m, _ = mode(np.around(diff_notnan, 3))
+        self.diff_mode_dict['mode'].setText(str(round(-1*m[0], 3)))
+        
+        # Update plot
+        # Clear plot canvas
+        self.mpl_widget.axes.cla()
+        self.mpl_widget.axes.imshow(diff)
+        self.mpl_widget.axes.axis('equal')
+        self.mpl_widget.draw()
+    
+    def diff_mode_changed(self, button):
+        """
+        When we click one of the diff mode buttons update the z_change
+        line edit and apply the change in z.
+
+        Parameters
+        ----------
+        button : Qt.QAbstractButton
+            The button that was clicked
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        print('Diff mode changed')
+        self.z_change.setText(button.text())
+        self.on_z_update_button_clicked(1)
+    
+    def on_z_update_button_clicked(self, s):
+        """
+        Change dz by the amount in z_change
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Update dz
+        self.param_dict['dz'].setText(str(
+            float(self.param_dict['dz'].text()) + float(self.z_change.text())))
+        # Update transformation applied to scan
+        self.on_update_param_button_click(1)
+        
     def on_update_param_button_click(self, s):
         """
         Set transformation for ss to match user defined parameters.
@@ -681,8 +804,10 @@ class MainWindow(Qt.QMainWindow):
         if hasattr(self, 't_actor'):
             self.renderer.RemoveActor(self.t_actor)
             del self.t_actor
-            # Clear plot canvas
-            self.mpl_widget.axes.cla()
+        
+        # Clear plot canvas
+        self.mpl_widget.axes.cla()
+        self.mpl_widget.axes.axis('auto')
         line = vtk.vtkLineSource()
         line.SetPoint1(float(self.transect_dict['x0'].text()),
                        float(self.transect_dict['y0'].text()),
