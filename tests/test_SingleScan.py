@@ -7,29 +7,47 @@ Created on Tue Sep  8 15:54:32 2020
 @author: d34763s
 """
 
+import json
 import vtk
-import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+import sys
+sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 
 # %% Test init
 
-project_path = 'D:\\mosaic_lidar\\Snow1\\'
-project_name = 'mosaic_01_040120.RiSCAN'
-scan_name = 'ScanPos006'
-poly = 'all_within_16m'
+project_path = '/media/thayer/Data/mosaic_lidar/ROV/'
+project_name = 'mosaic_rov_190120.RiSCAN'
+scan_name = 'ScanPos004'
 
-ss = pydar.SingleScan(project_path, project_name, scan_name, poly=poly)
+ss = pydar.SingleScan(project_path, project_name, scan_name)
+
+# %% Check that we created a filter tree
+print(json.dumps(ss.filt_history_dict, indent=4))
+
+# %% Test init
+
+project_path = '/media/thayer/Data/mosaic_lidar/ROV/'
+project_name = 'mosaic_rov_190120.RiSCAN'
+scan_name = 'ScanPos004'
+
+ss = pydar.SingleScan(project_path, project_name, scan_name, import_mode=
+                      'import_las')
+
+# %% Check that we created a filter tree
+print(json.dumps(ss.filt_history_dict, indent=4))
+
 
 # %% Test add SOP and add z offset
 
 ss.add_sop()
-ss.add_z_offset(4.5)
+ss.add_z_offset(3)
 
 print(ss.transform_dict['sop'].GetOrientation())
 
+
 # %% Apply transforms
 ss.apply_transforms(['sop', 'z_offset'])
+print(json.dumps(ss.filt_history_dict, indent=4))
 
 # %% Create elevation pipeline
 z_min = 0

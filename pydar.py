@@ -584,8 +584,106 @@ class SingleScan:
         is the same as the PointId's of the points we add to this dataframe.
         Doing otherwise may cause duplicate points which could cause errors
         later on.
-    process_dict : dict
-        A dict containing
+    raw_history_dict : dict
+        A dict containing the history of modification dependencies to the
+        SingleScan as a tree. Every node in the tree contains the following
+        attributes as strings: "type", "git_hash", "method". It then contains
+        0 (if it's a source), 1 (filters), or 2 geometric 
+        inputs, as history_dicts of themselves. Then it contains an arbitrary
+        number of parameters. If the node has two input geometries, then the
+        output is considered to be the first geometry acting on the zeroth
+        (if some sense of ordering is required). There are two kinds of 
+        geometric objects, pointsets (e.g. lidar point clouds, reflector lists)
+        and transforms. 
+        Node examples:
+        "type": "Transformer"
+        "git_hash": 
+        "method":
+        "input_0": pointset
+        "input_1": transform
+        the output of this is a pointset (input 0 transformed by input 1)
+        
+        "type": "Transform Computer"
+        "git_hash": 
+        "method":
+        "input_0": pointset
+        "input_1": pointset
+        "params": {...}
+        the output of this is a transform (aligning input 1 with input 0)
+        
+        "type": "Transform Concatenator"
+        "git_hash": 
+        "method":
+        "input_0": transform
+        "input_1": transform
+        "params": {...}
+        the output of this  a transform, the result of transforming by 
+        input_0 followed by input_1
+        
+        "type": "Pointset Aggregator"
+        "git_hash": 
+        "method":
+        "input_0": pointset
+        "input_1": pointset
+        the output of this is a pointset (input_0 and input_1 concatenated)
+        
+        "type": "Filter"
+        "git_hash":
+        "method":
+        "input_0": pointset
+        "params": {...}
+        the output of this is a pointset that's a subset of input_0
+        
+        "type": "Scalar Modifier"
+        "git_hash":
+        "method":
+        "name":
+        "input_0": pointset
+        "params": {...}
+        the output of this is a pointset with the same geometry as input_0
+        
+        "type": "Pointset Source"
+        "git_hash":
+        "method":
+        "filename": str
+        "params": {...}
+        the output of this is pointset. Note, this is only appropriate for
+        the first time we import a pointset from RiSCAN, if we are loading
+        saved intermediate data we should also load its history_dict.
+        
+        "type": "Transform Source"
+        "git_hash":
+        "method":
+        "filename": str
+        "params": {...}
+        the output of this is a transform. If filename is empty and params
+        is empty then identity transform is assumed.
+    transformed_history_dict : dict
+        Same structure as raw_history_dict. self.raw_history_dict should be
+        the "input_0" value.
+        NOTE: here input_0 is passed by reference so that if for example,
+        we add arrays to polydata_raw (via "Scalar_Modifier") that carries
+        through.
+        "type": "Transformer"
+        "git_hash": 
+        "method":
+        "input_0": self.raw_history_dict
+        "input_1": (dict corresponding to the current transform,)
+    filt_history_dict : dict
+        Same structure as raw_history_dict. self.transformed_history_dict
+        should be the input_0 value:
+        "type": "Filter"
+        "git_hash":
+        "method":
+        "input_0": self.transformed_history_dict
+        "params": {...}
+        NOTE: here input_0 is passed by reference so that if for example,
+        we add arrays to polydata_raw (via "Scalar_Modifier") that carries
+        through.
+    trans_history_dict : dict
+        for each transformation in transform_dict gives the node to the 
+        history tree, keyed off the same key.
+        
     
     Methods
     -------
@@ -710,13 +808,13 @@ class SingleScan:
         None.
 
         """
-        # tracemalloc.start()
-        
         # Store instance attributes
         self.project_path = project_path
         self.project_name = project_name
         self.scan_name = scan_name
         self.poly = poly
+        # Get git_hash
+        git_hash = get_git_hash()
         
         if import_mode is None:
             # Issue a deprecated warning
@@ -754,6 +852,18 @@ class SingleScan:
                                             '1.vtp'))
                     reader.Update()
                     self.polydata_raw = reader.GetOutput()
+                    # We are reading from a RiSCAN output so initialize
+                    # raw_history_dict as a Pointset Source"
+                    self.raw_history_dict = {
+                        "type": "Pointset Source",
+                        "git_hash": git_hash,
+                        "method": "SingleScan.__init__",
+                        "filename": os.path.join(self.project_path, 
+                                                 self.project_name,
+                                                 'SCANS', self.scan_name, 
+                                                 'POLYDATA', name, '1.vtp'),
+                        "params": {"import_mode": import_mode}
+                        }
                     break
         elif import_mode=='import_las':
             # import las file from lasfiles directory in project_path
@@ -825,6 +935,18 @@ class SingleScan:
                 vertexGlyphFilter.SetInputData(pdata)
                 vertexGlyphFilter.Update()
                 self.polydata_raw = vertexGlyphFilter.GetOutput()
+                # We're importing from LAS (RiSCAN output) so initialize
+                # raw_history_dict as a Pointset Source
+                self.raw_history_dict = {
+                        "type": "Pointset Source",
+                        "git_hash": git_hash,
+                        "method": "SingleScan.__init__",
+                        "filename": os.path.join(self.project_path, 
+                                                 self.project_name, 
+                                                 "lasfiles", filename),
+                        "params": {"import_mode": import_mode,
+                                   "las_fieldnames": las_fieldnames}
+                        }
             else:
                 raise RuntimeError('Requested LAS file not found')
         elif import_mode=='empty':
@@ -835,6 +957,17 @@ class SingleScan:
             pts.SetPoint(0, 0, 0, 0)
             self.polydata_raw = vtk.vtkPolyData()
             self.polydata_raw.SetPoints(pts)
+            # The pointset source in this case is empty
+            self.raw_history_dict = {
+                    "type": "Pointset Source",
+                    "git_hash": git_hash,
+                    "method": "SingleScan.__init__",
+                    "filename": '',
+                    "params": {"import_mode": import_mode}
+                    }
+        
+        # Will eliminate this and convert reading numpy to be exclusively
+        # for processed data
         elif import_mode=='import_npy':
             # Import directly from numpy files that we've already saved
             npy_path = os.path.join(self.project_path, self.project_name,
@@ -893,6 +1026,15 @@ class SingleScan:
             arr.FillComponent(0, 0)
             self.polydata_raw.GetPointData().AddArray(arr)
             self.polydata_raw.GetPointData().SetActiveScalars('Classification')
+            # Update raw_history_dict to indicate that we've added 
+            # Classification field (note, use json method to deepcopy because
+            # it is thread safe)
+            self.raw_history_dict = {"type": "Scalar Modifier",
+                                     "git_hash": git_hash,
+                                     "method": "SingleScan.__init__",
+                                     "name": "Add Classification",
+                                     "input_0": json.loads(json.dumps(
+                                         self.raw_history_dict))}
         
         # Add PedigreeIds if they are not already present
         if create_id and not 'PointId' in self.dsa_raw.PointData.keys():
@@ -906,6 +1048,15 @@ class SingleScan:
                                           GetNumberOfPoints(), dtype='uint32')
             self.polydata_raw.GetPointData().SetPedigreeIds(pedigreeIds)
             self.polydata_raw.GetPointData().SetActivePedigreeIds('PointId')
+            # Update raw_history_dict to indicate that we've added 
+            # PointId field (note, use json method to deepcopy because
+            # it is thread safe)
+            self.raw_history_dict = {"type": "Scalar Modifier",
+                                     "git_hash": git_hash,
+                                     "method": "SingleScan.__init__",
+                                     "name": "Add PointId",
+                                     "input_0": json.loads(json.dumps(
+                                         self.raw_history_dict))}
         
         self.polydata_raw.Modified()
         
@@ -916,9 +1067,21 @@ class SingleScan:
         self.transformFilter.SetTransform(self.transform)
         self.transformFilter.SetInputData(self.polydata_raw)
         self.transformFilter.Update()
-        
+        # Create the transformed_history_dict, in this case 
+        self.transformed_history_dict = {
+            "type": "Transformer",
+            "git_hash": git_hash,
+            "method": "SingleScan.__init__",
+            "input_0": self.raw_history_dict,
+            "input_1": {"type": "Transform Source",
+                        "git_hash": git_hash,
+                        "method": "SingleScan.__init__",
+                        "filename": ''}
+            }
+   
         # Create other attributes
         self.transform_dict = {}
+        self.trans_history_dict = {}
         self.filterName = 'None'
         self.filterDict = {}
         
@@ -951,12 +1114,14 @@ class SingleScan:
             self.currentFilter.SetInputConnection(self.extractSelection
                                                   .GetOutputPort())
             self.currentFilter.Update()
-        # current, peak = tracemalloc.get_traced_memory()
-        # print('RAM Used in init')
-        # print(current)
-        # print(peak)
-        # tracemalloc.stop()
-    
+        # Create filt_history_dict
+        self.filt_history_dict = {
+            "type": "Filter",
+            "git_hash": git_hash,
+            "method": "SingleScan.__init__",
+            "input_0": self.transformed_history_dict,
+            "params": {"class_list": class_list}}
+        
     def write_scan(self):
         """
         Write the scan to a vtp file. Thus storing Classification.
@@ -1128,7 +1293,7 @@ class SingleScan:
             self.man_class.index.name = 'PointId'
         
     
-    def add_transform(self, key, matrix):
+    def add_transform(self, key, matrix, history_dict=None):
         """
         Adds a new transform to the transform_dict
 
@@ -1138,6 +1303,10 @@ class SingleScan:
             Name of the tranform (e.g. 'sop')
         matrix : 4x4 array-like
             4x4 matrix of transformation in homologous coordinates.
+        history_dict : dict
+            dict tree containing history of transform. If None then we create
+            a Transform Source node with the matrix as a param. The default
+            is None.
 
         Returns
         -------
@@ -1154,6 +1323,18 @@ class SingleScan:
         transform.SetMatrix(vtk4x4)
         # Add transform to transform_dict
         self.transform_dict.update({key : transform})
+        if history_dict is None:
+            warnings.warn('You are adding a transform with no history' + 
+                          ' make sure this is intended')
+            self.trans_history_dict[key] = {
+                "type": "Transform Source",
+                "git_hash": get_git_hash(),
+                "method": "SingleScan.add_transform",
+                "filename": '',
+                "params": {"matrix": matrix.tolist()}
+                }
+        else:
+            self.trans_history_dict[key] = history_dict
         
     def add_sop(self):
         """
@@ -1167,9 +1348,15 @@ class SingleScan:
         
         trans = np.genfromtxt(os.path.join(self.project_path, self.project_name, 
                               self.scan_name + '.DAT'), delimiter=' ')
-        self.add_transform('sop', trans)
+        self.add_transform('sop', trans, history_dict={
+            "type": "Pointset Source",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.add_sop",
+            "filename": os.path.join(self.project_path, self.project_name, 
+                              self.scan_name + '.DAT')
+            })
         
-    def add_z_offset(self, z_offset):
+    def add_z_offset(self, z_offset, history_dict=None):
         """
         Adds a uniform z offset to the scan
 
@@ -1177,6 +1364,12 @@ class SingleScan:
         ----------
         z_offset : float
             z offset to add in meters.
+        history_dict : dict
+            dict tree containing history of transform. If None then we create
+            a Transform Source node with the z_offset as a param. If the z
+            offset was computed from an upstream source (like ScanArea.z_align
+            ) then that information should be passed in in history_dict.
+            The default is None.
 
         Returns
         -------
@@ -1186,7 +1379,17 @@ class SingleScan:
         
         trans = np.eye(4)
         trans[2, 3] = z_offset
-        self.add_transform('z_offset', trans)
+        if history_dict is None:
+            warnings.warn('You are adding a transform with no history' + 
+                          ' make sure this is intended')
+            history_dict = {
+                "type": "Transform Source",
+                "git_hash": get_git_hash(),
+                "method": "SingleScan.add_z_offset",
+                "filename": '',
+                "params": {"z_offset": z_offset}
+                }
+        self.add_transform('z_offset', trans, history_dict=history_dict)
         
     def get_polydata(self, port=False):
         """
@@ -1228,20 +1431,52 @@ class SingleScan:
         """
         # Reset transform to the identity
         self.transform.Identity()
+        git_hash = get_git_hash()
         
-        for key in transform_list:
+        
+        for i, key in enumerate(transform_list):
             try:
                 self.transform.Concatenate(self.transform_dict[key])
+                
             except Exception as e:
                 print("Requested transform " + key + " is not in " +
                       "transform_dict")
                 print(e)
+            if i==0:
+                # If we're the first transform in the list, start the tree
+                # of transformations
+                temp_trans_dict = json.loads(json.dumps(
+                    self.trans_history_dict[key]))
+            else:
+                # Otherwise create a Transform concatenator node
+                temp_trans_dict = {
+                    "type": "Transform Concatenator",
+                    "git_hash": git_hash,
+                    "method": 'SingleScan.apply_transforms',
+                    "input_0": json.loads(json.dumps(temp_trans_dict)),
+                    "input_1": json.loads(json.dumps(
+                        self.trans_history_dict[key]))
+                    }
+        # Overwrite input_1 in the transformed_history_dict so that it reflect
+        # the current transform
+        self.transformed_history_dict["input_1"] = json.loads(json.dumps(
+            temp_trans_dict))
         
         # If the norm_height array exists delete it we will recreate it 
         # if needed
         if 'norm_height' in self.dsa_raw.PointData.keys():
             self.polydata_raw.GetPointData().RemoveArray('norm_height')
             self.polydata_raw.Modified()
+            # Update raw_history_dict accordingly
+            self.raw_history_dict = {
+                "type": "Scalar Modifier",
+                "git_hash": git_hash,
+                "method": 'SingleScan.apply_transforms',
+                "name": "Removed norm_height",
+                "input_0": json.loads(json.dumps(self.raw_history_dict))
+                }
+            self.transformed_history_dict["input_0"] = self.raw_history_dict
+            
         self.transformFilter.Update()
         self.currentFilter.Update()
     
