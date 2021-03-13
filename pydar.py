@@ -7053,3 +7053,30 @@ def gridded_counts_modes(points, edges, dz_hist=0.01):
     modes[counts==0] = np.nan
 
     return counts, modes
+
+def get_git_hash():
+    """
+    Get the current git hash string for pydar
+
+    Returns
+    -------
+    str
+        The git hash string for the pydar repository
+
+    """
+    
+    # Get and store the directory we are currently in
+    cwd = os.getcwd()
+    # Get the top level pydar directory (where this file resides)
+    pydar_path = os.path.dirname(os.path.realpath(__file__))
+    # Move to the pydar directory
+    os.chdir(pydar_path)
+    # Get the git hash as a string
+    stream = os.popen('git rev-parse HEAD')
+    output = stream.read()
+    git_hash = output.split('\n')[0]
+    # Return to the directory we started in
+    os.chdir(cwd)
+    # Return the hash
+    return git_hash
+
