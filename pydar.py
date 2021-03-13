@@ -584,6 +584,8 @@ class SingleScan:
         is the same as the PointId's of the points we add to this dataframe.
         Doing otherwise may cause duplicate points which could cause errors
         later on.
+    process_dict : dict
+        A dict containing
     
     Methods
     -------
