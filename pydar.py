@@ -2065,7 +2065,9 @@ class SingleScan:
             "git_hash": get_git_hash(),
             "method": "SingleScan.apply_snowflake_filter_returnindex",
             "name": "Set snowflake Classification to 65",
-            "input_0": json.loads(json.dumps(self.raw_history_dict))
+            "input_0": json.loads(json.dumps(self.raw_history_dict)),
+            "params": {"cylinder_rad": cylinder_rad,
+                       'radial_precision': radial_precision}
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
 
@@ -3101,7 +3103,7 @@ class Project:
     def __init__(self, project_path, project_name, poly='.1_.1_.01', 
                  import_mode=None, load_scans=True, read_scans=False, 
                  import_las=False, create_id=True, 
-                 las_fieldnames=['Points', 'ReturnIndex'], 
+                 las_fieldnames=None, 
                  class_list=[0, 1, 2, 70]):
         """
         Generates project, also inits singlescan objects
