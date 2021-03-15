@@ -756,8 +756,8 @@ class SingleScan:
     def __init__(self, project_path, project_name, scan_name, 
                  import_mode=None, poly='.1_.1_.01',
                  read_scan=False, import_las=False, create_id=True,
-                 las_fieldnames=['Points', 'ReturnIndex'], 
-                 class_list=[0, 1, 2, 70]):
+                 las_fieldnames=None, 
+                 class_list=[0, 1, 2, 70], read_dir=None):
         """
         Creates SingleScan object and transformation pipeline.
         
@@ -797,11 +797,17 @@ class SingleScan:
             is True.
         las_fieldnames: list, optional
             List of fieldnames to load if we are importing from a las file
-            Must include 'Points'. The default is ['Points', 'ReturnIndex'].
+            Must include 'Points'. If None, and we are loading scans, read
+            all arrays. If None and we are importing las then set to
+            ['Points', 'NumberOfReturns', 'ReturnIndex', 'Reflectance',
+             'Amplitude']. The default is None.
         class_list : list
             List of categories this filter will return, if special value: 
             'all' Then we do not have a selection filter and we pass through 
             all points. The default is [0, 1, 2, 70].
+        read_dir : str
+            Directory to read scan from. Defaults to npyfiles if None. The
+            default is None.
 
         Returns
         -------
@@ -830,14 +836,79 @@ class SingleScan:
                 raise RuntimeError("You have specified an invalid combination"
                                    + " of import flags")
 
-        # Create reader, transformFilter
+        # Read scan
         if import_mode=='read_scan':
-            reader = vtk.vtkXMLPolyDataReader()
-            reader.SetFileName(os.path.join(self.project_path, self.project_name, 
-                           "vtkfiles", "pointclouds",
-                           self.scan_name + '.vtp'))
-            reader.Update()
-            self.polydata_raw = reader.GetOutput()
+            # Import directly from numpy files that we've already saved
+            if read_dir is None:
+                npy_path = os.path.join(self.project_path, self.project_name,
+                                        'npyfiles', self.scan_name)
+            else:
+                npy_path = read_dir
+            
+            if not os.path.isdir(npy_path):
+                raise ValueError('npyfiles directory does not exist')
+            # If las_fieldnames is None load all numpy files
+            if las_fieldnames is None:
+                filenames = os.listdir(npy_path)
+                las_fieldnames = []
+                for filename in filenames:
+                    if re.search('.*npy$', filename):
+                        las_fieldnames.append(filename)
+            else:
+                for i in range(len(las_fieldnames)):
+                    las_fieldnames[i] = las_fieldnames[i] + '.npy'
+            
+            pdata = vtk.vtkPolyData()
+            self.np_dict = {}
+            for k in las_fieldnames:
+                try:
+                    name = k.split('.')[0]
+                    self.np_dict[name] = np.load(os.path.join(npy_path, k))
+                    if name=='Points':
+                        pts = vtk.vtkPoints()
+                        if self.np_dict[name].dtype=='float64':
+                            arr_type = vtk.VTK_DOUBLE
+                        elif self.np_dict[name].dtype=='float32':
+                            arr_type = vtk.VTK_FLOAT
+                        else:
+                            raise RuntimeError('Unrecognized dtype in ' + k)
+                        pts.SetData(numpy_to_vtk(self.np_dict[name], 
+                                                 deep=False, 
+                                                 array_type=arr_type))
+                        pdata.SetPoints(pts)
+                    else:
+                        if self.np_dict[name].dtype=='float64':
+                            arr_type = vtk.VTK_DOUBLE
+                        elif self.np_dict[name].dtype=='float32':
+                            arr_type = vtk.VTK_FLOAT
+                        elif self.np_dict[name].dtype=='int8':
+                            arr_type = vtk.VTK_SIGNED_CHAR
+                        elif self.np_dict[name].dtype=='uint8':
+                            arr_type = vtk.VTK_UNSIGNED_CHAR
+                        elif self.np_dict[name].dtype=='uint32':
+                            arr_type = vtk.VTK_UNSIGNED_INT
+                        else:
+                            raise RuntimeError('Unrecognized dtype in ' + k)
+                        vtkarr = numpy_to_vtk(self.np_dict[name], deep=False,
+                                              array_type=vtk.VTK_UNSIGNED_CHAR)
+                        vtkarr.SetName(name)
+                        pdata.GetPointData().AddArray(vtkarr)
+                
+                except IOError:
+                    print(k + ' does not exist in ' + npy_path)
+                
+            # Create VertexGlyphFilter so that we have vertices for
+            # displaying
+            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            vertexGlyphFilter.SetInputData(pdata)
+            vertexGlyphFilter.Update()
+            self.polydata_raw = vertexGlyphFilter.GetOutput()
+            
+            # Load in history dict
+            f = open(os.path.join(npy_path, 'raw_history_dict.txt'))
+            self.raw_history_dict = json.load(f)
+            f.close()
+            
         elif import_mode=='poly':
             # Match poly with polys
             reader = vtk.vtkXMLPolyDataReader()
@@ -866,6 +937,10 @@ class SingleScan:
                         }
                     break
         elif import_mode=='import_las':
+            # If las_fieldnames is None set it
+            if las_fieldnames is None:
+                las_fieldnames = ['Points', 'NumberOfReturns', 'ReturnIndex', 
+                                  'Reflectance', 'Amplitude']
             # import las file from lasfiles directory in project_path
             filenames = os.listdir(os.path.join(self.project_path, 
                                                 self.project_name, 
@@ -965,52 +1040,6 @@ class SingleScan:
                     "filename": '',
                     "params": {"import_mode": import_mode}
                     }
-        
-        # Will eliminate this and convert reading numpy to be exclusively
-        # for processed data
-        elif import_mode=='import_npy':
-            # Import directly from numpy files that we've already saved
-            npy_path = os.path.join(self.project_path, self.project_name,
-                                    'npyfiles', self.scan_name)
-            if not os.path.isdir(npy_path):
-                raise ValueError('npyfiles directory does not exist')
-            pdata = vtk.vtkPolyData()
-            self.np_dict = {}
-            for k in las_fieldnames:
-                self.np_dict[k] = np.load(os.path.join(npy_path, k + '.npy'))
-                if k=='Points':
-                    pts = vtk.vtkPoints()
-                    pts.SetData(numpy_to_vtk(self.np_dict[k], deep=False,
-                                             array_type=vtk.VTK_FLOAT))
-                    pdata.SetPoints(pts)
-                elif k=='NumberOfReturns':
-                    vtkarr = numpy_to_vtk(self.np_dict[k], deep=False,
-                                          array_type=vtk.VTK_UNSIGNED_CHAR)
-                    vtkarr.SetName(k)
-                    pdata.GetPointData().AddArray(vtkarr)
-                elif k=='ReturnIndex':
-                    vtkarr = numpy_to_vtk(self.np_dict[k], deep=False,
-                                          array_type=vtk.VTK_SIGNED_CHAR)
-                    vtkarr.SetName(k)
-                    pdata.GetPointData().AddArray(vtkarr)
-                elif k in ['Reflectance', 'Amplitude']:
-                    vtkarr = numpy_to_vtk(self.np_dict[k], deep=False,
-                                          array_type=vtk.VTK_DOUBLE)
-                    vtkarr.SetName(k)
-                    pdata.GetPointData().AddArray(vtkarr)
-                else:
-                    raise ValueError('Array ' + k + 'not available to import')
-            # Create VertexGlyphFilter so that we have vertices for
-            # displaying
-            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-            vertexGlyphFilter.SetInputData(pdata)
-            vertexGlyphFilter.Update()
-            self.polydata_raw = vertexGlyphFilter.GetOutput()
-            # Delete no longer needed filter and pdata (this may break things)
-            # del vertexGlyphFilter, pdata, pts
-            # that makes no difference in memory and speed so let's leave it
-            # out and trust python's GC to catch it.
-            
         else:
             raise ValueError('Invalid import_mode provided')
         
@@ -1122,9 +1151,20 @@ class SingleScan:
             "input_0": self.transformed_history_dict,
             "params": {"class_list": class_list}}
         
-    def write_scan(self):
+    def write_scan(self, write_dir=None):
         """
-        Write the scan to a vtp file. Thus storing Classification.
+        Write the scan to a collection of numpy files.
+        
+        This enables us to save the Classification field so we don't need to 
+        run all of the filters each time we load data. Additionally, npy files
+        are much faster to load than vtk files. Finally, we need to write
+        the history_dict to this directory as well.
+        
+        Parameters
+        ----------
+        write_dir: str, optional
+            Directory to write scan files to. If None write default npyfiles
+            location. The default is None.
 
         Returns
         -------
@@ -1132,23 +1172,35 @@ class SingleScan:
 
         """
         
-        # If the write directory doesn't exist, create it
-        if not os.path.isdir(os.path.join(self.project_path, self.project_name, 
-                             "vtkfiles")):
-            os.mkdir(os.path.join(self.project_path, self.project_name, 
-                     "vtkfiles"))
-        if not os.path.isdir(os.path.join(self.project_path, self.project_name, 
-                             "vtkfiles", "pointclouds")):
-            os.mkdir(os.path.join(self.project_path, self.project_name, 
-                     "vtkfiles", "pointclouds"))
+        if write_dir is None:
+            # If the write directory doesn't exist, create it
+            if not os.path.isdir(os.path.join(self.project_path, 
+                                              self.project_name, "npyfiles")):
+                os.mkdir(os.path.join(self.project_path, self.project_name, 
+                                      "npyfiles"))
+            # Within npyfiles we need a directory for each scan
+            if not os.path.isdir(os.path.join(self.project_path, 
+                                              self.project_name, "npyfiles", 
+                                              self.scan_name)):
+                os.mkdir(os.path.join(self.project_path, self.project_name, 
+                                      "npyfiles", self.scan_name))
+            write_dir = os.path.join(self.project_path, self.project_name, 
+                                     "npyfiles", self.scan_name)
         
-        # Create writer and write mesh
-        writer = vtk.vtkXMLPolyDataWriter()
-        writer.SetInputData(self.polydata_raw)
-        writer.SetFileName(os.path.join(self.project_path, self.project_name, 
-                           "vtkfiles", "pointclouds",
-                               self.scan_name + '.vtp'))
-        writer.Write()
+        # Delete old saved SingleScan files in the directory
+        for f in os.listdir(write_dir):
+            os.remove(os.path.join(write_dir, f))
+        # Save Points
+        np.save(os.path.join(write_dir, 'Points.npy'), self.dsa_raw.Points)
+        # Save arrays
+        for name in self.dsa_raw.PointData.keys():
+            np.save(os.path.join(write_dir, name), 
+                    self.dsa_raw.PointData[name])
+        # Save history_dict
+        f = open(os.path.join(write_dir, 'raw_history_dict.txt'), 'w')
+        json.dump(self.raw_history_dict, f, indent=4)
+        f.close()
+        
         
     def read_scan(self):
         """
@@ -1159,6 +1211,8 @@ class SingleScan:
         None.
 
         """
+        raise RuntimeError("There's no longer any reason to call SingleScan."
+                           + "read_scan. Simply init a new SingleScan object")
         
         # Clear polydata_raw and dsa_raw
         if hasattr(self, 'dsa_raw'):
@@ -1391,7 +1445,7 @@ class SingleScan:
                 }
         self.add_transform('z_offset', trans, history_dict=history_dict)
         
-    def get_polydata(self, port=False):
+    def get_polydata(self, port=False, history_dict=False):
         """
         Returns vtkPolyData of scan with current transforms and filters.
         
@@ -1400,17 +1454,31 @@ class SingleScan:
         port : bool, optional
             Whether to return an output connection instead of a polydata.
             The default is False
+        history_dict : bool, optional
+            If history, also return the history dict for this polydata. The
+            default is False.
 
         Returns
         -------
-        vtkPolyData.
+        vtkPolyData or vtkAlgorithmOutput.
 
         """
+        if not history_dict:
+            warnings.Warn("You are passing a SingleScan's PolyData without" +
+                          "it's history.")
         
         if port:
-            return self.currentFilter.GetOutputPort()
+            if history_dict:
+                return (self.currentFilter.GetOutputPort(), 
+                        self.filt_history_dict)
+            else:    
+                return self.currentFilter.GetOutputPort()
         else:
-            return self.currentFilter.GetOutput()
+            if history_dict:
+                return (self.currentFilter.GetOutput(), 
+                        json.loads(json.dumps(self.filt_history_dict)))
+            else:
+                return self.currentFilter.GetOutput()
     
     def apply_transforms(self, transform_list):
         """
@@ -1495,6 +1563,15 @@ class SingleScan:
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
+        # Update raw_history_dict
+        self.raw_history_dict = {
+            "type": "Scalar Modifier",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.clear_classification",
+            "name": "Reset Classification to zero",
+            "input_0": json.loads(json.dumps(self.raw_history_dict))
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
     
     def update_man_class(self, pdata, classification):
         """
@@ -1751,7 +1828,7 @@ class SingleScan:
         
     def apply_elevation_filter(self, z_max):
         """
-        Set Classification for all points above z_max to be 1. 
+        Set Classification for all points above z_max to be 64. 
 
         Parameters
         ----------
@@ -1773,87 +1850,97 @@ class SingleScan:
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
+        # Update raw_history_dict
+        self.raw_history_dict = {
+            "type": "Scalar Modifier",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.apply_elevation_filter",
+            "name": "Set Classification for points above z_max to be 64",
+            "input_0": json.loads(json.dumps(self.raw_history_dict)),
+            "params": {"z_max": z_max}
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
     
-    def apply_snowflake_filter_2(self, z_diff, N, r_min):
-        """
-        Filter snowflakes based on their vertical distance from nearby points.
+    # def apply_snowflake_filter_2(self, z_diff, N, r_min):
+    #     """
+    #     Filter snowflakes based on their vertical distance from nearby points.
         
-        Here we exploit the fact that snowflakes (and for that matter power
-        cables and some other human objects) are higher than their nearby
-        points. The filter steps through each point in the transformed
-        dataset and compares its z value with the mean of the z-values of
-        the N closest points. If the difference exceeds z_diff then set the
-        Classification for that point to be 2. Also, there is a shadow around the
-        base of the scanner so all points within there must be spurious. We
-        filter all points within r_min
+    #     Here we exploit the fact that snowflakes (and for that matter power
+    #     cables and some other human objects) are higher than their nearby
+    #     points. The filter steps through each point in the transformed
+    #     dataset and compares its z value with the mean of the z-values of
+    #     the N closest points. If the difference exceeds z_diff then set the
+    #     Classification for that point to be 2. Also, there is a shadow around the
+    #     base of the scanner so all points within there must be spurious. We
+    #     filter all points within r_min
 
-        Parameters
-        ----------
-        z_diff : float
-            Maximum vertical difference in m a point can have from its 
-            neighborhood.
-        N : int
-            Number of neighbors to find.
-        r_min : float
-            Radius of scanner in m within which to filter all points.
+    #     Parameters
+    #     ----------
+    #     z_diff : float
+    #         Maximum vertical difference in m a point can have from its 
+    #         neighborhood.
+    #     N : int
+    #         Number of neighbors to find.
+    #     r_min : float
+    #         Radius of scanner in m within which to filter all points.
 
-        Returns
-        -------
-        None.
+    #     Returns
+    #     -------
+    #     None.
 
-        """
+    #     """
         
-        # Move z-values to scalars 
-        elevFilter = vtk.vtkSimpleElevationFilter()
-        elevFilter.SetInputConnection(self.transformFilter.GetOutputPort())
-        elevFilter.Update()
-        # Flatten points
-        flattener = vtk.vtkTransformPolyDataFilter()
-        trans = vtk.vtkTransform()
-        trans.Scale(1, 1, 0)
-        flattener.SetTransform(trans)
-        flattener.SetInputConnection(elevFilter.GetOutputPort())
-        flattener.Update()
+    #     # Move z-values to scalars 
+    #     elevFilter = vtk.vtkSimpleElevationFilter()
+    #     elevFilter.SetInputConnection(self.transformFilter.GetOutputPort())
+    #     elevFilter.Update()
+    #     # Flatten points
+    #     flattener = vtk.vtkTransformPolyDataFilter()
+    #     trans = vtk.vtkTransform()
+    #     trans.Scale(1, 1, 0)
+    #     flattener.SetTransform(trans)
+    #     flattener.SetInputConnection(elevFilter.GetOutputPort())
+    #     flattener.Update()
         
-        # Create pdata and locator
-        pdata = flattener.GetOutput()
-        locator = vtk.vtkOctreePointLocator()
-        pdata.SetPointLocator(locator)
-        locator.SetDataSet(pdata)
-        pdata.BuildLocator()
+    #     # Create pdata and locator
+    #     pdata = flattener.GetOutput()
+    #     locator = vtk.vtkOctreePointLocator()
+    #     pdata.SetPointLocator(locator)
+    #     locator.SetDataSet(pdata)
+    #     pdata.BuildLocator()
         
-        # Create temporary arrays for holding points
-        output = vtk.vtkFloatArray()
-        output.SetNumberOfValues(N)
-        output_np = vtk_to_numpy(output)
-        pt_ids = vtk.vtkIdList()
-        pt_ids.SetNumberOfIds(N)
-        pt = np.zeros((3))
-        scan_pos = np.array(self.transform.GetPosition())
+    #     # Create temporary arrays for holding points
+    #     output = vtk.vtkFloatArray()
+    #     output.SetNumberOfValues(N)
+    #     output_np = vtk_to_numpy(output)
+    #     pt_ids = vtk.vtkIdList()
+    #     pt_ids.SetNumberOfIds(N)
+    #     pt = np.zeros((3))
+    #     scan_pos = np.array(self.transform.GetPosition())
         
-        for m in np.arange(pdata.GetNumberOfPoints()):
-            # Get the point
-            pdata.GetPoint(m, pt)
-            # Check if the point is within our exclusion zone
-            r = np.linalg.norm(pt[:2]-scan_pos[:2])
-            if r < r_min:
-                self.dsa_raw.PointData['Classification'][m] = 65
-                continue
+    #     for m in np.arange(pdata.GetNumberOfPoints()):
+    #         # Get the point
+    #         pdata.GetPoint(m, pt)
+    #         # Check if the point is within our exclusion zone
+    #         r = np.linalg.norm(pt[:2]-scan_pos[:2])
+    #         if r < r_min:
+    #             self.dsa_raw.PointData['Classification'][m] = 65
+    #             continue
             
-            # Get N closest points
-            locator.FindClosestNPoints(N, pt, pt_ids)
-            # now using the list of point_ids set the values in output to be the z
-            # values of the found points
-            pdata.GetPointData().GetScalars().GetTuples(pt_ids, output)
-            # If we exceed z_diff set Classification to 2
-            if (pdata.GetPointData().GetScalars().GetTuple(m)
-                - output_np.mean())>z_diff:
-                self.dsa_raw.PointData['Classification'][m] = 65
+    #         # Get N closest points
+    #         locator.FindClosestNPoints(N, pt, pt_ids)
+    #         # now using the list of point_ids set the values in output to be the z
+    #         # values of the found points
+    #         pdata.GetPointData().GetScalars().GetTuples(pt_ids, output)
+    #         # If we exceed z_diff set Classification to 2
+    #         if (pdata.GetPointData().GetScalars().GetTuple(m)
+    #             - output_np.mean())>z_diff:
+    #             self.dsa_raw.PointData['Classification'][m] = 65
         
-        # Update currentTransform
-        self.polydata_raw.Modified()
-        self.transformFilter.Update()
-        self.currentFilter.Update()
+    #     # Update currentTransform
+    #     self.polydata_raw.Modified()
+    #     self.transformFilter.Update()
+    #     self.currentFilter.Update()
     
     def apply_snowflake_filter_returnindex(self, cylinder_rad=0.025*np.sqrt(2)
                                            *np.pi/180, radial_precision=0):
@@ -1971,6 +2058,16 @@ class SingleScan:
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
+        
+        # Update raw_history_dict
+        self.raw_history_dict = {
+            "type": "Scalar Modifier",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.apply_snowflake_filter_returnindex",
+            "name": "Set snowflake Classification to 65",
+            "input_0": json.loads(json.dumps(self.raw_history_dict))
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
 
     def create_dimensionality_pdal(self, temp_file="", from_current=True, 
                                    voxel=True, h_voxel=0.1, v_voxel=0.01, 
@@ -2014,6 +2111,7 @@ class SingleScan:
         None.
 
         """
+        warnings.warn("History tracking not implemented yet")
         
         # Parse temp_file
         if not temp_file:
@@ -2148,6 +2246,7 @@ class SingleScan:
         None.
 
         """
+        warnings.warn("History tracking not implemented yet")
         
         # Parse temp_file
         if not temp_file:
@@ -2460,6 +2559,19 @@ class SingleScan:
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
+        
+        # Update raw_history_dict
+        self.raw_history_dict = {
+            "type": "Scalar Modifier",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.create_normalized_heights",
+            "name": "Create normalized heights field",
+            "input_0": json.loads(json.dumps(self.raw_history_dict)),
+            "input_1": json.loads(json.dumps(self.transformed_history_dict)),
+            "params": {"x": x.tolist(),
+                       "cdf": cdf.tolist()}
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
     
     def create_reflectance(self):
         """
@@ -2488,7 +2600,15 @@ class SingleScan:
             self.polydata_raw.Modified()
             self.transformFilter.Update()
             self.currentFilter.Update()
-    
+            # Update raw_history_dict
+            self.raw_history_dict = {
+                "type": "Scalar Modifier",
+                "git_hash": get_git_hash(),
+                "method": "SingleScan.create_reflectance",
+                "name": "Create reflectance field",
+                "input_0": json.loads(json.dumps(self.raw_history_dict))
+                }
+                
     def create_reflectance_pipeline(self, v_min, v_max, field='Reflectance'):
         """
         create mapper and actor displaying points colored by elevation.
@@ -2565,6 +2685,8 @@ class SingleScan:
         None.
 
         """
+        warnings.warn("History tracking has not been implemented for this " +
+                      "function yet")
         
         # If reflectance_radial array doesn't exist, create it.
         if not 'reflectance_radial' in self.dsa_raw.PointData.keys():
@@ -2632,6 +2754,8 @@ class SingleScan:
         None.
 
         """
+        warnings.warn("History tracking has not been implemented for this " +
+                      "function yet")
         
         # Undo previously flagged points (just reflectance, not snowflake)
         self.dsa_raw.PointData['Classification'][self.dsa_raw.PointData
@@ -2840,6 +2964,13 @@ class SingleScan:
         self.transformFilter.Update()
         self.currentFilter.Update()
 
+        # Update raw_history_dict
+        self.raw_history_dict = {"type": "Scalar Modifier",
+                                "git_hash": get_git_hash(),
+                                "method": "SingleScan.add_dict",
+                                "name": "Add distance from scanner",
+                                "input_0": json.loads(json.dumps(
+                                    self.raw_history_dict))}
 
 class Project:
     """Class linking relevant data for a project and methods for registration.
@@ -3061,50 +3192,6 @@ class Project:
                     scan.add_sop()
                     self.scan_dict[scan_name] = scan
         
-        # if load_scans:
-        #     scan_names = os.listdir(os.path.join(project_path, project_name, 
-        #                                          'SCANS'))
-        #     for scan_name in scan_names:
-        #         if os.path.isfile(os.path.join(self.project_path, 
-        #                                        self.project_name, 
-        #                           scan_name + '.DAT')):
-        #             if read_scans:
-        #                 scan = SingleScan(self.project_path, self.project_name,
-        #                                   scan_name, poly=poly,
-        #                                   read_scan=read_scans, 
-        #                                   create_id=create_id)
-        #                 scan.add_sop()
-                        
-        #                 self.scan_dict.update({scan_name : scan})
-                    
-        #             elif import_las:
-        #                 scan = SingleScan(self.project_path, self.project_name,
-        #                                   scan_name, poly=poly,
-        #                                   import_las=import_las,
-        #                                   create_id=create_id,
-        #                                   las_fieldnames=las_fieldnames)
-        #                 scan.add_sop()
-                        
-        #                 self.scan_dict.update({scan_name : scan})
-                    
-        #             else:
-        #                 polys = os.listdir(os.path.join(self.project_path, self.project_name,
-        #                                    'SCANS', scan_name, 'POLYDATA'))
-        #                 match = False
-        #                 for name in polys:
-        #                     if re.search(poly + '$', name):
-        #                         match = True
-        #                         break
-        #                 if match:
-        #                     scan = SingleScan(self.project_path, 
-        #                                       self.project_name,
-        #                                       scan_name, poly=poly,
-        #                                       read_scan=read_scans,
-        #                                       create_id=create_id)
-        #                     scan.add_sop()
-                            
-        #                     self.scan_dict.update({scan_name : scan})
-        
         # Load TiePointList
         self.tiepointlist = TiePointList(self.project_path, self.project_name)
     
@@ -3128,9 +3215,14 @@ class Project:
             self.scan_dict[scan_name].apply_transforms(transform_list)
         self.current_transform_list = transform_list
     
-    def write_scans(self):
+    def write_scans(self, project_write_dir=None):
         """
         Write all single scans to files.
+        
+        Parameters
+        ----------
+        A directory to write all scans for this project to. If none write
+        to default npyfiles location. The default is None.
 
         Returns
         -------
@@ -3138,8 +3230,18 @@ class Project:
 
         """
         
-        for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].write_scan()
+        if project_write_dir is None:
+            for scan_name in self.scan_dict:
+                self.scan_dict[scan_name].write_scan()
+        else:
+            # For each scan name create a directory under project_write_dir
+            # if it does not already exist.
+            for scan_name in self.scan_dict:
+                if not os.path.isdir(os.path.join(project_write_dir, 
+                                                  scan_name)):
+                    os.mkdir(os.path.join(project_write_dir, scan_name))
+                self.scan_dict[scan_name].write_scan(os.path.join(
+                    project_write_dir, scan_name))
     
     def read_scans(self):
         """
@@ -3150,7 +3252,7 @@ class Project:
         None.
 
         """
-        
+        raise RuntimeError('Do not use, just init a new Project object')
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].read_scan()
     
