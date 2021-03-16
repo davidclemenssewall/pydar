@@ -74,6 +74,14 @@ class TiePointList:
         Stores transformations that aligns self tiepoints with others. Keyed
         on tuples (name, str_reflector_list). Each entry is a tuple 
         (reflector_list, transform, std).
+    raw_history_dict : dict
+        A dict containing the history of modification dependencies as a tree
+        see SingleScan docstring for more details
+    transformed_history_dict : dict
+        Same as raw history dict for tiepoints_transformed
+    trans_history_dict : dict
+        for each transformation in transforms gives the node of the history
+        tree keyed the same as in transforms
         
     Methods
     -------
@@ -114,7 +122,32 @@ class TiePointList:
         self.tiepoints_transformed = self.tiepoints.copy(deep=True)
         self.current_transform = ('identity', '')
         
-    def add_transform(self, name, transform, reflector_list=[], std=np.NaN):
+        # Create and update history dicts
+        git_hash = get_git_hash()
+        self.raw_history_dict = {
+            "type": "Pointset Source",
+            "git_hash": git_hash,
+            "method": "TiePointList.__init__",
+            "filename": os.path.join(project_path, project_name, 
+                                     'tiepoints.csv')
+            }
+        self.trans_history_dict = {}
+        self.trans_history_dict[('identity', '')] = {
+            "type": "Transform Source",
+            "git_hash": git_hash,
+            "method": "TiePointList.__init__",
+            "filename": ''
+            }
+        self.transformed_history_dict = {
+            "type": "Transformer",
+            "git_hash": git_hash,
+            "method": "TiePointList.__init__",
+            "input_0": self.raw_history_dict,
+            "input_1": self.trans_history_dict[('identity', '')]
+            }
+        
+    def add_transform(self, name, transform, reflector_list=[], std=np.NaN,
+                      history_dict=None):
         """
         Add a transform to the transforms dict.
 
@@ -130,6 +163,10 @@ class TiePointList:
         std : float, optional
             Standard deviation of residuals between aligned reflectors in m
             if transformation is from reflectors. The default is None.
+        history_dict : dict
+            dict tree containing history of transform. If None then we create
+            a Transform Source node with the matrix as a param. The default
+            is None.
 
         Returns
         -------
@@ -144,10 +181,23 @@ class TiePointList:
                                                        transform,
                                                        std)
         
+        if history_dict is None:
+            warnings.warn('You are adding a transform with no history' + 
+                          ' make sure this is intended')
+            self.trans_history_dict[(name, str_reflector_list)] = {
+                "type": "Transform Source",
+                "git_hash": get_git_hash(),
+                "method": "SingleScan.add_transform",
+                "filename": '',
+                "params": {"transform": transform.tolist()}
+                }
+        else:
+            self.trans_history_dict[(name, str_reflector_list)] = history_dict
+        
         # Return key (index) of transform
         return (name, str_reflector_list)
     
-    def get_transform(self, index):
+    def get_transform(self, index, history_dict=False):
         """
         Return the requested transform's array.
 
@@ -158,11 +208,18 @@ class TiePointList:
 
         Returns
         -------
-        None.
+        ndarray or (ndarray, dict)
+            ndarray is 4x4 matrix of the requested transform. dict is the
+            transform's history_dict
 
         """
         
-        return self.transforms[index][1]
+        if history_dict:
+            return (self.transforms[index][1], json.loads(json.dumps(
+                self.trans_history_dict[index])))
+        else:
+            warnings.warn("You are getting a transform without its history")
+            return self.transforms[index][1]
     
     def apply_transform(self, index):
         """
@@ -189,6 +246,10 @@ class TiePointList:
         
         # Update current_transform
         self.current_transform = index
+        
+        # Update history dict
+        self.transformed_history_dict["input_1"] = self.trans_history_dict[
+            index]
 
     def calc_pairwise_dist(self):
         """Calculate the pairwise distances between each unique pair of 
@@ -288,13 +349,27 @@ class TiePointList:
 
         """
         
+        # Create history_dict for this operation
+        history_dict = {
+            "type": "Transform Computer",
+            "git_hash": get_git_hash(),
+            "method": 'TiePointList.calc_transformation',
+            "input_1": json.loads(json.dumps(self.raw_history_dict)),
+            "params": {"reflector_list": reflector_list,
+                       "mode": mode,
+                       "yaw_angle": yaw_angle}
+            }
         # extract point lists and name as in Arun et al.
         if use_tiepoints_transformed:
             psubi_prime = other_tiepointlist.tiepoints_transformed.loc[
                 reflector_list].to_numpy().T
+            history_dict["input_0"] = json.loads(json.dumps(
+                other_tiepointlist.transformed_history_dict))
         else:
             psubi_prime = other_tiepointlist.tiepoints.loc[
                 reflector_list].to_numpy().T
+            history_dict["input_0"] = json.loads(json.dumps(
+                other_tiepointlist.raw_history_dict))
         psubi = self.tiepoints.loc[reflector_list].to_numpy().T
         
         # Compute centroids
@@ -363,9 +438,11 @@ class TiePointList:
         else:
             std = np.NaN
         
-        # Add matrix to transforms
+        # Create history_dict for this operation
+        # Add matrix to transforms, including it's history dict
         key = self.add_transform(other_tiepointlist.project_name + '_' + mode,
-                                 A, reflector_list, std=std)
+                                 A, reflector_list, std=std, 
+                                 history_dict=history_dict)
         # Return key (index) of tranform in self.transforms.
         return key
 
@@ -855,6 +932,7 @@ class SingleScan:
                     if re.search('.*npy$', filename):
                         las_fieldnames.append(filename)
             else:
+                las_fieldnames = copy.deepcopy(las_fieldnames)
                 for i in range(len(las_fieldnames)):
                     las_fieldnames[i] = las_fieldnames[i] + '.npy'
             
@@ -876,6 +954,12 @@ class SingleScan:
                                                  deep=False, 
                                                  array_type=arr_type))
                         pdata.SetPoints(pts)
+                    elif name=='PointId':
+                        vtkarr = numpy_to_vtk(self.np_dict[name], deep=False,
+                                              array_type=vtk.VTK_UNSIGNED_INT)
+                        vtkarr.SetName(name)
+                        pdata.GetPointData().SetPedigreeIds(vtkarr)
+                        pdata.GetPointData().SetActivePedigreeIds('PointId')
                     else:
                         if self.np_dict[name].dtype=='float64':
                             arr_type = vtk.VTK_DOUBLE
@@ -890,10 +974,9 @@ class SingleScan:
                         else:
                             raise RuntimeError('Unrecognized dtype in ' + k)
                         vtkarr = numpy_to_vtk(self.np_dict[name], deep=False,
-                                              array_type=vtk.VTK_UNSIGNED_CHAR)
+                                              array_type=arr_type)
                         vtkarr.SetName(name)
-                        pdata.GetPointData().AddArray(vtkarr)
-                
+                        pdata.GetPointData().AddArray(vtkarr)                
                 except IOError:
                     print(k + ' does not exist in ' + npy_path)
                 
@@ -1403,7 +1486,7 @@ class SingleScan:
         trans = np.genfromtxt(os.path.join(self.project_path, self.project_name, 
                               self.scan_name + '.DAT'), delimiter=' ')
         self.add_transform('sop', trans, history_dict={
-            "type": "Pointset Source",
+            "type": "Transform Source",
             "git_hash": get_git_hash(),
             "method": "SingleScan.add_sop",
             "filename": os.path.join(self.project_path, self.project_name, 
@@ -3558,7 +3641,7 @@ class Project:
             self.scan_dict[scan_name].update_man_class_fields(
                 update_fields=update_fields, update_trans=update_trans)
     
-    def add_transform(self, key, matrix):
+    def add_transform(self, key, matrix, history_dict=None):
         """
         Add the provided transform to each single scan
 
@@ -3568,6 +3651,10 @@ class Project:
             Dictionary key for the transforms dictionary.
         matrix : TYPE
             DESCRIPTION.
+        history_dict : dict
+            dict tree containing history of transform. If None then we create
+            a Transform Source node with the matrix as a param. The default
+            is None.
 
         Returns
         -------
@@ -3576,7 +3663,8 @@ class Project:
         """
         
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].add_transform(key, matrix)
+            self.scan_dict[scan_name].add_transform(key, matrix, history_dict=
+                                                    history_dict)
     
     def add_transform_from_tiepointlist(self, key):
         """
@@ -3596,11 +3684,11 @@ class Project:
         """
         
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].add_transform(key, 
-                                                   self.tiepointlist.
-                                                   get_transform(key))
+            matrix, history_dict = self.tiepointlist.get_transform(key, 
+                                                        history_dict=True)
+            self.scan_dict[scan_name].add_transform(key, matrix, history_dict)
             
-    def add_z_offset(self, z_offset):
+    def add_z_offset(self, z_offset, history_dict=None):
         """
         Add z_offset transform to each single scan in scan_dict
 
@@ -3608,6 +3696,9 @@ class Project:
         ----------
         z_offset : float.
             z offset to add in meters.
+        history_dict : dict
+            dict tree containing history of transform. The default
+            is None.
 
         Returns
         -------
@@ -3616,7 +3707,8 @@ class Project:
         """
         
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].add_z_offset(z_offset)
+            self.scan_dict[scan_name].add_z_offset(z_offset, history_dict=
+                                                   history_dict)
             
     def display_project(self, z_min, z_max, lower_threshold=-1000, 
                         upper_threshold=1000, colorbar=True, field='Elevation',
@@ -4306,7 +4398,7 @@ class Project:
         # Store result in mesh
         self.mesh = appendPolyData.GetOutput()
         
-    def get_merged_points(self, port=False):
+    def get_merged_points(self, port=False, history_dict=False):
         """
         Returns a polydata with merged points from all single scans
         
@@ -4315,19 +4407,42 @@ class Project:
         port : bool, optional
             Whether to return an output connection instead of a polydata.
             The default is False
+        history_dict : bool, optional
+            Whether to return the history dict. Note that if port is False,
+            we return a deep copy of the history dict that is not linked to
+            the SingleScans whereas if port is true we return a linked 
+            version. The default is False.
 
         Returns
         -------
         vtkPolyData.
 
         """
+        git_hash = get_git_hash()
         
         # Create Appending filter and add all data to it
         appendPolyData = vtk.vtkAppendPolyData()
         for key in self.scan_dict:
             self.scan_dict[key].transformFilter.Update()
-            appendPolyData.AddInputConnection(self.scan_dict[key].
-                                              get_polydata(port=True))
+            connection, temp_hist_dict = self.scan_dict[key].get_polydata(
+                port=True, history_dict=True)
+            appendPolyData.AddInputConnection(connection)
+            if not hasattr(self, 'append_hist_dict'):
+                self.append_hist_dict = {
+                    "type": "Pointset Aggregator",
+                    "git_hash": git_hash,
+                    "method": "Project.get_merged_points",
+                    "input_0": temp_hist_dict}
+            elif not "input_1" in self.append_hist_dict.keys():
+                self.append_hist_dict["input_1"] = temp_hist_dict
+            else:
+                self.append_hist_dict = {
+                    "type": "Pointset Aggregator",
+                    "git_hash": git_hash,
+                    "method": "Project.get_merged_points",
+                    "input_0": temp_hist_dict,
+                    "input_1": self.append_hist_dict
+                    }
         
         appendPolyData.Update()
         
@@ -4335,9 +4450,20 @@ class Project:
             # If we want to create a connection we need to persist the
             # append polydata object, otherwise it segfaults
             self.appendPolyData = appendPolyData
-            return self.appendPolyData.GetOutputPort()
+            if history_dict:
+                warnings.warn('History dict may not be fully linked, ' + 
+                              'use with caution')
+                return (self.appendPolyData.GetOutputPort(), 
+                        self.append_hist_dict)
+            else:
+                return self.appendPolyData.GetOutputPort() 
         else:
-            return appendPolyData.GetOutput()
+            temp_hist_dict = json.loads(json.dumps(self.append_hist_dict))
+            del self.append_hist_dict
+            if history_dict:
+                return (appendPolyData.GetOutput(), temp_hist_dict)
+            else:
+                return appendPolyData.GetOutput()
 
     def write_merged_points(self, output_name=None):
         """
@@ -5019,7 +5145,7 @@ class ScanArea:
     def __init__(self, project_path, project_names=[], registration_list=[],
                  import_mode=None, poly='.1_.1_.01', load_scans=True, 
                  read_scans=False, import_las=False,  create_id=True,
-                 las_fieldnames=['Points', 'ReturnIndex'], 
+                 las_fieldnames=None, 
                  class_list=[0, 1, 2, 70]):
         """
         init stores project_path and initializes project_dict
@@ -5065,7 +5191,7 @@ class ScanArea:
             is True.
         las_fieldnames: list, optional
             List of fieldnames to load if we are importing from a las file
-            Must include 'Points'. The default is ['Points', 'ReturnIndex'].
+            Must include 'Points'. The default is None.
         class_list : list
             List of categories this filter will return, if special value: 
             'all' Then we do not have a selection filter and we pass through 
@@ -5095,7 +5221,7 @@ class ScanArea:
     def add_project(self, project_name, import_mode=None, 
                     poly='.1_.1_.01', load_scans=True, 
                     read_scans=False, import_las=False, create_id=True,
-                    las_fieldnames=['Points', 'ReturnIndex'],
+                    las_fieldnames=None,
                     class_list=[0, 1, 2, 70]):
         """
         Add a new project to the project_dict (or overwrite existing project)
@@ -5134,7 +5260,7 @@ class ScanArea:
             is True.
         las_fieldnames: list, optional
             List of fieldnames to load if we are importing from a las file
-            Must include 'Points'. The default is ['Points', 'ReturnIndex'].
+            Must include 'Points'. The default is None.
         class_list : list
             List of categories this filter will return, if special value: 
             'all' Then we do not have a selection filter and we pass through 
@@ -5332,6 +5458,7 @@ class ScanArea:
         requires that there hasn't been ice deformation and will try to not
         run if the fraction that changed by more than the diff cutoff exceeds
         frac_exceed_diff_cutoff.
+        
         Parameters
         ----------
         w0 : float, optional
@@ -5413,7 +5540,12 @@ class ScanArea:
 
         """
         if project_name_0==project_name_1:
-            self.project_dict[project_name_0].add_z_offset(0)
+            self.project_dict[project_name_0].add_z_offset(0, history_dict={
+                "type": "Transform_Source",
+                "git_hash": get_git_hash(),
+                "method": "ScanArea.z_alignment",
+                "filename": ''
+                })
             transform_list = copy.deepcopy(self.project_dict[project_name_0].
                                            current_transform_list)
             transform_list.append('z_offset')
@@ -5428,7 +5560,10 @@ class ScanArea:
 
         # Get the merged points polydata, by not using port we should prevent
         # this memory allocation from persisting
-        pdata_merged_project_0 = project_0.get_merged_points()
+        pdata_merged_project_0, history_dict_project_0 = (project_0
+                                                          .get_merged_points(
+                                                              history_dict=
+                                                              True))
         project_0_points_np = vtk_to_numpy(pdata_merged_project_0
                                            .GetPoints().GetData())
         bounds = pdata_merged_project_0.GetBounds()
@@ -5467,8 +5602,8 @@ class ScanArea:
             ss = project_1.scan_dict[scan_name]
 
             # Get points as an array
-            ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
-                                        .GetData())
+            ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput()
+                                        .GetPoints().GetData())
             # Get gridded counts and reduc op (using the same grid)
             if bin_reduc_op=='min':
                 ss_counts, ss_arr = gridded_counts_mins(
@@ -5484,15 +5619,29 @@ class ScanArea:
             diff = ss_arr - project_0_arr
             diff[project_0_counts < min_counts] = np.nan
             diff[ss_counts < min_counts] = np.nan
+            # Create history dict for this transformation
+            history_dict = {
+                "type": "Transform Computer",
+                "git_hash": get_git_hash(),
+                "method": "ScanArea.z_alignment",
+                "input_0": history_dict_project_0,
+                "input_1": json.loads(json.dumps(
+                    ss.filt_history_dict)),
+                "params": {"w0": w0, "w1": w1,
+                   "min_pt_dens": min_pt_dens, "max_diff": max_diff, 
+                   "frac_exceed_diff_cutoff": frac_exceed_diff_cutoff,
+                   "bin_reduc_op": bin_reduc_op,
+                   "diff_mode": diff_mode}
+                }
             if np.isnan(diff).all():
-                ss.add_z_offset(0)
+                ss.add_z_offset(0, history_dict)
                 warnings.warn("No overlap for " + project_name_1 + scan_name +
                               " set z_offset to 0", UserWarning)
             else:
                 frac_exceed_max_diff = ((np.abs(diff) > max_diff).sum()
                                         / np.logical_not(np.isnan(diff)).sum())
                 if frac_exceed_max_diff > frac_exceed_diff_cutoff:
-                    ss.add_z_offset(0)
+                    ss.add_z_offset(0, history_dict)
                     num_density = np.logical_not(np.isnan(diff)).sum()
                     warnings.warn("The fraction of the " + str(num_density) +
                                   " cells that meet the " 
@@ -5505,12 +5654,13 @@ class ScanArea:
                     diff_notnan = np.ravel(diff)[np.logical_not(np.isnan(
                         np.ravel(diff)))]
                     if diff_mode=='mean':
-                        ss.add_z_offset(-1*diff_notnan.mean())
+                        ss.add_z_offset(-1*diff_notnan.mean(), history_dict)
                     elif diff_mode=='median':
-                        ss.add_z_offset(-1*np.median(diff_notnan))
+                        ss.add_z_offset(-1*np.median(diff_notnan), 
+                                        history_dict)
                     elif diff_mode=='mode':
                         m, _ = mode(np.around(diff_notnan, 3))
-                        ss.add_z_offset(-1*m)
+                        ss.add_z_offset(-1*m, history_dict)
                     else:
                         raise ValueError('diff_mode must be mean, median, or'
                                          + ' mode')

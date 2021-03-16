@@ -7,9 +7,9 @@ Created on Thu Sep 17 10:31:09 2020
 @author: d34763s
 """
 
-import os
 from collections import namedtuple
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+import sys
+sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 
 # %% Test named tuple
@@ -19,29 +19,49 @@ Registration = namedtuple('Registration', ['project_name_0', 'project_name_1',
                                            'yaw_angle'], 
                           defaults=[None, None, None])
 
-r = Registration('mosaic_01_102019.RiSCAN', 'mosaic_01_102019.RiSCAN')
+project_names = ['mosaic_rov_190120.RiSCAN',
+                 'mosaic_rov_250120.RiSCAN',
+                 'mosaic_rov_040220.RiSCAN'
+                 ]
 
-registration_list = [Registration('mosaic_01_102019.RiSCAN', 
-                                  'mosaic_01_102019.RiSCAN'),
-                     Registration('mosaic_01_102019.RiSCAN', 
-                                  'mosaic_01_102519.RiSCAN',
-                                  ['r01', 'r02', 'r03', 'r09', 'r08'],
-                                  'LS')]
+registration_list = [Registration('mosaic_rov_190120.RiSCAN', 
+                                  'mosaic_rov_190120.RiSCAN'),
+                     Registration('mosaic_rov_190120.RiSCAN',
+                                  'mosaic_rov_250120.RiSCAN',
+                                  ['r28', 'r29', 'r30', 'r32', 'r34', 'r35',
+                                   'r22'],
+                                  'LS'),
+                     Registration('mosaic_rov_250120.RiSCAN',
+                                  'mosaic_rov_040220.RiSCAN',
+                                  ['r28', 'r29', 'r30', 'r31', 'r32', 'r34', 
+                                   'r35', 'r36'],
+                                  'LS')
+                     ]
 
-project_names = ['mosaic_01_102019.RiSCAN', 'mosaic_01_102519.RiSCAN']
 
 # %% Test init
+project_path = '/media/thayer/Data/mosaic_lidar/ROV/'
 
-snow1 = pydar.ScanArea('D:\\mosaic_lidar\\Snow1\\', project_names,
-                       registration_list)
+scan_area = pydar.ScanArea(project_path, project_names,
+                       registration_list, import_mode='poly')
 
 # %% Test register all
 
-snow1.register_all()
+scan_area.register_all()
+
+# %% examine transformed_history_dicts
+import json
+
+print(json.dumps(scan_area.project_dict[project_names[2]]
+                 .scan_dict['ScanPos001'].filt_history_dict, indent=4))
+
+# %% Investigate the transformed polydata
+print(scan_area.project_dict[project_names[2]]
+                 .scan_dict['ScanPos001'].currentFilter.GetOutput())
 
 # %% Look at 10-25 and see if it's registered correctly
 
 z_min = -3
 z_max = -1.5
 
-snow1.project_dict['mosaic_01_102519.RiSCAN'].display_project(z_min, z_max)
+scan_area.project_dict[project_names[2]].display_project(z_min, z_max)

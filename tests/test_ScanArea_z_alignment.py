@@ -24,7 +24,7 @@ Registration = namedtuple('Registration', ['project_name_0', 'project_name_1',
                                            'yaw_angle'], 
                           defaults=[None, None, None])
 
-project_names = ['mosaic_rov_040120.RiSCAN',
+project_names = [#'mosaic_rov_040120.RiSCAN',
                  'mosaic_rov_110120.RiSCAN',
                  'mosaic_rov_190120.RiSCAN',
                  'mosaic_rov_250120.RiSCAN',
@@ -39,10 +39,10 @@ registration_list = [Registration('mosaic_rov_190120.RiSCAN',
                                    ['r05', 'r28', 'r29', 'r31', 'r32', 'r33',
                                     'r34'],
                                    'LS'),
-                      Registration('mosaic_rov_190120.RiSCAN',
-                                   'mosaic_rov_040120.RiSCAN',
-                                   ['r28', 'r29', 'r30', 'r31', 'r32', 'r33'],
-                                   'LS'),
+                      # Registration('mosaic_rov_190120.RiSCAN',
+                      #              'mosaic_rov_040120.RiSCAN',
+                      #              ['r28', 'r29', 'r30', 'r31', 'r32', 'r33'],
+                      #              'LS'),
                       Registration('mosaic_rov_190120.RiSCAN',
                                    'mosaic_rov_250120.RiSCAN',
                                    ['r28', 'r29', 'r30', 'r32', 'r34', 'r35',
@@ -63,7 +63,7 @@ registration_list = [Registration('mosaic_rov_190120.RiSCAN',
 project_path = '/media/thayer/Data/mosaic_lidar/ROV/'
 
 scan_area = pydar.ScanArea(project_path, project_names,
-                       registration_list, import_mode='import_npy',
+                       registration_list, import_mode='read_scan',
                        create_id=False, las_fieldnames=['Points'],
                        class_list='all')
 
@@ -87,3 +87,10 @@ for project_name in project_names:
     for scan_name in scan_area.project_dict[project_name].scan_dict:
         ss_print_z_offset(
             scan_area.project_dict[project_name].scan_dict[scan_name])
+
+# %% Now examine what the history_dicts look like
+
+import json
+
+print(json.dumps(scan_area.project_dict[project_names[0]]
+                 .scan_dict['ScanPos001'].transformed_history_dict, indent=2))
