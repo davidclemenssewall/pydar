@@ -1318,6 +1318,126 @@ class SingleScan:
         self.transformFilter.Update()
         self.currentFilter.Update()
     
+    def write_current_transform(self, write_dir=None, name='current_transform'
+                                , mode='rigid'):
+        """
+        Write the current tranform and its history_dict to files.
+
+        Parameters
+        ----------
+        write_dir : str, optional
+            The path where to write the transform. If None we'll write to 
+            project_path/project_name/transforms/scan_name. The default is 
+            None.
+        name : str, optional
+            The name to give the output files. The default is 
+            'current_transform'.
+        mode : str, optional
+            What type of transformation it is. Currently the only option is
+            'rigid' (6 components). The default is 'rigid'.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if write_dir is None:
+            write_dir = os.path.join(self.project_path, self.project_name,
+                                     'transforms', self.scan_name)
+        # If the write_dir doesn't exist, create it
+        if not os.path.isdir(os.path.join(self.project_path, self.project_name
+                                          , 'transforms')):
+            os.mkdir(os.path.join(self.project_path, self.project_name
+                                          , 'transforms'))
+        if not os.path.isdir(write_dir):
+            os.mkdir(write_dir)
+        # If the files already exist remove them
+        filenames = os.listdir(write_dir)
+        for filename in filenames:
+            if filename in [name + '.txt', name + '.npy']:
+                os.remove(os.path.join(write_dir, filename))
+        
+        if mode=='rigid':
+            # Convert the current transform into position and orientation
+            # NOTE VTK ANGLES IN DEGREES, WE CONVERT TO radians
+            pos = self.transform.GetPosition()
+            ori = np.array(self.transform.GetOrientation()) * np.pi / 180
+            transform_np = np.array([(pos[0], pos[1], pos[2], 
+                                   ori[0], ori[1], ori[2])],
+                                  dtype=[('x0', '<f8'), ('y0', '<f8'), 
+                                         ('z0', '<f8'), ('u0', '<f8'),
+                                         ('v0', '<f8'), ('w0', '<f8')])
+            np.save(os.path.join(write_dir, name + '.npy'), transform_np)
+        else:
+            raise ValueError('mode must be rigid')
+        
+        # Now write the history dict
+        f = open(os.path.join(write_dir, name + '.txt'), 'w')
+        json.dump(self.transformed_history_dict["input_1"], f, indent=4)
+        f.close()
+    
+    def read_transform(self, read_dir=None, name='current_transform'):
+        """
+        Read the requested transform (if it exists)
+
+        Parameters
+        ----------
+        read_dir : str, optional
+            Path to read transform from. If None read from /project_path/
+            project_name/transforms/scan_name/. The default is None.
+        name : str, optional
+            Name of the transform to read. The default is 'current_transform'.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # If read_dir is None set to default
+        if read_dir is None:
+            read_dir = os.path.join(self.project_path, self.project_name,
+                                    'transforms', self.scan_name)
+        # Try loading the transform
+        transform_np = np.load(os.path.join(read_dir, name + '.npy'))
+        
+        # Check which kind of transformation it is
+        if transform_np.dtype==[('x0', '<f8'), ('y0', '<f8'), ('z0', '<f8'),
+                                ('u0', '<f8'), ('v0', '<f8'), ('w0', '<f8')]:
+            # Then we're dealing with a rigid transformation
+            # Create 4x4 matrix
+            u = transform_np[0]['u0']
+            v = transform_np[0]['v0']
+            w = transform_np[0]['w0']
+            c = np.cos
+            s = np.sin
+            
+            Rx = np.array([[1, 0, 0, 0],
+                          [0, c(u), -s(u), 0],
+                          [0, s(u), c(u), 0],
+                          [0, 0, 0, 1]])
+            Ry = np.array([[c(v), 0, s(v), 0],
+                           [0, 1, 0, 0],
+                           [-s(v), 0, c(v), 0],
+                           [0, 0, 0, 1]])
+            Rz = np.array([[c(w), -s(w), 0, 0],
+                          [s(w), c(w), 0, 0],
+                          [0, 0, 1, 0],
+                          [0, 0, 0, 1]])
+            # Order of rotations in vtk is Pitch, then Roll, then Yaw
+            M = Rz @ Rx @ Ry
+            # Now add translation components
+            M[0, 3] = transform_np[0]['x0']
+            M[1, 3] = transform_np[0]['y0']
+            M[2, 3] = transform_np[0]['z0']
+    
+            # Add to transform dict, include history dict
+            f = open(os.path.join(read_dir, name + '.txt'))
+            self.add_transform(name, M, json.load(f))
+            f.close()
+            
+    
     def load_man_class(self):
         """
         Load the man_class dataframe. Create if it does not exist.
