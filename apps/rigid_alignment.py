@@ -547,11 +547,11 @@ class MainWindow(Qt.QMainWindow):
 
         # Parse project path and names and load projects
         project_name_0 = self.proj_combobox_0.currentText()
-        self.scan_area.add_project(project_name_0, import_mode='import_npy',
+        self.scan_area.add_project(project_name_0, import_mode='read_scan',
                                    las_fieldnames=['Points'], create_id=False,
                                    class_list='all')
         project_name_1 = self.proj_combobox_1.currentText()
-        self.scan_area.add_project(project_name_1, import_mode='import_npy',
+        self.scan_area.add_project(project_name_1, import_mode='read_scan',
                                    las_fieldnames=['Points'], create_id=False,
                                    class_list='all')
         self.scan_area.register_all()
