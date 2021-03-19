@@ -768,6 +768,10 @@ class SingleScan:
         Writes the scan to a file to save the filters
     read_scan()
         Reads the scan from a file, replacing the RiSCAN version.
+    write_current_transform()
+        Writes the current transform and its history_dict to files.
+    read_transform()
+        Reads a transform from file and places it in current transforms.
     load_man_class()
         Load the manual classification table
     apply_transforms(transform_list)
@@ -1667,7 +1671,7 @@ class SingleScan:
 
         """
         if not history_dict:
-            warnings.Warn("You are passing a SingleScan's PolyData without" +
+            warnings.warn("You are passing a SingleScan's PolyData without" +
                           "it's history.")
         
         if port:
@@ -3460,6 +3464,32 @@ class Project:
         raise RuntimeError('Do not use, just init a new Project object')
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].read_scan()
+    
+    def write_current_transforms(self):
+        """
+        Have each SingleScan write its current transform to a file.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].write_current_transform()
+    
+    def read_transforms(self):
+        """
+        Have each SingleScan read a transform from file
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].read_transform()
     
     def load_man_class(self):
         """
