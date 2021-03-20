@@ -1151,6 +1151,9 @@ class SingleScan:
                                      "name": "Add Classification",
                                      "input_0": json.loads(json.dumps(
                                          self.raw_history_dict))}
+        # Set Classification array as active scalars
+        self.polydata_raw.GetPointData().SetActiveScalars('Classification')
+        
         
         # Add PedigreeIds if they are not already present
         if create_id and not 'PointId' in self.dsa_raw.PointData.keys():

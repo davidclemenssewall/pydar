@@ -22,7 +22,7 @@ project_name = "mosaic_rov_190120.RiSCAN"
 
 # %% Load project
 
-project = pydar.Project(project_path, project_name, import_mode='poly')
+project = pydar.Project(project_path, project_name, import_mode='read_scan')
 
 project.apply_transforms(['sop'])
 
