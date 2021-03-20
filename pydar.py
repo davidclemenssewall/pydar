@@ -1443,6 +1443,43 @@ class SingleScan:
             f = open(os.path.join(read_dir, name + '.txt'))
             self.add_transform(name, M, json.load(f))
             f.close()
+        
+        elif transform_np.dtype==[('x0', '<f4'), ('y0', '<f4'), ('z0', '<f4'),
+                                ('u0', '<f4'), ('v0', '<f4'), ('w0', '<f4')]:
+            # Then we're dealing with a rigid transformation
+            # Create 4x4 matrix
+            u = transform_np[0]['u0']
+            v = transform_np[0]['v0']
+            w = transform_np[0]['w0']
+            c = np.cos
+            s = np.sin
+            
+            Rx = np.array([[1, 0, 0, 0],
+                          [0, c(u), -s(u), 0],
+                          [0, s(u), c(u), 0],
+                          [0, 0, 0, 1]])
+            Ry = np.array([[c(v), 0, s(v), 0],
+                           [0, 1, 0, 0],
+                           [-s(v), 0, c(v), 0],
+                           [0, 0, 0, 1]])
+            Rz = np.array([[c(w), -s(w), 0, 0],
+                          [s(w), c(w), 0, 0],
+                          [0, 0, 1, 0],
+                          [0, 0, 0, 1]])
+            # Order of rotations in vtk is Pitch, then Roll, then Yaw
+            M = Rz @ Rx @ Ry
+            # Now add translation components
+            M[0, 3] = transform_np[0]['x0']
+            M[1, 3] = transform_np[0]['y0']
+            M[2, 3] = transform_np[0]['z0']
+    
+            # Add to transform dict, include history dict
+            f = open(os.path.join(read_dir, name + '.txt'))
+            self.add_transform(name, M, json.load(f))
+            f.close()
+        
+        else:
+            raise RuntimeError('transform does not match known format')
             
     
     def load_man_class(self):
