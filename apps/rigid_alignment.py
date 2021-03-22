@@ -200,6 +200,8 @@ class MainWindow(Qt.QMainWindow):
         opt_layout.addWidget(update_param_button)
         reset_param_button = Qt.QPushButton("Reset Transform")
         opt_layout.addWidget(reset_param_button)
+        load_transform_button = Qt.QPushButton("Load Current Transform")
+        opt_layout.addWidget(load_transform_button)
 
         # Populate the main layout
         main_layout.addWidget(vis_splitter, stretch=5)
@@ -220,6 +222,8 @@ class MainWindow(Qt.QMainWindow):
         z_update_button.clicked.connect(self.on_z_update_button_clicked)
         update_param_button.clicked.connect(self.on_update_param_button_click)
         reset_param_button.clicked.connect(self.on_reset_param_button_click)
+        load_transform_button.clicked.connect(
+                                        self.on_load_transform_button_click)
         look_down_button.clicked.connect(self.look_down)
         for t in t_list:
             self.transect_dict[t].editingFinished.connect(
@@ -757,6 +761,42 @@ class MainWindow(Qt.QMainWindow):
         # Set currentTransform in ss to match the transform stored in the
         # project
         self.ss.apply_transforms(self.project_1.current_transform_list)
+
+        # Update values in param_dict
+        pos = np.float32(self.ss.transform.GetPosition())
+        self.param_dict['dx'].setText(str(pos[0]))
+        self.param_dict['dy'].setText(str(pos[1]))
+        self.param_dict['dz'].setText(str(pos[2]))
+        ori = np.float32(self.ss.transform.GetOrientation())
+        ori = ori * math.pi / 180
+        self.param_dict['roll'].setText(str(ori[0]))
+        self.param_dict['pitch'].setText(str(ori[1]))
+        self.param_dict['yaw'].setText(str(ori[2]))
+
+        # Render
+        self.vtkWidget.GetRenderWindow().Render()
+
+    def on_load_transform_button_click(self, s):
+        """
+        Reset transformation parameters to those derived from reflectors.
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        # Load the current transform
+        self.project_0.read_transforms()
+        self.project_1.read_transforms()
+        # Apply it
+        self.project_0.apply_transforms(['current_transform'])
+        self.project_1.apply_transforms(['current_transform'])
 
         # Update values in param_dict
         pos = np.float32(self.ss.transform.GetPosition())

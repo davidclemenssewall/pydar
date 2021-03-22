@@ -111,7 +111,7 @@ parser.add_argument('--max_pts',
                     action='store',
                     help='The maximum number of points to keep in the ' +
                     'pointclouds (will strided downsample to below this)',
-                    default=100000)
+                    default=750000)
 
 parser.add_argument('--blur',
                     type=float,
@@ -137,7 +137,7 @@ parser.add_argument('--cutoff_r',
                     action='store',
                     help='Cutoff to stop optimization if all rotation steps'
                     + ' are below this cutoff in radians',
-                    default=0.00001)
+                    default=0.000005)
 
 # Optional parameters for the output
 parser.add_argument('--trans_output_path',

@@ -796,6 +796,8 @@ class SingleScan:
     apply_snowflake_filter_returnindex(cylinder_rad, radial_precision)
         Filter snowflakes based on their return index and whether they are on
         the border of the visible region.
+    random_voxel_downsample_filter(wx, wy, wz, seed=1234)
+        Subset the filtered pointcloud randomly by voxels. Replaces Polydata!!
     clear_classification
         Reset all Classification values to 0.
     update_man_class(pdata, classification)
@@ -1241,7 +1243,7 @@ class SingleScan:
             "input_0": self.transformed_history_dict,
             "params": {"class_list": class_list}}
         
-    def write_scan(self, write_dir=None):
+    def write_scan(self, write_dir=None, class_list=None):
         """
         Write the scan to a collection of numpy files.
         
@@ -1255,6 +1257,10 @@ class SingleScan:
         write_dir: str, optional
             Directory to write scan files to. If None write default npyfiles
             location. The default is None.
+        class_list: list, optional
+            Whether to first filter the data so that we only write points whose
+            Classification values are in class_list. If None do not filter.
+            The default is None.
 
         Returns
         -------
@@ -1280,16 +1286,40 @@ class SingleScan:
         # Delete old saved SingleScan files in the directory
         for f in os.listdir(write_dir):
             os.remove(os.path.join(write_dir, f))
-        # Save Points
-        np.save(os.path.join(write_dir, 'Points.npy'), self.dsa_raw.Points)
-        # Save arrays
-        for name in self.dsa_raw.PointData.keys():
-            np.save(os.path.join(write_dir, name), 
-                    self.dsa_raw.PointData[name])
-        # Save history_dict
-        f = open(os.path.join(write_dir, 'raw_history_dict.txt'), 'w')
-        json.dump(self.raw_history_dict, f, indent=4)
-        f.close()
+
+        # If class_list is None just write raw data
+        if class_list is None:
+            # Save Points
+            np.save(os.path.join(write_dir, 'Points.npy'), self.dsa_raw.Points)
+            # Save arrays
+            for name in self.dsa_raw.PointData.keys():
+                np.save(os.path.join(write_dir, name), 
+                        self.dsa_raw.PointData[name])
+            # Save history_dict
+            f = open(os.path.join(write_dir, 'raw_history_dict.txt'), 'w')
+            json.dump(self.raw_history_dict, f, indent=4)
+            f.close()
+        else:
+            ind = np.isin(self.dsa_raw.PointData['Classification'], class_list)
+
+            # Save Points
+            np.save(os.path.join(write_dir, 'Points.npy'), 
+                    self.dsa_raw.Points[ind, :])
+            # Save arrays
+            for name in self.dsa_raw.PointData.keys():
+                np.save(os.path.join(write_dir, name), 
+                        self.dsa_raw.PointData[name][ind])
+            # Save history_dict
+            temp_hist_dict = {
+                "type": "Filter",
+                "git_hash": get_git_hash(),
+                "method": "SingleScan.write_scan",
+                "input_0": self.raw_history_dict,
+                "params": {"class_list": class_list}
+                }
+            f = open(os.path.join(write_dir, 'raw_history_dict.txt'), 'w')
+            json.dump(temp_hist_dict, f, indent=4)
+            f.close()
         
         
     def read_scan(self):
@@ -1794,6 +1824,65 @@ class SingleScan:
             
         self.transformFilter.Update()
         self.currentFilter.Update()
+    
+    def random_voxel_downsample_filter(self, wx, wy, wz, seed=1234):
+        """
+        Downsample point cloud with one random point per voxel.
+        
+        This filter takes, as input, the current transformed, filtered
+        polydata.
+        
+        Executing this will overwrite polydata_raw!!
+
+        Parameters
+        ----------
+        wx : float
+            Voxel x dimension in m.
+        wy : float
+            Voxel x dimension in m.
+        wz : float
+            Voxel x dimension in m.
+        seed : int, optional
+            Random seed for the shuffler. The default is 1234.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Step 1, create shuffled points from current polydata
+        filt_pts = vtk_to_numpy(self.get_polydata().GetPoints().GetData())
+        rng = np.random.default_rng(seed=seed)
+        shuff_ind = np.arange(filt_pts.shape[0])
+        rng.shuffle(shuff_ind)
+        shuff_pts = filt_pts[shuff_ind, :]
+        
+        # Step 2, bin and downsample
+        w = [wx, wy, wz]
+        edges = 3*[None]
+        nbin = np.empty(3, np.int_)
+        
+        for i in range(3):
+            edges[i] = np.arange(int(np.ceil((shuff_pts.max(axis=0)[i] - 
+                                              shuff_pts.min(axis=0)[i])/w[i]))
+                                 + 1, dtype=
+                                 np.float32) * w[i] + shuff_pts.min(axis=0)[i]
+            # needed to avoid min point falling out of bounds
+            edges[i][0] = edges[i][0] - 0.0001 
+            nbin[i] = len(edges[i]) + 1
+        
+        Ncount = tuple(np.searchsorted(edges[i], shuff_pts[:,i], side='right')
+                      for i in range(3))
+        
+        xyz = np.ravel_multi_index(Ncount, nbin)
+        
+        # We want to take just one random point from each bin. Since we've shuffled the points,
+        # the first point we find in each bin will suffice. Thus we use the unique function
+        _, inds = np.unique(xyz, return_index=True)
+        
+        print('here')
+        
     
     def clear_classification(self):
         """
