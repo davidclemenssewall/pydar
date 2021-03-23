@@ -22,7 +22,11 @@ from PyQt5 import Qt
 from collections import namedtuple
 import re
 import os
-sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
+import platform
+if platform.system()=='Windows':
+    sys.path.append('C:/Users/d34763s/Desktop/DavidCS/PhD/code/pydar/')
+else:
+    sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
