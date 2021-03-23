@@ -22,7 +22,11 @@ from vtk.util.numpy_support import vtk_to_numpy
 from vtk.numpy_interface import dataset_adapter as dsa
 from PyQt5 import Qt
 from collections import namedtuple
-sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
+import platform
+if platform.system()=='Windows':
+    sys.path.append('C:/Users/d34763s/Desktop/DavidCS/PhD/code/pydar/')
+else:
+    sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 import matplotlib
 matplotlib.use('Qt5Agg')

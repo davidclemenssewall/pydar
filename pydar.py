@@ -41,9 +41,9 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 import tracemalloc
-import pyximport
-pyximport.install(inplace=True, language_level=3)
 try:
+    import pyximport
+    pyximport.install(inplace=True, language_level=3)
     import cython_util
 except ModuleNotFoundError:
     print('cython_util was not imported, functions relying on it will fail')
