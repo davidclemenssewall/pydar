@@ -89,16 +89,25 @@ parser.add_argument('--trans_1_path',
                     help='Path where current_transform files for scan 1 is')
 
 parser.add_argument('--scan_0_paths',
-                    type=list,
+                    type=str,
+                    nargs='+',
                     action='store',
                     help='List of paths where reference scan Points files are')
 
 parser.add_argument('--trans_0_paths',
-                    type=list,
+                    type=str,
+                    nargs='+',
                     action='store',
                     help='List of paths where reference scans transforms are')
 
 # Optional parameters for the optimization
+parser.add_argument('--class_list',
+                    nargs='+',
+                    action='store',
+                    help='If we want to restrict to just certain categories' +
+                    '. If this is empty then pass all classes.',
+                    default=None)
+
 parser.add_argument('--max_dist',
                     type=float,
                     action='store',
@@ -236,7 +245,8 @@ def rigid_transform_np(yaw, pitch, roll, del_x, del_y, del_z, pts):
 scan_1_trans = np.load(os.path.join(args.trans_1_path, 'current_transform.npy'))
 scan_1_pts = np.load(os.path.join(args.scan_1_path, 'Points.npy'))
 scan_1_class = np.load(os.path.join(args.scan_1_path, 'Classification.npy'))
-scan_1_pts = scan_1_pts[scan_1_class==0, :]
+if args.class_list:
+    scan_1_pts = scan_1_pts[np.isin(scan_1_class, args.class_list), :]
 # Create the Scan 1 history dict
 f_trans = open(os.path.join(args.trans_1_path, 'current_transform.txt'))
 f_pts = open(os.path.join(args.scan_1_path, 'raw_history_dict.txt'))
@@ -249,7 +259,7 @@ scan_1_history_dict = {
         "git_hash": args.git_hash,
         "method": "compute_kernel_alignment.py",
         "input_0": json.load(f_pts),
-        "params": {"class_list": [0]}
+        "params": {"class_list": args.class_list}
         },
     "input_1": json.load(f_trans)
     }
@@ -263,7 +273,8 @@ for i in range(len(args.scan_0_paths)):
     pts = np.load(os.path.join(args.scan_0_paths[i], 'Points.npy'))
     scan_0_class = np.load(os.path.join(args.scan_0_paths[i], 
                                         'Classification.npy'))
-    pts = pts[scan_0_class==0, :]
+    if args.class_list:
+        pts = pts[np.isin(scan_0_class, args.class_list), :]
     # Apply transform to points
     pts = rigid_transform_np(trans['w0'][0], trans['v0'][0],
                              trans['u0'][0], trans['x0'][0], 
@@ -298,7 +309,7 @@ for i in range(len(args.scan_0_paths)):
                     "git_hash": args.git_hash,
                     "method": "compute_kernel_alignment.py",
                     "input_0": json.load(f_pts),
-                    "params": {"class_list": [0]}
+                    "params": {"class_list": args.class_list}
                     },
                 "input_1": json.load(f_trans)
                 }
@@ -313,7 +324,7 @@ for i in range(len(args.scan_0_paths)):
                 "git_hash": args.git_hash,
                 "method": "compute_kernel_alignment.py",
                 "input_0": json.load(f_pts),
-                "params": {"class_list": [0]}
+                "params": {"class_list": args.class_list}
                 },
             "input_1": json.load(f_trans)
             }
@@ -331,7 +342,7 @@ for i in range(len(args.scan_0_paths)):
                     "git_hash": args.git_hash,
                     "method": "compute_kernel_alignment.py",
                     "input_0": json.load(f_pts),
-                    "params": {"class_list": [0]}
+                    "params": {"class_list": args.class_list}
                     },
                 "input_1": json.load(f_trans)
                 },
@@ -437,7 +448,7 @@ model = RigidTransformation(x0=np.float32(scan_1_trans['x0'][0]),
                             w0=np.float32(scan_1_trans['w0'][0])).to(device)
 
 # Create loss function
-loss = geomloss.SamplesLoss(loss="gaussian", blur=args.blur, 
+loss = geomloss.SamplesLoss(loss="laplacian", blur=args.blur, 
                             backend="multiscale")
 
 # Create Optimizer:
@@ -520,11 +531,11 @@ transform_history_dict = {
     "input_0": scan_0_history_dict,
     "input_1": scan_1_history_dict,
     "params": {
-        "max_pts": args.max_pts,
-        "cutoff_t": args.cutoff_t,
-        "cutoff_r": args.cutoff_r,
-        "n_steps": t,
-        "blur": args.blur
+        "max_pts": str(args.max_pts),
+        "cutoff_t": str(args.cutoff_t),
+        "cutoff_r": str(args.cutoff_r),
+        "n_steps": str(t),
+        "blur": str(args.blur)
         }
     }
 f = open(os.path.join(args.trans_output_path, args.trans_output_name + '.txt'),
@@ -545,7 +556,9 @@ if args.plot_optimization:
         axs[i,1].plot(values_r[:,i], '.')
         axs[i,1].set_title(names[i+3])
     
-    f.savefig(os.path.join(args.plot_output_path, 'keops_' 
-                           + args.project_name_0 + '_' + args.project_name_1
-                           + '_' + args.scan_name_1 + '.png'), dpi=600,
+#    f.savefig(os.path.join(args.plot_output_path, 'keops_' 
+#                           + args.project_name_0 + '_' + args.project_name_1
+#                           + '_' + args.scan_name_1 + '.png'), dpi=600,
+#                           transparent=True, bbox_inches='tight')
+    f.savefig(os.path.join(args.plot_output_path, 'keops_temp.png'), dpi=600,
                            transparent=True, bbox_inches='tight')

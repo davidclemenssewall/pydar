@@ -35,6 +35,7 @@ import json
 import pdal
 import math
 import warnings
+import time
 from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 from sklearn.experimental import enable_hist_gradient_boosting
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -840,7 +841,7 @@ class SingleScan:
                  import_mode=None, poly='.1_.1_.01',
                  read_scan=False, import_las=False, create_id=True,
                  las_fieldnames=None, 
-                 class_list=[0, 1, 2, 70], read_dir=None):
+                 class_list=[0, 1, 2, 70], read_dir=None, suffix=''):
         """
         Creates SingleScan object and transformation pipeline.
         
@@ -876,7 +877,7 @@ class SingleScan:
             If true (and read_scan is False) read in the las file instead of
             the polydata. The default is False.
         create_id: bool, optional
-            If true and PointID's do not exist create PointIDs. The default
+            If true and PointId's do not exist create PointIds. The default
             is True.
         las_fieldnames: list, optional
             List of fieldnames to load if we are importing from a las file
@@ -884,13 +885,16 @@ class SingleScan:
             all arrays. If None and we are importing las then set to
             ['Points', 'NumberOfReturns', 'ReturnIndex', 'Reflectance',
              'Amplitude']. The default is None.
-        class_list : list
+        class_list : list, optional
             List of categories this filter will return, if special value: 
             'all' Then we do not have a selection filter and we pass through 
             all points. The default is [0, 1, 2, 70].
-        read_dir : str
+        read_dir : str, optional
             Directory to read scan from. Defaults to npyfiles if None. The
             default is None.
+        suffix : str, optional
+            Suffix for npyfiles directory if we are reading scans. The default
+            is '' which corresponds to the regular npyfiles directory.
 
         Returns
         -------
@@ -924,7 +928,7 @@ class SingleScan:
             # Import directly from numpy files that we've already saved
             if read_dir is None:
                 npy_path = os.path.join(self.project_path, self.project_name,
-                                        'npyfiles', self.scan_name)
+                                        'npyfiles' + suffix, self.scan_name)
             else:
                 npy_path = read_dir
             
@@ -1158,7 +1162,8 @@ class SingleScan:
         
         
         # Add PedigreeIds if they are not already present
-        if create_id and not 'PointId' in self.dsa_raw.PointData.keys():
+        if create_id and not ('PointId' in 
+                              list(self.dsa_raw.PointData.keys())):
             pedigreeIds = vtk.vtkTypeUInt32Array()
             pedigreeIds.SetName('PointId')
             pedigreeIds.SetNumberOfComponents(1)
@@ -1243,7 +1248,7 @@ class SingleScan:
             "input_0": self.transformed_history_dict,
             "params": {"class_list": class_list}}
         
-    def write_scan(self, write_dir=None, class_list=None):
+    def write_scan(self, write_dir=None, class_list=None, suffix=''):
         """
         Write the scan to a collection of numpy files.
         
@@ -1261,6 +1266,9 @@ class SingleScan:
             Whether to first filter the data so that we only write points whose
             Classification values are in class_list. If None do not filter.
             The default is None.
+        suffix: str, optional
+            Suffix for writing to the correct npyfiles directory. The default
+            is ''.
 
         Returns
         -------
@@ -1268,20 +1276,23 @@ class SingleScan:
 
         """
         
+        npy_dir = "npyfiles" + suffix
+        
+        
         if write_dir is None:
             # If the write directory doesn't exist, create it
             if not os.path.isdir(os.path.join(self.project_path, 
-                                              self.project_name, "npyfiles")):
+                                              self.project_name, npy_dir)):
                 os.mkdir(os.path.join(self.project_path, self.project_name, 
-                                      "npyfiles"))
+                                      npy_dir))
             # Within npyfiles we need a directory for each scan
             if not os.path.isdir(os.path.join(self.project_path, 
-                                              self.project_name, "npyfiles", 
+                                              self.project_name, npy_dir, 
                                               self.scan_name)):
                 os.mkdir(os.path.join(self.project_path, self.project_name, 
-                                      "npyfiles", self.scan_name))
+                                      npy_dir, self.scan_name))
             write_dir = os.path.join(self.project_path, self.project_name, 
-                                     "npyfiles", self.scan_name)
+                                     npy_dir, self.scan_name)
         
         # Delete old saved SingleScan files in the directory
         for f in os.listdir(write_dir):
@@ -1356,7 +1367,7 @@ class SingleScan:
         self.currentFilter.Update()
     
     def write_current_transform(self, write_dir=None, name='current_transform'
-                                , mode='rigid'):
+                                , mode='rigid', suffix=''):
         """
         Write the current tranform and its history_dict to files.
 
@@ -1372,6 +1383,10 @@ class SingleScan:
         mode : str, optional
             What type of transformation it is. Currently the only option is
             'rigid' (6 components). The default is 'rigid'.
+        suffix : str, optional
+            Suffix for transforms directory if we are reading scans. 
+            The default is '' which corresponds to the regular transforms
+            directory.
 
         Returns
         -------
@@ -1381,12 +1396,12 @@ class SingleScan:
         
         if write_dir is None:
             write_dir = os.path.join(self.project_path, self.project_name,
-                                     'transforms', self.scan_name)
+                                     'transforms' + suffix, self.scan_name)
         # If the write_dir doesn't exist, create it
         if not os.path.isdir(os.path.join(self.project_path, self.project_name
-                                          , 'transforms')):
+                                          , 'transforms' + suffix)):
             os.mkdir(os.path.join(self.project_path, self.project_name
-                                          , 'transforms'))
+                                          , 'transforms' + suffix))
         if not os.path.isdir(write_dir):
             os.mkdir(write_dir)
         # If the files already exist remove them
@@ -1414,7 +1429,8 @@ class SingleScan:
         json.dump(self.transformed_history_dict["input_1"], f, indent=4)
         f.close()
     
-    def read_transform(self, read_dir=None, name='current_transform'):
+    def read_transform(self, read_dir=None, name='current_transform', 
+                       suffix=''):
         """
         Read the requested transform (if it exists)
 
@@ -1425,6 +1441,10 @@ class SingleScan:
             project_name/transforms/scan_name/. The default is None.
         name : str, optional
             Name of the transform to read. The default is 'current_transform'.
+        suffix : str, optional
+            Suffix for transforms directory if we are reading scans. 
+            The default is '' which corresponds to the regular transforms 
+            directory.
 
         Returns
         -------
@@ -1435,7 +1455,7 @@ class SingleScan:
         # If read_dir is None set to default
         if read_dir is None:
             read_dir = os.path.join(self.project_path, self.project_name,
-                                    'transforms', self.scan_name)
+                                    'transforms' + suffix, self.scan_name)
         # Try loading the transform
         transform_np = np.load(os.path.join(read_dir, name + '.npy'))
         
@@ -2197,86 +2217,86 @@ class SingleScan:
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
     
-    # def apply_snowflake_filter_2(self, z_diff, N, r_min):
-    #     """
-    #     Filter snowflakes based on their vertical distance from nearby points.
+    def apply_snowflake_filter_2(self, z_diff, N, r_min):
+        """
+        Filter snowflakes based on their vertical distance from nearby points.
         
-    #     Here we exploit the fact that snowflakes (and for that matter power
-    #     cables and some other human objects) are higher than their nearby
-    #     points. The filter steps through each point in the transformed
-    #     dataset and compares its z value with the mean of the z-values of
-    #     the N closest points. If the difference exceeds z_diff then set the
-    #     Classification for that point to be 2. Also, there is a shadow around the
-    #     base of the scanner so all points within there must be spurious. We
-    #     filter all points within r_min
-
-    #     Parameters
-    #     ----------
-    #     z_diff : float
-    #         Maximum vertical difference in m a point can have from its 
-    #         neighborhood.
-    #     N : int
-    #         Number of neighbors to find.
-    #     r_min : float
-    #         Radius of scanner in m within which to filter all points.
-
-    #     Returns
-    #     -------
-    #     None.
-
-    #     """
+        Here we exploit the fact that snowflakes (and for that matter power
+        cables and some other human objects) are higher than their nearby
+        points. The filter steps through each point in the transformed
+        dataset and compares its z value with the mean of the z-values of
+        the N closest points. If the difference exceeds z_diff then set the
+        Classification for that point to be 2. Also, there is a shadow around the
+        base of the scanner so all points within there must be spurious. We
+        filter all points within r_min
+    
+        Parameters
+        ----------
+        z_diff : float
+            Maximum vertical difference in m a point can have from its 
+            neighborhood.
+        N : int
+            Number of neighbors to find.
+        r_min : float
+            Radius of scanner in m within which to filter all points.
+    
+        Returns
+        -------
+        None.
+    
+        """
         
-    #     # Move z-values to scalars 
-    #     elevFilter = vtk.vtkSimpleElevationFilter()
-    #     elevFilter.SetInputConnection(self.transformFilter.GetOutputPort())
-    #     elevFilter.Update()
-    #     # Flatten points
-    #     flattener = vtk.vtkTransformPolyDataFilter()
-    #     trans = vtk.vtkTransform()
-    #     trans.Scale(1, 1, 0)
-    #     flattener.SetTransform(trans)
-    #     flattener.SetInputConnection(elevFilter.GetOutputPort())
-    #     flattener.Update()
+        # Move z-values to scalars 
+        elevFilter = vtk.vtkSimpleElevationFilter()
+        elevFilter.SetInputConnection(self.transformFilter.GetOutputPort())
+        elevFilter.Update()
+        # Flatten points
+        flattener = vtk.vtkTransformPolyDataFilter()
+        trans = vtk.vtkTransform()
+        trans.Scale(1, 1, 0)
+        flattener.SetTransform(trans)
+        flattener.SetInputConnection(elevFilter.GetOutputPort())
+        flattener.Update()
         
-    #     # Create pdata and locator
-    #     pdata = flattener.GetOutput()
-    #     locator = vtk.vtkOctreePointLocator()
-    #     pdata.SetPointLocator(locator)
-    #     locator.SetDataSet(pdata)
-    #     pdata.BuildLocator()
+        # Create pdata and locator
+        pdata = flattener.GetOutput()
+        locator = vtk.vtkOctreePointLocator()
+        pdata.SetPointLocator(locator)
+        locator.SetDataSet(pdata)
+        pdata.BuildLocator()
         
-    #     # Create temporary arrays for holding points
-    #     output = vtk.vtkFloatArray()
-    #     output.SetNumberOfValues(N)
-    #     output_np = vtk_to_numpy(output)
-    #     pt_ids = vtk.vtkIdList()
-    #     pt_ids.SetNumberOfIds(N)
-    #     pt = np.zeros((3))
-    #     scan_pos = np.array(self.transform.GetPosition())
+        # Create temporary arrays for holding points
+        output = vtk.vtkFloatArray()
+        output.SetNumberOfValues(N)
+        output_np = vtk_to_numpy(output)
+        pt_ids = vtk.vtkIdList()
+        pt_ids.SetNumberOfIds(N)
+        pt = np.zeros((3))
+        scan_pos = np.array(self.transform.GetPosition())
         
-    #     for m in np.arange(pdata.GetNumberOfPoints()):
-    #         # Get the point
-    #         pdata.GetPoint(m, pt)
-    #         # Check if the point is within our exclusion zone
-    #         r = np.linalg.norm(pt[:2]-scan_pos[:2])
-    #         if r < r_min:
-    #             self.dsa_raw.PointData['Classification'][m] = 65
-    #             continue
+        for m in np.arange(pdata.GetNumberOfPoints()):
+            # Get the point
+            pdata.GetPoint(m, pt)
+            # Check if the point is within our exclusion zone
+            r = np.linalg.norm(pt[:2]-scan_pos[:2])
+            if r < r_min:
+                self.dsa_raw.PointData['Classification'][m] = 65
+                continue
             
-    #         # Get N closest points
-    #         locator.FindClosestNPoints(N, pt, pt_ids)
-    #         # now using the list of point_ids set the values in output to be the z
-    #         # values of the found points
-    #         pdata.GetPointData().GetScalars().GetTuples(pt_ids, output)
-    #         # If we exceed z_diff set Classification to 2
-    #         if (pdata.GetPointData().GetScalars().GetTuple(m)
-    #             - output_np.mean())>z_diff:
-    #             self.dsa_raw.PointData['Classification'][m] = 65
+            # Get N closest points
+            locator.FindClosestNPoints(N, pt, pt_ids)
+            # now using the list of point_ids set the values in output to be the z
+            # values of the found points
+            pdata.GetPointData().GetScalars().GetTuples(pt_ids, output)
+            # If we exceed z_diff set Classification to 2
+            if (pdata.GetPointData().GetScalars().GetTuple(m)
+                - output_np.mean())>z_diff:
+                self.dsa_raw.PointData['Classification'][m] = 65
         
-    #     # Update currentTransform
-    #     self.polydata_raw.Modified()
-    #     self.transformFilter.Update()
-    #     self.currentFilter.Update()
+        # Update currentTransform
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
     
     def apply_snowflake_filter_returnindex(self, cylinder_rad=0.025*np.sqrt(2)
                                            *np.pi/180, radial_precision=0):
@@ -3440,7 +3460,7 @@ class Project:
                  import_mode=None, load_scans=True, read_scans=False, 
                  import_las=False, create_id=True, 
                  las_fieldnames=None, 
-                 class_list=[0, 1, 2, 70]):
+                 class_list=[0, 1, 2, 70], suffix=''):
         """
         Generates project, also inits singlescan objects
 
@@ -3484,6 +3504,9 @@ class Project:
             List of categories this filter will return, if special value: 
             'all' Then we do not have a selection filter and we pass through 
             all points. The default is [0, 1, 2, 70].
+        suffix : str, optional
+            Suffix for npyfiles directory if we are reading scans. The default
+            is '' which corresponds to the regular npyfiles directory.
 
         Returns
         -------
@@ -3515,10 +3538,23 @@ class Project:
                                    + " of import flags")
         
         # Add SingleScans, including their SOPs, 
-        # we will only add a singlescan if it has an SOP
+        # we will only add a singlescan if it has an SOP, or, if we are 
+        # reading scans we will only add a scan if it exists
         scan_names = os.listdir(os.path.join(project_path, project_name, 
                                                  'SCANS'))
         for scan_name in scan_names:
+            if import_mode=='read_scan':
+                if os.path.isdir(os.path.join(self.project_path, 
+                                              self.project_name, 'npyfiles' +
+                                              suffix, scan_name)):
+                    scan = SingleScan(self.project_path, self.project_name,
+                                      scan_name, import_mode=import_mode,
+                                      poly=poly, create_id=create_id,
+                                      las_fieldnames=las_fieldnames,
+                                      class_list=class_list, suffix=suffix)
+                    scan.add_sop()
+                    self.scan_dict[scan_name] = scan
+            else:
                 if os.path.isfile(os.path.join(self.project_path, 
                                                self.project_name, 
                                   scan_name + '.DAT')):
@@ -3526,7 +3562,7 @@ class Project:
                                       scan_name, import_mode=import_mode,
                                       poly=poly, create_id=create_id,
                                       las_fieldnames=las_fieldnames,
-                                      class_list=class_list)
+                                      class_list=class_list, suffix=suffix)
                     scan.add_sop()
                     self.scan_dict[scan_name] = scan
         
@@ -3553,7 +3589,7 @@ class Project:
             self.scan_dict[scan_name].apply_transforms(transform_list)
         self.current_transform_list = transform_list
     
-    def write_scans(self, project_write_dir=None):
+    def write_scans(self, project_write_dir=None, suffix=''):
         """
         Write all single scans to files.
         
@@ -3561,6 +3597,10 @@ class Project:
         ----------
         A directory to write all scans for this project to. If none write
         to default npyfiles location. The default is None.
+        
+        suffix : str, optional
+            Suffix for npyfiles directory if we are reading scans. The default
+            is '' which corresponds to the regular npyfiles directory.
 
         Returns
         -------
@@ -3570,7 +3610,7 @@ class Project:
         
         if project_write_dir is None:
             for scan_name in self.scan_dict:
-                self.scan_dict[scan_name].write_scan()
+                self.scan_dict[scan_name].write_scan(suffix=suffix)
         else:
             # For each scan name create a directory under project_write_dir
             # if it does not already exist.
@@ -3579,7 +3619,7 @@ class Project:
                                                   scan_name)):
                     os.mkdir(os.path.join(project_write_dir, scan_name))
                 self.scan_dict[scan_name].write_scan(os.path.join(
-                    project_write_dir, scan_name))
+                    project_write_dir, scan_name), suffix=suffix)
     
     def read_scans(self):
         """
@@ -3594,10 +3634,15 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].read_scan()
     
-    def write_current_transforms(self):
+    def write_current_transforms(self, suffix=''):
         """
         Have each SingleScan write its current transform to a file.
 
+        suffix : str, optional
+            Suffix for transforms directory if we are reading scans. 
+            The default is '' which corresponds to the regular transforms
+            directory.
+            
         Returns
         -------
         None.
@@ -3605,12 +3650,17 @@ class Project:
         """
         
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].write_current_transform()
+            self.scan_dict[scan_name].write_current_transform(suffix=suffix)
     
-    def read_transforms(self):
+    def read_transforms(self, suffix=''):
         """
         Have each SingleScan read a transform from file
 
+        suffix : str, optional
+            Suffix for transforms directory if we are reading scans. 
+            The default is '' which corresponds to the regular transforms
+            directory.
+            
         Returns
         -------
         None.
@@ -3618,7 +3668,7 @@ class Project:
         """
         
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].read_transform()
+            self.scan_dict[scan_name].read_transform(suffix=suffix)
     
     def load_man_class(self):
         """
@@ -4676,7 +4726,68 @@ class Project:
         
         # Store result in mesh
         self.mesh = appendPolyData.GetOutput()
+    
+    def mesh_transect(self, x0, y0, x1, y1, N):
+        """
+        Cut a transect through the mesh, return the transect
+
+        Parameters
+        ----------
+        x0 : float
+            Coordinate in project reference frame.
+        y0 : float
+            Coordinate in project reference frame.
+        x1 : float
+            Coordinate in project reference frame.
+        y1 : float
+            Coordinate in project reference frame.
+        N : int
+            Number of points to put in transect.
+
+        Returns
+        -------
+        ndarray
+            N x 4 array with x coord, y coord, length along transect and z
+
+        """
         
+        # Elevation filter
+        elevFilter = vtk.vtkSimpleElevationFilter()
+        elevFilter.SetInputData(self.mesh)
+        elevFilter.Update()
+        
+        # Flatten
+        trans = vtk.vtkTransform()
+        trans.Scale(1.0, 1.0, 0)
+        flattener = vtk.vtkTransformFilter()
+        flattener.SetInputConnection(elevFilter.GetOutputPort())
+        flattener.SetTransform(trans)
+        flattener.Update()
+        
+        # Line we want to filter on.
+        pts_np = np.vstack((np.linspace(x0, x1, N), np.linspace(y0, y1, N),
+                            np.zeros(N))).T
+        pts = vtk.vtkPoints()
+        pts.SetData(numpy_to_vtk(pts_np, deep=True, array_type=vtk.VTK_DOUBLE))
+        pts_pdata = vtk.vtkPolyData()
+        pts_pdata.SetPoints(pts)
+        
+        # Probe filter
+        probeFilter = vtk.vtkProbeFilter()
+        probeFilter.SetSourceData(flattener.GetOutput())
+        probeFilter.SetInputData(pts_pdata)
+        probeFilter.Update()
+        
+        pdata = probeFilter.GetOutput()
+        z = vtk_to_numpy(pdata.GetPointData().GetArray('Elevation'))
+
+        output = np.zeros((N, 4))
+        output[:,:2] = pts_np[:,:2]
+        output[:,2] = np.sqrt((output[:,0]-output[0,0])**2 + 
+                              (output[:,1]-output[0,1])**2)
+        output[:,3] = z
+        return output
+    
     def get_merged_points(self, port=False, history_dict=False):
         """
         Returns a polydata with merged points from all single scans
@@ -4829,15 +4940,20 @@ class Project:
         _ = pipeline.execute()
         
     
-    def write_mesh(self, output_name=None):
+    def write_mesh(self, output_path=None, suffix='', name='mesh'):
         """
         Write the mesh out to a file
 
         Parameters
         ----------
-        output_name : str, optional
+        output_path : str, optional
             Output name for the file, if None use the mesh directory. 
             The default is None.
+        suffix : str, optional
+            The suffix for the vtkfiles dir. The default is ''.
+        name : str, optional
+            Name of the file if we're writing to vtkfiles dir. The default 
+            is 'mesh'.
 
         Returns
         -------
@@ -4848,23 +4964,27 @@ class Project:
         # Create writer and write mesh
         writer = vtk.vtkXMLPolyDataWriter()
         writer.SetInputData(self.mesh)
-        if output_name:
-            writer.SetFileName(self.project_path + output_name)
+        if output_path:
+            writer.SetFileName(output_path)
         else:
             # Create the mesh folder if it doesn't already exist
-            if not os.path.isdir(os.path.join(self.project_path, self.project_name, 
-                             "vtkfiles")):
+            if not os.path.isdir(os.path.join(self.project_path, 
+                                              self.project_name, 
+                                              "vtkfiles" + suffix)):
                 os.mkdir(os.path.join(self.project_path, self.project_name, 
-                         "vtkfiles"))
-            if not os.path.isdir(os.path.join(self.project_path, self.project_name, 
-                                 "vtkfiles", "meshes")):
+                                      "vtkfiles" + suffix))
+            if not os.path.isdir(os.path.join(self.project_path,   
+                                              self.project_name, 
+                                              "vtkfiles" + suffix, "meshes")):
                 os.mkdir(os.path.join(self.project_path, self.project_name, 
-                         "vtkfiles","meshes"))
-            writer.SetFileName(os.path.join(self.project_path, self.project_name, 
-                               "vtkfiles", "meshes", "mesh.vtp"))
+                         "vtkfiles" + suffix, "meshes"))
+            writer.SetFileName(os.path.join(self.project_path, 
+                                            self.project_name, 
+                                            "vtkfiles" + suffix, 
+                                            "meshes", name + ".vtp"))
         writer.Write()
         
-    def read_mesh(self, mesh_path=None):
+    def read_mesh(self, mesh_path=None, suffix='', name='mesh'):
         """
         Read in the mesh from a file.
 
@@ -4873,6 +4993,11 @@ class Project:
         mesh_path : str, optional
             Path to the mesh, if none use the mesh directory. 
             The default is None.
+        suffix : str, optional
+            The suffix for the vtkfiles dir. The default is ''.
+        name : str, optional
+            Name of the file if we're reading in vtkfiles dir. The default 
+            is 'mesh'.
 
         Returns
         -------
@@ -4885,8 +5010,10 @@ class Project:
         if mesh_path:
             reader.SetFileName(mesh_path)
         else:
-            reader.SetFileName(os.path.join(self.project_path, self.project_name, 
-                               "vtkfiles", "meshes", "mesh.vtp"))
+            reader.SetFileName(os.path.join(self.project_path, 
+                                            self.project_name, 
+                                            "vtkfiles" + suffix, 
+                                            "meshes", name + ".vtp"))
         reader.Update()
         self.mesh = reader.GetOutput()
     
@@ -5425,7 +5552,7 @@ class ScanArea:
                  import_mode=None, poly='.1_.1_.01', load_scans=True, 
                  read_scans=False, import_las=False,  create_id=True,
                  las_fieldnames=None, 
-                 class_list=[0, 1, 2, 70]):
+                 class_list=[0, 1, 2, 70], suffix=''):
         """
         init stores project_path and initializes project_dict
 
@@ -5475,6 +5602,9 @@ class ScanArea:
             List of categories this filter will return, if special value: 
             'all' Then we do not have a selection filter and we pass through 
             all points. The default is [0, 1, 2, 70].
+        suffix : str, optional
+            Suffix for npyfiles directory if we are reading scans. The default
+            is '' which corresponds to the regular npyfiles directory.
         
         Returns
         -------
@@ -5493,7 +5623,7 @@ class ScanArea:
                              poly=poly, import_las=import_las, 
                              create_id=create_id,
                              las_fieldnames=las_fieldnames,
-                             class_list=class_list)
+                             class_list=class_list, suffix=suffix)
             
         self.registration_list = copy.deepcopy(registration_list)
     
@@ -5501,7 +5631,7 @@ class ScanArea:
                     poly='.1_.1_.01', load_scans=True, 
                     read_scans=False, import_las=False, create_id=True,
                     las_fieldnames=None,
-                    class_list=[0, 1, 2, 70]):
+                    class_list=[0, 1, 2, 70], suffix=''):
         """
         Add a new project to the project_dict (or overwrite existing project)
 
@@ -5544,6 +5674,9 @@ class ScanArea:
             List of categories this filter will return, if special value: 
             'all' Then we do not have a selection filter and we pass through 
             all points. The default is [0, 1, 2, 70].
+        suffix : str, optional
+            Suffix for npyfiles directory if we are reading scans. The default
+            is '' which corresponds to the regular npyfiles directory.
 
         Returns
         -------
@@ -5561,7 +5694,7 @@ class ScanArea:
                                                   create_id=create_id,
                                                   las_fieldnames=
                                                   las_fieldnames, class_list=
-                                                  class_list)
+                                                  class_list, suffix=suffix)
     
     def compare_reflectors(self, project_name_0, project_name_1, 
                            delaunay=False, mode='dist', 
@@ -6072,6 +6205,342 @@ class ScanArea:
         # Return the diff
         return frac_exceed_max_diff, diff
     
+    def kernel_alignment(self, project_name_0, project_name_1, bin_width=0.15, 
+                         max_points=800000, max_dist=250, blur=0.005,
+                         max_steps=100, cutoff_t=0.0005, cutoff_r=0.000005,
+                         plot_optimization=False):
+        """
+        Align each single scan in project 1 with project 0 using geomloss
+
+        This function requires you to be running python from the docker group
+        and have the jupyter-keops container running. We will first subset
+        the two scans to areas with high overlapping point density. Then,
+        we apply compute_kernel_alignment.py to find the best fitting rigid
+        transformation. Finally, we load in this transformation.
+
+        This function updates the current_transform for each single scan and
+        applies current_transform to each scan.
+        
+        Parameters:
+        -----------
+        project_name_0 : str
+            The reference project we're trying to align project_1 with
+        project_name_1 : str
+            The project we're aligning with project_0
+        bin_width : float
+            Bin side length (in m) for when we downsample to areas with shared
+            high point density. The default is 0.15.
+        max_points : int
+            The maximum number of points from either scan to use, larger numbers
+            will increase runtimes. The default is 800000.
+        max_dist : float
+            The maximum distance from the scanner position of the scan we're
+            trying to align to look for points. The default is 250.
+        blur : float
+            Gaussian blur sigma for point alignment in m. The default is 0.005.
+        max_steps : int
+            The maximum number of steps that the optimization should take. The
+            default is 100.
+        cutoff_t : float
+            Threshold by which if all translations are less than cutoff_t and 
+            all rotations are less than cutoff_r for the current step stop
+            optimization. The default is 0.0005.
+        cutoff_r : float
+            Threshold by which if all translations are less than cutoff_t and 
+            all rotations are less than cutoff_r for the current step stop
+            optimization. The default is 0.000005.
+        plot_optimization : bool
+            Whether to plot the optimization. The default is False.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        for scan_name in self.project_dict[project_name_1].scan_dict:
+            print(scan_name)
+            t0 = time.perf_counter()
+            self.kernel_alignment_ss(project_name_0, project_name_1, scan_name,
+                                     bin_width=bin_width, max_points=max_points,
+                                     max_dist=max_dist, blur=blur, max_steps=
+                                     max_steps, cutoff_t=cutoff_t, cutoff_r=
+                                     cutoff_r, plot_optimization=
+                                     plot_optimization)
+            t1 = time.perf_counter()
+            print(t1-t0)
+        # Apply current transform
+        self.project_dict[project_name_1].apply_transforms([
+                                                           'current_transform'])
+    def kernel_alignment_ss(self, project_name_0, project_name_1, scan_name,
+                            bin_width=0.15, max_points=800000, max_dist=250, 
+                            blur=0.005, max_steps=100, cutoff_t=0.0005, 
+                            cutoff_r=0.000005, plot_optimization=False):
+        """
+        Align single scan in project 1 with project 0 using geomloss
+
+        This function requires you to be running python from the docker group
+        and have the jupyter-keops container running. We will first subset
+        the two scans to areas with high overlapping point density. Then,
+        we apply compute_kernel_alignment.py to find the best fitting rigid
+        transformation. Finally, we load in this transformation.
+
+        This function will load the 
+        
+        Parameters:
+        -----------
+        project_name_0 : str
+            The reference project we're trying to align project_1 with
+        project_name_1 : str
+            The project we're aligning with project_0
+        bin_width : float
+            Bin side length (in m) for when we downsample to areas with shared
+            high point density. The default is 0.15.
+        max_points : int
+            The maximum number of points from either scan to use, larger numbers
+            will increase runtimes. The default is 800000.
+        max_dist : float
+            The maximum distance from the scanner position of the scan we're
+            trying to align to look for points. The default is 250.
+        blur : float
+            Gaussian blur sigma for point alignment in m. The default is 0.005.
+        max_steps : int
+            The maximum number of steps that the optimization should take. The
+            default is 100.
+        cutoff_t : float
+            Threshold by which if all translations are less than cutoff_t and 
+            all rotations are less than cutoff_r for the current step stop
+            optimization. The default is 0.0005.
+        cutoff_r : float
+            Threshold by which if all translations are less than cutoff_t and 
+            all rotations are less than cutoff_r for the current step stop
+            optimization. The default is 0.000005.
+        plot_optimization : bool
+            Whether to plot the optimization. The default is False.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        git_hash = get_git_hash()
+        
+        # Create docker project path
+        docker_project_path = os.path.join('/mosaic_lidar/', 
+                                           self.project_path.rsplit('/',2)[1])
+
+        # Get pointclouds as numpy files and their history dicts
+        project_0 = self.project_dict[project_name_0]
+        ss = self.project_dict[project_name_1].scan_dict[scan_name]
+
+        pdata_merged_project_0, history_dict_project_0 = (project_0
+            .get_merged_points(history_dict=True))
+        project_0_points_np = vtk_to_numpy(pdata_merged_project_0
+                                           .GetPoints().GetData())
+        project_0_class_np = vtk_to_numpy(pdata_merged_project_0.GetPointData()
+                                          .GetArray('Classification'))
+        ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
+                                            .GetData())
+        ss_PointId = vtk_to_numpy(ss.currentFilter.GetOutput().GetPointData().
+                                  GetArray('PointId'))
+        history_dict_ss = json.loads(json.dumps(ss.filt_history_dict))
+
+        # Create Grid
+        w = [bin_width, bin_width]
+        bounds = pdata_merged_project_0.GetBounds()
+        edges = 2*[None]
+        nbin = np.empty(2, np.int_)
+        for i in range(2):
+            edges[i] = np.arange(int(np.ceil((bounds[2*i + 1] - 
+                                              bounds[2*i])/w[i]))
+                                 + 1, dtype=np.float32) * w[i] + bounds[2*i]
+            # Adjust lower edge so we don't miss lower most point
+            edges[i][0] = edges[i][0] - 0.00001
+            # Adjust uppermost edge so the bin width is appropriate
+            edges[i][-1] = bounds[2*i + 1] + 0.00001
+            nbin[i] = len(edges[i]) + 1
+
+        # Bin single scan
+        ss_Ncount = tuple(np.searchsorted(edges[i], ss_points_np[:,i], 
+                                          side='right') for i in range(2))
+        ss_xy = np.ravel_multi_index(ss_Ncount, nbin)
+        del ss_Ncount
+        ss_counts = np.bincount(ss_xy, minlength=nbin.prod())
+
+        # Bin Project
+        project_0_Ncount = tuple(np.searchsorted(edges[i], 
+                                                 project_0_points_np[:,i], 
+                                                 side='right') 
+                                 for i in range(2))
+        project_0_xy = np.ravel_multi_index(project_0_Ncount, nbin)
+        del project_0_Ncount
+        project_0_counts = np.bincount(project_0_xy, minlength=nbin.prod())
+
+        # Create array with min_counts per bucket
+        min_counts = np.minimum(project_0_counts, ss_counts)
+
+        # Sort by min_counts
+        sort_ind = np.argsort(min_counts)[::-1]
+
+        # Now starting at the bucket with the largest min number of points, 
+        # step through the buckets until we've gathered as many points as we 
+        # can fit under max_points
+        project_0_N = 0
+        ss_N = 0
+        for i in range(len(sort_ind)):
+            if ((project_0_N+project_0_counts[sort_ind[i]]>max_points) 
+                or (ss_N+ss_counts[sort_ind[i]]>max_points)):
+                break
+            else:
+                project_0_N += project_0_counts[sort_ind[i]]
+                ss_N += ss_counts[sort_ind[i]]
+
+        bin_ind = sort_ind[0:i]
+
+        # Use isin to get points
+        ss_bool = np.isin(ss_xy, bin_ind)
+        project_0_bool = np.isin(project_0_xy, bin_ind)
+
+        # The project points can be written directly to files, first we check
+        # if a folder already exists in the temp directory.
+        scan_0_path = os.path.join(self.project_path, 'temp', 'kernel_scan_0')
+        d_scan_0_path = os.path.join(docker_project_path, 'temp', 
+                                     'kernel_scan_0')
+        if not os.path.isdir(scan_0_path):
+            os.mkdir(scan_0_path)
+        # Delete old files
+        for f in os.listdir(scan_0_path):
+            os.remove(os.path.join(scan_0_path, f))
+        # Now save project_0
+        # Points
+        np.save(os.path.join(scan_0_path, 'Points.npy'), project_0_points_np[
+                project_0_bool, :])
+        # Classification
+        np.save(os.path.join(scan_0_path, 'Classification.npy'), 
+                project_0_class_np[project_0_bool])
+        # Create and save the history dict
+        history_dict = {
+            "type": "Filter",
+            "git_hash": git_hash,
+            "method": "ScanArea.kernel_alignment_ss",
+            "input_0": history_dict_project_0,
+            "params": {
+                "bin_width": bin_width,
+                "max_points": max_points,
+                "other_pointset": history_dict_ss
+                }
+            }
+        f = open(os.path.join(scan_0_path, 'raw_history_dict.txt'), 'w')
+        json.dump(history_dict, f, indent=4)
+        f.close()
+        # Save a blank transform
+        trans = np.array([(0, 0, 0, 
+                          0, 0, 0)],
+                          dtype=[('x0', '<f8'), ('y0', '<f8'), 
+                                 ('z0', '<f8'), ('u0', '<f8'),
+                                 ('v0', '<f8'), ('w0', '<f8')])
+        np.save(os.path.join(scan_0_path, 'current_transform.npy'), trans)
+        # Now create a blank transform source (indicates identity trans), save
+        history_dict = {
+            "type": "Transform Source",
+            "git_hash": git_hash,
+            "method": "ScanArea.kernel_alignment_ss",
+            "filename": ''
+            }
+        f = open(os.path.join(scan_0_path, 'current_transform.txt'), 'w')
+        json.dump(history_dict, f, indent=4)
+        f.close()
+
+        # For scan 1 we want to save untransformed points. So first we use
+        # pedigree id selection to get these points
+        ss_subset_pointid = ss_PointId[ss_bool]
+        selectionNode = vtk.vtkSelectionNode()
+        selectionNode.SetFieldType(1) # we want to select points
+        selectionNode.SetContentType(2) # 2 corresponds to pedigreeIds
+        selectionNode.SetSelectionList(numpy_to_vtk(ss_subset_pointid, 
+                                                    array_type=
+                                                    vtk.VTK_UNSIGNED_INT))
+        selection = vtk.vtkSelection()
+        selection.AddNode(selectionNode)
+        extractSelection = vtk.vtkExtractSelection()
+        extractSelection.SetInputData(0, ss.polydata_raw)
+        extractSelection.SetInputData(1, selection)
+        extractSelection.Update()
+        pdata = extractSelection.GetOutput()
+
+        ss_points_write = vtk_to_numpy(pdata.GetPoints().GetData())
+        ss_classification_write = vtk_to_numpy(pdata.GetPointData()
+                                               .GetArray('Classification'))
+        # Now write selected points to files
+        # if a folder already exists in the temp directory.
+        scan_1_path = os.path.join(self.project_path, 'temp', 'kernel_scan_1')
+        d_scan_1_path = os.path.join(docker_project_path, 'temp', 
+                                     'kernel_scan_1')
+        if not os.path.isdir(scan_1_path):
+            os.mkdir(scan_1_path)
+        # Delete old files
+        for f in os.listdir(scan_1_path):
+            os.remove(os.path.join(scan_1_path, f))
+        # Now save scan 1
+        # Points
+        np.save(os.path.join(scan_1_path, 'Points.npy'), ss_points_write)
+        # Classification
+        np.save(os.path.join(scan_1_path, 'Classification.npy'), 
+                ss_classification_write)
+        # Create and save the history dict
+        history_dict = {
+            "type": "Transformer",
+            "git_hash": git_hash,
+            "method": "ScanArea.kernel_alignment_ss",
+            "input_0": {
+                "type": "Filter",
+                "git_hash": git_hash,
+                "method": "ScanArea.kernel_alignment_ss",
+                "input_0": history_dict_ss,
+                "params": {
+                    "bin_width": bin_width,
+                    "max_points": max_points,
+                    "other_pointset": history_dict_project_0
+                    }
+                },
+            "input_1": {
+                "type": "Invert Transform",
+                "input_0": ss.transformed_history_dict["input_1"]
+                }
+            }
+        f = open(os.path.join(scan_1_path, 'raw_history_dict.txt'), 'w')
+        json.dump(history_dict, f, indent=4)
+        f.close()
+
+        # Now we can create our command for the kernel optimization
+        cmd = ("docker exec -w /code/pydar/keops jupyter-keops python " +
+               "compute_kernel_alignment.py --set_paths_directly --scan_1_path "
+               + d_scan_1_path + " --trans_1_path " + os.path.join(
+                '/mosaic_lidar/', docker_project_path, 
+                project_name_1, 'transforms', scan_name) + 
+               " --scan_0_paths " + d_scan_0_path + " --trans_0_paths " +
+               d_scan_0_path + " --max_dist " + str(max_dist) + " --max_pts " 
+               + str(max_points) + " --blur " + str(blur) + " --max_steps " + 
+               str(max_steps) + " --cutoff_t " + str(cutoff_t) + " --cutoff_r "
+               + str(cutoff_r) + " --git_hash " + git_hash + 
+               " --plot_optimization --plot_output_path " + os.path.join(
+               docker_project_path, 'snapshots'))
+
+        # Delete all unneeded objects to free up some memory
+        del history_dict, ss_classification_write, ss_points_write
+        del pdata, extractSelection, selection, selectionNode, ss_subset_pointid
+        del project_0_bool, ss_bool, bin_ind, sort_ind, min_counts
+        del project_0_counts, project_0_xy, ss_counts, ss_xy, nbin, edges
+        del history_dict_ss, ss_PointId, ss_points_np, project_0_class_np
+        del project_0_points_np, pdata_merged_project_0, history_dict_project_0
+
+        # Execute command
+        os.system(cmd)
+
+        # Update the current transform in our single scan
+        ss.read_transform()
+
     def apply_snowflake_filter(self, shells):
         """
         Apply a snowflake filter to each project.
