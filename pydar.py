@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from matplotlib.colors import Normalize
 from scipy import ndimage
-from scipy.spatial import Delaunay
+from scipy.spatial import Delaunay, cKDTree
 from scipy.special import erf, erfinv
 from scipy.signal import fftconvolve
 from scipy.stats import mode
@@ -638,6 +638,7 @@ class SingleScan:
         70: Road
         71: Flag
         72: Wire
+        73: Manually Removed (mostly the ship and logistics area)
     dsa_raw : vtk.numpy_interface.dataset_adapter.Polydata
         dataset adaptor object for interacting with polydata_raw
     man_class : pandas dataframe
@@ -794,9 +795,15 @@ class SingleScan:
         Classification to 64.
     apply_snowflake_filter_2(z_diff, N, r_min):
         Filter snowflakes based on their vertical distance from nearby points.
+    apply_snowflake_filter_3(z_std_mult, leafsize):
+        Filter points as snowflakes based on whether their z value in the
+        transformed reference frame exceeds z_std_mult multiples of the mean
+        z values for points nearby (within a bucket of size, leafsize)
     apply_snowflake_filter_returnindex(cylinder_rad, radial_precision)
         Filter snowflakes based on their return index and whether they are on
         the border of the visible region.
+    apply_manual_filter(corner_coords, normal=(0, 0, 1), category=73)
+        Classify points by a selection loop.
     random_voxel_downsample_filter(wx, wy, wz, seed=1234)
         Subset the filtered pointcloud randomly by voxels. Replaces Polydata!!
     clear_classification
@@ -2198,10 +2205,14 @@ class SingleScan:
         """
         
         # Get the points of the currentTransform as a numpy array
-        dsa_current = dsa.WrapDataObject(self.transformFilter.GetOutput())
-        # Set the in Classification for points whose z-value is above z_max to 1
-        self.dsa_raw.PointData['Classification'][dsa_current.Points[:,2] 
-                                              > z_max] = 64
+        Points = vtk_to_numpy(self.currentFilter.GetOutput().GetPoints()
+                              .GetData())
+        PointIds = vtk_to_numpy(self.currentFilter.GetOutput().GetPointData().
+                        GetArray('PointId'))
+        # Set the in Classification for points whose z-value is above z_max to 
+        # 64
+        self.dsa_raw.PointData['Classification'][np.isin(self.dsa_raw.PointData
+            ['PointId'], PointIds[Points[:,2]>z_max], assume_unique=True)] =64
         # Update currentTransform
         self.polydata_raw.Modified()
         self.transformFilter.Update()
@@ -2212,10 +2223,66 @@ class SingleScan:
             "git_hash": get_git_hash(),
             "method": "SingleScan.apply_elevation_filter",
             "name": "Set Classification for points above z_max to be 64",
-            "input_0": json.loads(json.dumps(self.raw_history_dict)),
+            "input_0": json.loads(json.dumps(self.filt_history_dict)),
             "params": {"z_max": z_max}
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
+        
+    def apply_rmin_filter(self, buffer=0.05, count=150000):
+        """
+        Assign all points very close to the scanner as snowflakes. This filter
+        is applied to the output of current filter (and hence depends on)
+        the current transform we have applied.
+
+        Parameters
+        ----------
+        buffer : float, optional
+            How far past the cylindrical shell defined by count to go in m. 
+            The default is 0.05.
+        count : int, optional
+            How many points to count before we decide that we're at the edge.
+            The default is 150000
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Compute xy squared distance
+        sq_dist = (np.square(vtk_to_numpy(self.currentFilter.GetOutput()
+                                         .GetPoints().GetData())[:,:2]
+                            - np.array(self.transform.GetPosition()[:2]
+                                       , ndmin=2))
+                   .sum(axis=1))
+        PointIds = vtk_to_numpy(self.currentFilter.GetOutput().GetPointData().
+                        GetArray('PointId'))
+        # Get the sq_distance corresponding to the countth point
+        k_sq_dist = np.partition(sq_dist, count)[count]
+        
+        # Now set the classification value for every point that is within
+        # counteth's point's xy distance plus the buffer to 65
+        self.dsa_raw.PointData['Classification'][np.isin(self.dsa_raw.PointData
+            ['PointId'], PointIds[sq_dist<(k_sq_dist + buffer**2)], 
+            assume_unique=True)] = 65
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+
+        # update history_dicts appropriately
+        # Update raw_history_dict
+        self.raw_history_dict = {
+            "type": "Scalar Modifier",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.apply_rmin_filter",
+            "name": "Set snowflake Classification to 65",
+            "input_0": json.loads(json.dumps(self.filt_history_dict)),
+            "params": {"buffer": buffer,
+                       "count": count}
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
+        
+        
     
     def apply_snowflake_filter_2(self, z_diff, N, r_min):
         """
@@ -2298,6 +2365,80 @@ class SingleScan:
         self.transformFilter.Update()
         self.currentFilter.Update()
     
+    def apply_snowflake_filter_3(self, z_std_mult, leafsize):
+        """
+        Filter points as snowflakes based on whether their z value in the
+        transformed reference frame exceeds z_std_mult multiples of the mean
+        z values for points nearby (within a bucket of size leafsize).
+
+        We apply this only to the output of currentFilter!
+
+        All points that this filter identifies as snowflakes are set to
+        Classification=65
+
+        Parameters
+        ----------
+        z_std_mult : float
+            The number of positive z standard deviations greater than other
+            nearby points for us to classify it as a snowflake.
+        leafsize : int
+            maximum number of points in each bucket (we use scipy's
+            KDTree)
+
+        """
+
+        # Step 1, get pointer to points array and create tree
+        Points = vtk_to_numpy(self.currentFilter.GetOutput().GetPoints()
+                              .GetData())
+        PointIds = vtk_to_numpy(self.currentFilter.GetOutput().GetPointData().
+                        GetArray('PointId'))
+        tree = cKDTree(Points[:,:2], leafsize=leafsize)
+        # Get python accessible version
+        ptree = tree.tree
+
+        # Step 2, define the recursive function that we'll use
+        def z_std_filter(node, z_std_mult, Points, bool_arr):
+            # If we are not at a leaf, call this function on each child
+            if not node.split_dim==-1:
+                # Call this function on the lesser node
+                z_std_filter(node.lesser, z_std_mult, Points, bool_arr)
+                # Call this function on the greater node
+                z_std_filter(node.greater, z_std_mult, Points, bool_arr)
+            else:
+                # We are at a leaf. Compute distance from mean
+                ind = node.indices
+                z_mean = Points[ind, 2].mean()
+                z_std = Points[ind, 2].std()
+                bool_arr[ind] = (Points[ind, 2] - z_mean) > (z_std_mult * z_std)
+
+        # Step 3, Apply function
+        bool_arr = np.empty(Points.shape[0], dtype=np.bool_)
+        z_std_filter(ptree, z_std_mult, Points, bool_arr)
+
+        # Step 4, modify Classification field in polydata_raw
+        # Use bool_arr to index into PointIds, use np.isin to find indices
+        # in dsa_raw
+        self.dsa_raw.PointData['Classification'][np.isin(self.dsa_raw.PointData
+            ['PointId'], PointIds[bool_arr], assume_unique=True)] = 65
+        del ptree, tree, PointIds, Points
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+
+        # Step 5, update history_dicts appropriately
+        # Update raw_history_dict
+        self.raw_history_dict = {
+            "type": "Scalar Modifier",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.apply_snowflake_filter_3",
+            "name": "Set snowflake Classification to 65",
+            "input_0": json.loads(json.dumps(self.filt_history_dict)),
+            "params": {"z_std_mult": z_std_mult,
+                       "leafsize": leafsize}
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
+
+
     def apply_snowflake_filter_returnindex(self, cylinder_rad=0.025*np.sqrt(2)
                                            *np.pi/180, radial_precision=0):
         """
@@ -2426,6 +2567,77 @@ class SingleScan:
                        'radial_precision': radial_precision}
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
+
+    def apply_manual_filter(self, corner_coords, normal=(0.0, 0.0, 1.0), 
+                            category=73, mode='currentFilter'):
+        """
+        Manually classify points using a selection loop.
+
+        Parameters
+        ----------
+        corner_coords : ndarray
+            Nx3 array of points defining corners of selection.
+        normal : array-like, optional
+            Three element vector describing normal (axis) of loop. 
+            The default is (0, 0, 1).
+        category : uint8, optional
+            Which category to classify points as. The default is 73.
+        mode : str, optional
+            What to apply filter to. Options are 'currentFilter' and
+            'transformFilter'. The default is 'currentFilter'.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Convert corner_coords to vtk points object
+        pts = vtk.vtkPoints()
+        arr_type = (vtk.VTK_FLOAT if corner_coords.dtype=='float32' else 
+                    vtk.VTK_DOUBLE)
+        pts.SetData(numpy_to_vtk(corner_coords, array_type=arr_type))
+        
+        # Create implicit selection loop
+        selectionLoop = vtk.vtkImplicitSelectionLoop()
+        selectionLoop.SetNormal(normal[0], normal[1], normal[2])
+        selectionLoop.SetLoop(pts)
+        
+        # Create Extract Points
+        extractPoints = vtk.vtkExtractPoints()
+        extractPoints.SetImplicitFunction(selectionLoop)
+        if mode=='currentFilter':
+            extractPoints.SetInputData(self.currentFilter.GetOutput())
+        elif mode=='transformFilter':
+            extractPoints.SetInputData(self.transformFilter.GetOutput())
+        else:
+            raise ValueError('mode must be currentFilter or transformFilter')
+        extractPoints.Update()
+        
+        # Update classification
+        PointIds = vtk_to_numpy(extractPoints.GetOutput().GetPointData().
+                                GetArray('PointId'))
+        self.dsa_raw.PointData['Classification'][np.isin(self.dsa_raw.PointData
+            ['PointId'], PointIds, assume_unique=True)] = category
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+        
+        # Update History Dict
+        self.raw_history_dict = {
+            "type": "Scalar Modifier",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.apply_manual_filter",
+            "name": "Manually classify points",
+            "input_0": (json.loads(json.dumps(self.filt_history_dict)) 
+                        if mode=='currentFilter' else 
+                        json.loads(json.dumps(self.transformed_history_dict))),
+            "params": {"corner_coords": corner_coords.tolist(),
+                       "normal": list(normal),
+                       "category": category}
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
+        
 
     def create_dimensionality_pdal(self, temp_file="", from_current=True, 
                                    voxel=True, h_voxel=0.1, v_voxel=0.01, 
@@ -2713,7 +2925,8 @@ class SingleScan:
                                             69: (247/255, 129/255, 191/255, 1),
                                             70: (152/255, 78/255, 163/255, 1),
                                             71: (255/255, 127/255, 0/255, 1),
-                                            72: (253/255, 191/255, 111/255, 1)
+                                            72: (253/255, 191/255, 111/255, 1),
+                                            73: (255/255, 0/255, 0/255, 1)
                                             }):
         """
         Create mapper and actor displaying points colored by Classification
