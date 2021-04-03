@@ -28,6 +28,7 @@ from scipy.optimize import minimize, minimize_scalar
 import pandas as pd
 import vtk
 from vtk.numpy_interface import dataset_adapter as dsa
+import open3d as o3d
 import os
 import re
 import copy
@@ -790,6 +791,8 @@ class SingleScan:
     get_polydata()
         Returns the polydata object for the current settings of transforms
         and filters.
+    create_normals(radius=2, max_nn=30)
+        Estimate point normals (using Open3D).
     apply_elevation_filter(z_max)
         Filter out all points above a certain height. Sets the flag in 
         Classification to 64.
@@ -971,6 +974,10 @@ class SingleScan:
                                                  deep=False, 
                                                  array_type=arr_type))
                         pdata.SetPoints(pts)
+                    elif name=='Normals':
+                        pdata.GetPointData().SetNormals(numpy_to_vtk(
+                            self.np_dict[name], deep=False, 
+                            array_type=vtk.VTK_FLOAT))
                     elif name=='PointId':
                         vtkarr = numpy_to_vtk(self.np_dict[name], deep=False,
                                               array_type=vtk.VTK_UNSIGNED_INT)
@@ -1309,6 +1316,9 @@ class SingleScan:
         if class_list is None:
             # Save Points
             np.save(os.path.join(write_dir, 'Points.npy'), self.dsa_raw.Points)
+            # Save Normals
+            np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
+                self.polydata_raw.GetPointData().GetNormals()))
             # Save arrays
             for name in self.dsa_raw.PointData.keys():
                 np.save(os.path.join(write_dir, name), 
@@ -1323,6 +1333,9 @@ class SingleScan:
             # Save Points
             np.save(os.path.join(write_dir, 'Points.npy'), 
                     self.dsa_raw.Points[ind, :])
+            # Save Normals
+            np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
+                self.polydata_raw.GetPointData().GetNormals())[ind, :])
             # Save arrays
             for name in self.dsa_raw.PointData.keys():
                 np.save(os.path.join(write_dir, name), 
@@ -2188,6 +2201,61 @@ class SingleScan:
                                                  self.scan_name + '.parquet'),
                                                  engine="pyarrow", 
                                                  compression=None)
+        
+    def create_normals(self, radius=2, max_nn=30):
+        """
+        Use Open3d to compute pointwise normals and store.
+
+        Parameters
+        ----------
+        radius : float, optional
+            Max distance to look for nearby points. The default is 2.
+        max_nn : int, optional
+            max number of points to use in normal estimation. 
+            The default is 30.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Create Open3d pointcloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(vtk_to_numpy(
+            self.polydata_raw.GetPoints().GetData()))
+        # Estimate Normals
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(
+            radius=radius, max_nn=max_nn))
+        # Orient Normals to point towards scanner
+        pcd.orient_normals_towards_camera_location(camera_location=
+                                                   np.zeros(3))
+        
+        # Save normals in polydata_raw, We should be able to just save these
+        # as floats (doubles are probably overkill)
+        # First create npy_dict if it doesn't exist:
+        if not hasattr(self, 'npy_dict'):
+            self.npy_dict = {}
+        self.npy_dict['Normals'] = np.array(pcd.normals, dtype=np.float32)
+        # Now add normals to polydata_raw
+        self.polydata_raw.GetPointData().SetNormals(numpy_to_vtk(
+            self.npy_dict['Normals'], deep=False, array_type=vtk.VTK_FLOAT))
+        self.polydata_raw.Modified()
+        self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+        # Update raw_history_dict
+        self.raw_history_dict = {
+            "type": "Create Normals",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.create_normals",
+            "name": "Create Normals by PCA Estimation",
+            "input_0": json.loads(json.dumps(self.raw_history_dict)),
+            "params": {"radius": radius,
+                       'max_nn': max_nn}
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
+        
         
     def apply_elevation_filter(self, z_max):
         """
@@ -3621,6 +3689,8 @@ class Project:
         folder.
     add_transforms(key, matrix)
         Add the provided transform to each SingleScan
+    create_normals(radius=2, max_nn=30)
+        Estimate point normals (using Open3D).
     apply_snowflake_filter(shells)
         Apply the snowflake filter.
     apply_snowflake_filter_2(z_diff, N, r_min)
@@ -3896,6 +3966,28 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].load_man_class()
     
+    def create_normals(self, radius=2, max_nn=30):
+        """
+        Use Open3d to compute pointwise normals and store.
+
+        Parameters
+        ----------
+        radius : float, optional
+            Max distance to look for nearby points. The default is 2.
+        max_nn : int, optional
+            max number of points to use in normal estimation. 
+            The default is 30.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].create_normals(radius=radius,
+                                                     max_nn=max_nn)
+        
     def apply_snowflake_filter(self, shells):
         """
         Apply a snowflake filter to each SingleScan
