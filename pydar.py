@@ -975,9 +975,11 @@ class SingleScan:
                                                  array_type=arr_type))
                         pdata.SetPoints(pts)
                     elif name=='Normals':
-                        pdata.GetPointData().SetNormals(numpy_to_vtk(
-                            self.np_dict[name], deep=False, 
-                            array_type=vtk.VTK_FLOAT))
+                        vtk_arr = numpy_to_vtk(self.np_dict[name], 
+                                               deep=False, 
+                                               array_type=vtk.VTK_FLOAT)
+                        vtk_arr.SetName('Normals')
+                        pdata.GetPointData().SetNormals(vtk_arr)
                     elif name=='PointId':
                         vtkarr = numpy_to_vtk(self.np_dict[name], deep=False,
                                               array_type=vtk.VTK_UNSIGNED_INT)
@@ -2234,12 +2236,14 @@ class SingleScan:
         # Save normals in polydata_raw, We should be able to just save these
         # as floats (doubles are probably overkill)
         # First create npy_dict if it doesn't exist:
-        if not hasattr(self, 'npy_dict'):
-            self.npy_dict = {}
-        self.npy_dict['Normals'] = np.array(pcd.normals, dtype=np.float32)
+        if not hasattr(self, 'np_dict'):
+            self.np_dict = {}
+        self.np_dict['Normals'] = np.array(pcd.normals, dtype=np.float32)
         # Now add normals to polydata_raw
-        self.polydata_raw.GetPointData().SetNormals(numpy_to_vtk(
-            self.npy_dict['Normals'], deep=False, array_type=vtk.VTK_FLOAT))
+        vtk_arr = numpy_to_vtk(self.np_dict['Normals'], deep=False, 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('Normals')
+        self.polydata_raw.GetPointData().SetNormals(vtk_arr)
         self.polydata_raw.Modified()
         self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
         self.transformFilter.Update()
@@ -4910,33 +4914,32 @@ class Project:
         
         return nan_image
     
-    def merged_points_to_mesh(self, subgrid_x, subgrid_y, min_pts=100, 
-                              alpha=0, overlap=0.1, x0=None, y0=None, wx=None,
-                              wy=None, yaw=0):
+    def merged_points_to_mesh(self, depth=13, min_density=9, x0=None, y0=None,
+                              wx=None, wy=None, yaw=0):
         """
         Create mesh from all points in singlescans.
         
-        Note, we use a delaunay2D filter to create this mesh. The filter
-        encounters memory issues for large numbers of input points. So before
-        the mesh creation step, we break the project up into a subgrid of 
-        smaller chunks and then we apply the delaunay2D filter to each of 
-        these and save the output in the mesh object.
+        Using Poisson surface reconstruction from Kazhdan 2006 implemented in
+        Open3d. This function assumes that our points have normals!
 
         Parameters
         ----------
-        subgrid_x : float
-            x spacing, in m for the subgrid.
-        subgrid_y : float
-            y spacing, in m for the subgrid.
-        min_pts : int, optional
-            Minimum number of points for a subgrid region below which dont 
-            include data from this region. The default is 100.
-        alpha : float, optional
-            Alpha value for vtkDelaunay2D filter. Inverse of how large of data
-            gaps to interpolate over in m. The default is 0.
-        overlap : float, optional
-            Overlap value indicates how much overlap to permit between subgrid
-            chunks in meters. The default is 0.1
+        depth : int, optional
+            The depth into the octree for the surface reconstruction to go.
+            The default is 13.
+        min_density : float, optional
+            We will filter out triangles that are based on fewer than this
+            number of points. The default is 9.
+        x0 : float, optional
+            x coordinate of the selection box. The default is None
+        y0 : float, optional
+            y coordinate of the selection box. The default is None
+        wx : float, optional
+            the selection box width. The default is None
+        wy : float, optional
+            the selection box height. The default is None
+        yaw : float, optional
+            yaw of the selection box. The default is 0.
 
         Returns
         -------
@@ -4944,93 +4947,64 @@ class Project:
 
         """
         
-        # Create kDTree
-        kDTree = vtk.vtkKdTree()
-        # If we only want to build mesh from a region of data:
-        if x0 is not None:
-            # Create box object
-            box = vtk.vtkBox()
-            box.SetBounds((0, wx, 0, wy, -10, 10))
-            # We need a transform to put the data in the desired location relative to our
-            # box
-            transform = vtk.vtkTransform()
-            transform.PostMultiply()
-            transform.RotateZ(yaw)
-            transform.Translate(x0, y0, 0)
-            # That transform moves the box relative to the data, so the box takes its
-            # inverse
-            transform.Inverse()
-            box.SetTransform(transform)
-            
-            # vtkExtractPoints does the actual filtering
-            extractPoints = vtk.vtkExtractPoints()
-            extractPoints.SetImplicitFunction(box)
-            extractPoints.SetInputData(self.get_merged_points())
-            extractPoints.Update()
-            pdata_merged = extractPoints.GetOutput()
-        else:
-            pdata_merged = self.get_merged_points()
-        kDTree.BuildLocatorFromPoints(pdata_merged.GetPoints())
+        # First, get merged points
+        pdata, history_dict = self.get_merged_points(history_dict=True, x0=x0,
+                                                     y0=y0, wx=wx, wy=wy, 
+                                                     yaw=yaw)
         
-        # Create Appending filter
-        appendPolyData = vtk.vtkAppendPolyData()
+        # Convert to Open3d
+        filt_pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
+        normals_np = vtk_to_numpy(pdata.GetPointData().GetNormals())
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(filt_pts_np)
+        pcd.normals = o3d.utility.Vector3dVector(normals_np)
         
-        # Step through grid
-        # Get the overall bounds of the data
-        data_bounds = np.zeros(6)
-        kDTree.GetBounds(data_bounds)
-        x_min = data_bounds[0]
-        x_max = data_bounds[1]
-        y_min = data_bounds[2]
-        y_max = data_bounds[3]
-        z_min = data_bounds[4]
-        z_max = data_bounds[5]
-        while x_min < x_max:
-            while y_min < y_max:
-                # Create bounds and find points in area
-                bounds = (x_min - overlap, x_min + subgrid_x + overlap, 
-                          y_min - overlap, y_min + subgrid_y + overlap,
-                          z_min, z_max)
-                #print(bounds)
-                ids = vtk.vtkIdTypeArray()
-                kDTree.FindPointsInArea(bounds, ids)
-                
-                if (ids.GetNumberOfValues() < min_pts):
-                    y_min = y_min + subgrid_y
-                    continue
-                
-                # Create polydata with the found points
-                pts = vtk.vtkPoints()
-                pts.SetNumberOfPoints(ids.GetNumberOfValues())
-                for i in np.arange(ids.GetNumberOfValues()):
-                    pts.InsertPoint(i, pdata_merged.
-                                        GetPoint(ids.GetValue(i)))
-                pdata = vtk.vtkPolyData()
-                pdata.SetPoints(pts)
-                vertexFilter = vtk.vtkVertexGlyphFilter()
-                vertexFilter.SetInputData(pdata)
-                vertexFilter.Update()
-                
-                # Apply delaunay triangulation to this subgrid
-                delaunay2D = vtk.vtkDelaunay2D()
-                delaunay2D.SetAlpha(alpha)
-                delaunay2D.SetInputData(vertexFilter.GetOutput())
-                delaunay2D.Update()
-                
-                # Append resulting mesh
-                appendPolyData.AddInputData(delaunay2D.GetOutput())
-                appendPolyData.Update()
-                
-                # Update y_min
-                y_min = y_min + subgrid_y
-                
-            # Return y_min to start again
-            y_min = data_bounds[2]
-            # Increment x_min by one
-            x_min = x_min + subgrid_x
+        # Get mesh and densities via the Poisson surface reconstruction
+        mesh, densities = (o3d.geometry.TriangleMesh
+                           .create_from_point_cloud_poisson(pcd, depth=depth, 
+                                                            scale=1))
+        # Filter out triangles with less than our desired density
+        densities = np.asarray(densities)
+        vertices_to_remove = densities < min_density
+        mesh.remove_vertices_by_mask(vertices_to_remove)
+        
+        # Store np arrays related to mesh
+        if not hasattr(self, 'np_dict'):
+            self.np_dict = {}
+        self.np_dict['mesh_pts'] = np.array(mesh.vertices, dtype=np.float32)
+        self.np_dict['mesh_connectivity'] = np.array(mesh.triangles).ravel()
+        self.np_dict['mesh_offsets'] = np.arange(
+            self.np_dict['mesh_connectivity'].shape[0]//3 + 1, dtype=
+            self.np_dict['mesh_connectivity'].dtype) * 3
+        if not self.np_dict['mesh_connectivity'].dtype == np.int32:
+            raise RuntimeError('mesh dtype is not int32, update code?')
         
         # Store result in mesh
-        self.mesh = appendPolyData.GetOutput()
+        self.mesh = vtk.vtkPolyData()
+        pts = vtk.vtkPoints()
+        vtk_arr = numpy_to_vtk(self.np_dict['mesh_pts'], 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('mesh_pts')
+        pts.SetData(vtk_arr)
+        vtk_arr_0 = numpy_to_vtk(self.np_dict['mesh_offsets'], 
+                                 array_type=vtk.VTK_TYPE_INT32)
+        vtk_arr_0.SetName('mesh_offsets')
+        vtk_arr_1 = numpy_to_vtk(self.np_dict['mesh_connectivity'], 
+                                 array_type=vtk.VTK_TYPE_INT32)
+        vtk_arr_1.SetName('mesh_connectivity')
+        polys = vtk.vtkCellArray()
+        polys.SetData(vtk_arr_0, vtk_arr_1)
+        self.mesh.SetPoints(pts)
+        self.mesh.SetPolys(polys)
+        
+        # Create history dict
+        self.mesh_history_dict = {
+            "type": "Mesh Generator",
+            "git_hash": get_git_hash(),
+            "method": "Project.merged_points_to_mesh",
+            "input_0": history_dict,
+            "params": {"depth": depth, "min_density": min_density}
+            }
     
     def mesh_transect(self, x0, y0, x1, y1, N):
         """
@@ -5093,7 +5067,8 @@ class Project:
         output[:,3] = z
         return output
     
-    def get_merged_points(self, port=False, history_dict=False):
+    def get_merged_points(self, port=False, history_dict=False, x0=None,
+                          y0=None, wx=None, wy=None, yaw=0):
         """
         Returns a polydata with merged points from all single scans
         
@@ -5107,6 +5082,16 @@ class Project:
             we return a deep copy of the history dict that is not linked to
             the SingleScans whereas if port is true we return a linked 
             version. The default is False.
+        x0 : float, optional
+            x coordinate of the selection box. The default is None
+        y0 : float, optional
+            y coordinate of the selection box. The default is None
+        wx : float, optional
+            the selection box width. The default is None
+        wy : float, optional
+            the selection box height. The default is None
+        yaw : float, optional
+            yaw of the selection box. The default is 0.
 
         Returns
         -------
@@ -5116,12 +5101,41 @@ class Project:
         git_hash = get_git_hash()
         
         # Create Appending filter and add all data to it
+        # Delete old append history dict if it exists
+        if hasattr(self, 'append_hist_dict'):
+            del self.append_hist_dict
         appendPolyData = vtk.vtkAppendPolyData()
         for key in self.scan_dict:
             self.scan_dict[key].transformFilter.Update()
             connection, temp_hist_dict = self.scan_dict[key].get_polydata(
                 port=True, history_dict=True)
-            appendPolyData.AddInputConnection(connection)
+            if x0 is not None:
+                # If we are just selecting a box, do so
+                box = vtk.vtkBox()
+                box.SetBounds((0, wx, 0, wy, -10, 10))
+                # We need a transform to put the data in the desired location 
+                # relative to our box
+                transform = vtk.vtkTransform()
+                transform.PostMultiply()
+                transform.RotateZ(yaw)
+                transform.Translate(x0, y0, 0)
+                # That transform moves the box relative to the data, so the 
+                # box takes its inverse
+                transform.Inverse()
+                box.SetTransform(transform)
+                
+                # vtkExtractPoints does the actual filtering
+                extractPoints = vtk.vtkExtractPoints()
+                extractPoints.SetImplicitFunction(box)
+                extractPoints.SetInputConnection(connection)
+                extractPoints.GetInput().GetPointData().CopyNormalsOn()
+                extractPoints.GenerateVerticesOn()
+                extractPoints.Update()
+                if extractPoints.GetOutput().GetNumberOfPoints()>0:
+                    appendPolyData.AddInputConnection(extractPoints
+                                                      .GetOutputPort())
+            else:
+                appendPolyData.AddInputConnection(connection)
             if not hasattr(self, 'append_hist_dict'):
                 self.append_hist_dict = {
                     "type": "Pointset Aggregator",
@@ -5269,9 +5283,7 @@ class Project:
         # Create writer and write mesh
         writer = vtk.vtkXMLPolyDataWriter()
         writer.SetInputData(self.mesh)
-        if output_path:
-            writer.SetFileName(output_path)
-        else:
+        if not output_path:
             # Create the mesh folder if it doesn't already exist
             if not os.path.isdir(os.path.join(self.project_path, 
                                               self.project_name, 
@@ -5283,11 +5295,24 @@ class Project:
                                               "vtkfiles" + suffix, "meshes")):
                 os.mkdir(os.path.join(self.project_path, self.project_name, 
                          "vtkfiles" + suffix, "meshes"))
-            writer.SetFileName(os.path.join(self.project_path, 
-                                            self.project_name, 
-                                            "vtkfiles" + suffix, 
-                                            "meshes", name + ".vtp"))
+            output_path = os.path.join(self.project_path, self.project_name, 
+                                       "vtkfiles" + suffix, "meshes", 
+                                       name + ".vtp")
+        
+        # if the files already exist, remove them
+        for f in os.listdir(os.path.dirname(output_path)):
+            if re.match(name, f):
+                os.remove(os.path.join(os.path.dirname(output_path), f))
+        
+        writer.SetFileName(output_path)
         writer.Write()
+        
+        # Write the history_dict
+        f = open(output_path.rsplit('.', maxsplit=1)[0] + '.txt', 'w')
+        json.dump(self.mesh_history_dict, f, indent=4)
+        f.close()
+        
+        
         
     def read_mesh(self, mesh_path=None, suffix='', name='mesh'):
         """
@@ -5312,15 +5337,18 @@ class Project:
         
         # Create reader and read mesh
         reader = vtk.vtkXMLPolyDataReader()
-        if mesh_path:
-            reader.SetFileName(mesh_path)
-        else:
-            reader.SetFileName(os.path.join(self.project_path, 
-                                            self.project_name, 
-                                            "vtkfiles" + suffix, 
-                                            "meshes", name + ".vtp"))
+        if not mesh_path:
+            mesh_path = os.path.join(self.project_path, self.project_name, 
+                                     "vtkfiles" + suffix, "meshes", 
+                                     name + ".vtp")
+        reader.SetFileName(mesh_path)
         reader.Update()
         self.mesh = reader.GetOutput()
+        
+        # Read in history dict
+        f = open(mesh_path.rsplit('.', maxsplit=1)[0] + '.txt')
+        self.raw_history_dict = json.load(f)
+        f.close()
     
     def create_empirical_cdf(self, bounds):
         """
