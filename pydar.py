@@ -22,7 +22,7 @@ from scipy.special import erf, erfinv
 from scipy.signal import fftconvolve
 from scipy.stats import mode
 from numpy.linalg import svd
-import cv2 as cv
+#import cv2 as cv
 import scipy.sparse as sp
 from scipy.optimize import minimize, minimize_scalar
 import pandas as pd
@@ -33,7 +33,7 @@ import os
 import re
 import copy
 import json
-import pdal
+#import pdal
 import math
 import warnings
 import time
@@ -49,6 +49,14 @@ try:
     import cython_util
 except ModuleNotFoundError:
     print('cython_util was not imported, functions relying on it will fail')
+try:
+    import pdal
+except ModuleNotFoundError:
+    print('pdal not imported, functions relying on it will fail')
+try:
+    import cv2 as cv
+except ModuleNotFoundError:
+    print('opencv was not imported, functions relying on it will fail')
 
 class TiePointList:
     """Class to contain tiepointlist object and methods.
