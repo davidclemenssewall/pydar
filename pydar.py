@@ -801,6 +801,9 @@ class SingleScan:
         and filters.
     create_normals(radius=2, max_nn=30)
         Estimate point normals (using Open3D).
+    create_z_sigma()
+        For the current value of the transformation, project the pointwise
+        uncertainty spheroids onto the z-axis and save in PointData.
     apply_elevation_filter(z_max)
         Filter out all points above a certain height. Sets the flag in 
         Classification to 64.
@@ -2268,7 +2271,87 @@ class SingleScan:
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
         
+    def create_z_sigma(self, sigma_ro=0.008, sigma_bw=0.0003/4):
+        """
+        Estimate the pointwise uncertainty in the z-direction.
         
+        For each point, project the pointwise uncertainty spheroid onto the z 
+        unit vector in the reference frame defined by the current transform.
+        
+        Each point measured by the scanner has a positional uncertainty that
+        can be described as a gaussian spheroid. The symmetry axis of this
+        spheroid is aligned with the direction of the laser beam, which we
+        will name p_hat. Along p_hat the uncertainty is determined by the
+        ranging uncertainty of the laser (sigma_ro). Perpendicular to p_hat
+        in all directions, our uncertainty is due to the bandwidth spreading
+        of the laser beam--sigma_bw. sigma_bw is measured in radians and to 
+        get sigma_b measured in m we need to multiply by the distance.
+        
+        In order to find the uncertainty in the z direction of the current
+        transform, we first project the z unit vector in the current 
+        transform's reference frame into the scanner's reference 
+        frame--z_prime. Then we use the dot product of z_prime with p_hat for
+        each point to get the cosine of the angle between them. Finally,
+        the distance from the origin of the uncertainty spheroid to the 1
+        sigma surface along the direction z_prime can be computed from the
+        squared cosine of the angle between z_prime and p_hat.
+        
+        Finally, we save the result as an array in polydata_raw.
+
+        Parameters
+        ----------
+        sigma_ro : float, optional
+            The standard deviation of the laser's ranging uncertainty in m.
+            The default is 0.008 (value for VZ-1000)
+        sigma_bw : float, optional
+            The standard deviation of the laser's bandwidth spreading in
+            radians. The defaults is 0.0003/4 (value for VZ-1000)
+        
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Go from z axis in transformed coordinate system to scanners own 
+        # coordinate system
+        z_prime = np.zeros(3, dtype=np.float32)
+        self.transform.GetInverse().TransformNormal((0.0, 0.0, 1.0), z_prime)
+        
+        # Get the distance from the scanner for each point
+        pts_np = vtk_to_numpy(self.polydata_raw.GetPoints().GetData())
+        d = np.sqrt(np.square(pts_np).sum(axis=1))
+        
+        # Get cos(theta)**2 the square of the dot product of each point's 
+        # direction vector with z_prime
+        cos_theta_sq = np.square(np.dot(pts_np, z_prime)/d)
+        
+        # Now the uncertainty in the direction of our z_vector is the distance from
+        # each point to it's error spheroid along that direction
+        # The symmetry axis of the error spheroid runs in the direction of the
+        # points direction vector
+        u = np.sqrt((sigma_ro**2)*cos_theta_sq 
+                    + ((sigma_bw*d)**2) * (1-cos_theta_sq))
+        
+        # Add uncertainty as an array in polydata_raw
+        vtk_arr = numpy_to_vtk(u, deep=False, array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('z_sigma')
+        self.polydata_raw.GetPointData().AddArray(vtk_arr)
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+        
+        # Update raw_history_dict
+        self.raw_history_dict = {
+            "type": "Scalar Modifier",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.create_z_sigma",
+            "name": "Create z_sigma field",
+            "input_0": json.loads(json.dumps(self.transformed_history_dict)),
+            "params": {"sigma_ro": sigma_ro, "sigma_bw": sigma_bw}
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
+    
     def apply_elevation_filter(self, z_max):
         """
         Set Classification for all points above z_max to be 64. 
@@ -3703,6 +3786,9 @@ class Project:
         Add the provided transform to each SingleScan
     create_normals(radius=2, max_nn=30)
         Estimate point normals (using Open3D).
+    create_z_sigma()
+        For the current value of the transformation, project the pointwise
+        uncertainty spheroids onto the z-axis and save in PointData.
     apply_snowflake_filter(shells)
         Apply the snowflake filter.
     apply_snowflake_filter_2(z_diff, N, r_min)
@@ -3999,7 +4085,53 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].create_normals(radius=radius,
                                                      max_nn=max_nn)
+    
+    def create_z_sigma(self, sigma_ro=0.008, sigma_bw=0.0003/4):
+        """
+        Estimate the pointwise uncertainty in the z-direction.
         
+        For each point, project the pointwise uncertainty spheroid onto the z 
+        unit vector in the reference frame defined by the current transform.
+        
+        Each point measured by the scanner has a positional uncertainty that
+        can be described as a gaussian spheroid. The symmetry axis of this
+        spheroid is aligned with the direction of the laser beam, which we
+        will name p_hat. Along p_hat the uncertainty is determined by the
+        ranging uncertainty of the laser (sigma_ro). Perpendicular to p_hat
+        in all directions, our uncertainty is due to the bandwidth spreading
+        of the laser beam--sigma_bw. sigma_bw is measured in radians and to 
+        get sigma_b measured in m we need to multiply by the distance.
+        
+        In order to find the uncertainty in the z direction of the current
+        transform, we first project the z unit vector in the current 
+        transform's reference frame into the scanner's reference 
+        frame--z_prime. Then we use the dot product of z_prime with p_hat for
+        each point to get the cosine of the angle between them. Finally,
+        the distance from the origin of the uncertainty spheroid to the 1
+        sigma surface along the direction z_prime can be computed from the
+        squared cosine of the angle between z_prime and p_hat.
+        
+        Finally, we save the result as an array in polydata_raw.
+
+        Parameters
+        ----------
+        sigma_ro : float, optional
+            The standard deviation of the laser's ranging uncertainty in m.
+            The default is 0.008 (value for VZ-1000)
+        sigma_bw : float, optional
+            The standard deviation of the laser's bandwidth spreading in
+            radians. The defaults is 0.0003/4 (value for VZ-1000)
+        
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].create_z_sigma(sigma_ro=sigma_ro,
+                                                     sigma_bw=sigma_bw)
+    
     def apply_snowflake_filter(self, shells):
         """
         Apply a snowflake filter to each SingleScan
