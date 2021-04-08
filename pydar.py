@@ -57,6 +57,11 @@ try:
     import cv2 as cv
 except ModuleNotFoundError:
     print('opencv was not imported, functions relying on it will fail')
+try:
+    import torch
+    import gpytorch
+except ModuleNotFoundError:
+    print('torch and gpytorch were not imported')
 
 class TiePointList:
     """Class to contain tiepointlist object and methods.
@@ -3811,6 +3816,9 @@ class Project:
         Get the merged points as a polydata
     mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0)
         Interpolate mesh into image.
+    merged_points_to_image(x0, y0, nx, ny, dx, dy, yaw, max_pts_bucket, 
+                           lengthscale, outputscale)
+        Convert a rectangular area of points to an image using gpytorch.
     plot_image(z_min, z_max, cmap='inferno')
         Plots the image using matplotlib
     get_np_nan_image()
@@ -4695,7 +4703,163 @@ class Project:
     
         renderWindow.Finalize()
         del renderWindow
-    
+    def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, leafsize, 
+                               lengthscale, outputscale, yaw=0):
+        """
+        Convert a rectangular area of points to an image using gpytorch.
+        
+        Take a rectangular area, use a kd decomposition to break it up into
+        buckets of at most leafsize points. Then for each of these buckets
+        fit the points with a gaussian process using a matern (nu=1/2) kernel
+        aka exponential with lengthscale given by lengthscale, scaled by
+        outputscale and with a constant mean set to the mean of all of the
+        points in the bucket. The z uncertainties come from the z_sigma field
+        in the polydata. Evaluate this gaussian process on a regular grid and
+        get the uncertainty for each grid point. Save the result as an image.
+
+        Parameters
+        ----------
+        nx : int
+            Number of gridcells in x direction.
+        ny : int
+            Number of gridcells in y direction.
+        dx : float
+            Width of gridcells in x direction.
+        dy : float
+            Width of gridcells in y direction.
+        x0 : float
+            x coordinate of the origin in m.
+        y0 : float
+            y coordinate of the origin in m.
+        yaw : float, optional
+            yaw angle in degrees of image to create, for generating 
+            non-axis aligned image. The default is 0.
+        leafsize : int
+            Maximum number of points for each leaf of the kdtree
+        lengthscale : float
+            Length scale for the matern kernel in m. 6-12 seems reasonable.
+        outputscale : float
+            Outputscale for the scale kernel. Around 0.01 seems reasonable.
+
+        Returns
+        -------
+        None
+
+        """
+
+        # Define a class and a function to generate gaussian process evaluate 
+        # at a set of points
+        class ExactGPModel(gpytorch.models.ExactGP):
+            def __init__(self, train_x, train_y, likelihood, lengthscale):
+                super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
+                # Let's set the mean to be the sample mean
+                self.mean_module = gpytorch.means.ConstantMean()
+                self.mean_module.initialize(constant=train_y.mean())
+
+                self.covar_module = gpytorch.kernels.ScaleKernel(
+                    gpytorch.kernels.keops.MaternKernel(nu=0.5))
+                self.covar_module.base_kernel.initialize(
+                    lengthscale=lengthscale)
+
+            def forward(self, x):
+                mean_x = self.mean_module(x)
+                covar_x = self.covar_module(x)
+                return gpytorch.distributions.MultivariateNormal(mean_x, 
+                                                                 covar_x)
+
+        def run_gp(pts, z_sigma, grid_points, lengthscale, outputscale):
+            # Move arrays to gpu
+            device = torch.device('cuda:0')
+            t_x = torch.tensor(pts[:,:2], device=device)
+            t_y = torch.tensor(pts[:,2], device=device)
+            t_z_sigma = torch.tensor(z_sigma, device=device)
+
+            # Initialize the likelihood and the model
+            likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
+                noise=t_z_sigma)
+            model = ExactGPModel(t_x, t_y, likelihood, 
+                                 lengthscale=lengthscale).cuda()
+            model.covar_module.initialize(outputscale=outputscale)
+
+            # Get into evaluation (predictive posterior) mode
+            model.eval()
+            likelihood.eval()
+
+            # Move grid points to gpu and evaluate gp at grid points
+            t_grid_points = torch.tensor(grid_points, device=device)
+            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+                grid_pred = model(t_grid_points)
+                grid_mean = grid_pred.mean.to(torch.device('cpu')).numpy()
+                grid_lower = grid_pred.confidence_region()[0].to(torch.device(
+                    'cpu')).numpy()
+
+            # The lower bound is 2 standard deviations below the mean
+            return grid_mean, (grid_mean-grid_lower)/2
+
+        # Get the points in this rectangular region
+        pdata, point_history_dict = self.get_merged_points(history_dict=True,
+            x0=x0, y0=y0, wx=nx*dx, wy=ny*dy, yaw=yaw)
+
+        # Transform points into image reference frame, needed because
+        # vtkImageData can only be axis-aligned. We'll save the transform 
+        # filter in case we need it for mapping flags, etc, into image
+        self.imageTransform = vtk.vtkTransform()
+        self.imageTransform.PostMultiply()
+        # Translate origin to be at (x0, y0)
+        self.imageTransform.Translate(-x0, -y0, 0)
+        # Rotate around this origin
+        self.imageTransform.RotateZ(-yaw)
+        
+        # Create transform filter and apply
+        imageTransformFilter = vtk.vtkTransformPolyDataFilter()
+        imageTransformFilter.SetTransform(self.imageTransform)
+        imageTransformFilter.SetInputData(pdata)
+        imageTransformFilter.Update()
+
+        # Get the points and the z_sigma as numpy arrays
+        pts_np = vtk_to_numpy(imageTransformFilter.GetOutput().GetPoints()
+                              .GetData())
+        z_sigma_np = vtk_to_numpy(imageTransformFilter.GetOutput()
+                                  .GetPointData().GetArray('z_sigma'))
+
+        # Create grid for image
+        x_vals = np.arange(nx, dtype=np.float32) * dx
+        y_vals = np.arange(ny, dtype=np.float32) * dy
+
+        # If All of the points would fit in one leaf, skip tree creation
+        if pts_np.shape[0]<=leafsize:
+            X, Y = np.meshgrid(x_vals, y_vals)
+            grid_points = np.hstack((X.ravel()[:,np.newaxis], 
+                                     Y.ravel()[:,np.newaxis]))
+            grid_mean, grid_sigma = run_gp(pts_np, z_sigma_np, grid_points,
+                                           lengthscale, outputscale)
+
+        else:
+            raise NotImplementedError('not yet...')
+            # Create a kdtree from the points (xy only) and get python version
+            tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
+
+        # Create image
+        self.image = vtk.vtkImageData()
+        self.image.SetDimensions(nx, ny, 1)
+        self.image.SetSpacing(dx, dy, 1)
+        self.image.SetOrigin(0, 0, 0)
+        # Store np arrays related to mesh
+        if not hasattr(self, 'np_dict'):
+            self.np_dict = {}
+        self.np_dict['image_z'] = grid_mean
+        vtk_arr = numpy_to_vtk(self.np_dict['image_z'], deep=False, 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('Elevation')
+        self.image.GetPointData().AddArray(vtk_arr)
+        self.np_dict['image_z_sigma'] = grid_sigma
+        vtk_arr = numpy_to_vtk(self.np_dict['image_z_sigma'], deep=False, 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('z_sigma')
+        self.image.GetPointData().AddArray(vtk_arr)
+        self.image.GetPointData().SetActiveScalars('Elevation')
+        self.image.Modified()
+
     def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0):
         """
         Interpolate mesh at regularly spaced points.
@@ -7162,7 +7326,7 @@ class ScanArea:
             for key in sub_list:
                 self.project_dict[key].mesh_to_image(nx, ny, dx, dy, x0, y0,
                                                      yaw=yaw)
-            
+
     def difference_projects(self, project_name_0, project_name_1, 
                             difference_field='Elevation'):
         """
