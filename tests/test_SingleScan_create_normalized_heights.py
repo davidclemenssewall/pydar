@@ -13,30 +13,39 @@ import numpy as np
 import matplotlib.pyplot as plt
 import vtk
 from vtk.numpy_interface import dataset_adapter as dsa
-import os
-os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
+import sys
+import platform
+if platform.system()=='Windows':
+    sys.path.append('C:/Users/d34763s/Desktop/DavidCS/PhD/code/pydar/')
+else:
+    sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 
 # %% init
 
-project_path = 'D:\\mosaic_lidar\\Snow1\\'
-project_name = 'mosaic_01_102519.RiSCAN'
-scan_name = 'ScanPos003'
+if platform.system()=='Windows':
+    project_path = 'D:\\mosaic_lidar\\ROV\\'
+else:
+    project_path = '/media/thayer/Data/mosaic_lidar/ROV/'
+project_name = 'mosaic_rov_250120.RiSCAN'
+scan_name = 'ScanPos004'
 
-ss = pydar.SingleScan(project_path, project_name, scan_name)
-
-ss.read_scan()
+ss = pydar.SingleScan(project_path, project_name, scan_name, las_fieldnames=
+                      ['Points', 'PointId', 'Classification'], 
+                      class_list='all', import_mode='read_scan')
 
 ss.add_sop()
 print(ss.transform_dict['sop'].GetPosition())
 ss.apply_transforms(['sop'])
+# Create z sigma
+ss.create_z_sigma()
 
 # %% Display to check
 
-z_min = -3
-z_max = -1.5
+v_min = 0
+v_max = 0.015
 
-ss.create_elevation_pipeline(z_min, z_max)
+ss.create_reflectance_pipeline(v_min, v_max, field='z_sigma')
 
 renderer = vtk.vtkRenderer()
 renderWindow = vtk.vtkRenderWindow()
@@ -77,24 +86,18 @@ plt.hist(ss.dsa_raw.PointData['norm_height'])
 
 # That looks okay, the ship is clearly evident in the right side of dist
 
+# %% look at norm_z_sigma
+
+plt.hist(ss.dsa_raw.PointData['norm_z_sigma'], range=[0, 0.2], bins=100)
+
+# a couple of outliers but that could just be very far away points.
+
 # %% to be really certain let's display the result.
-# this is a bit more complicated but we can make it work
-
-pdata = ss.currentFilter.GetOutput()
-pdata.GetPointData().SetActiveScalars('norm_height')
-
-mapper = vtk.vtkPolyDataMapper()
-mapper.SetInputData(pdata)
-mapper.SetLookupTable(pydar.mplcmap_to_vtkLUT(-3, 3))
-mapper.SetScalarRange(-3, 3)
-mapper.SetScalarVisibility(1)
-
-actor = vtk.vtkActor()
-actor.SetMapper(mapper)
+ss.create_reflectance_pipeline(-3, 3, field='norm_height')
 
 renderer = vtk.vtkRenderer()
 renderWindow = vtk.vtkRenderWindow()
-renderer.AddActor(actor)
+renderer.AddActor(ss.actor)
 
 renderWindow.AddRenderer(renderer)
 
@@ -107,6 +110,25 @@ renderWindow.Render()
 iren.Start()
 
 # That works pretty much perfectly
+
+# %% and display z_sigma
+
+ss.create_reflectance_pipeline(0, 0.1, field='norm_z_sigma')
+
+renderer = vtk.vtkRenderer()
+renderWindow = vtk.vtkRenderWindow()
+renderer.AddActor(ss.actor)
+
+renderWindow.AddRenderer(renderer)
+
+# create a renderwindowinteractor
+iren = vtk.vtkRenderWindowInteractor()
+iren.SetRenderWindow(renderWindow)
+
+iren.Initialize()
+renderWindow.Render()
+iren.Start()
+
 
 # %% Finally check that when we apply transforms it removes the norm_height
 # array, this is desirable because we don't want norm_height to not correspond

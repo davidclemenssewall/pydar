@@ -798,6 +798,8 @@ class SingleScan:
         add a z_offset transformation to transform_dict
     add_transform(key, matrix)
         add a transform to transform_dict
+    update_current_filter(class_list)
+        update the current filter object with a new class_list
     create_elevation_pipeline(z_min, z_max, lower_threshold=-1000,
                               upper_threshold=1000)
         create mapper and actor for displaying points with colors by elevation
@@ -1724,7 +1726,59 @@ class SingleScan:
                 }
         else:
             self.trans_history_dict[key] = history_dict
+    
+    def update_current_filter(self, class_list):
+        """
+        Set the current filter to the new class list
+
+        Parameters
+        ----------
+        class_list : list
+            List of categories this filter will return, if special value: 
+            'all' Then we do not have a selection filter and we pass through 
+            all points.
+
+        Returns
+        -------
+        None.
+
+        """
         
+        if class_list=='all':
+            self.currentFilter = self.transformFilter
+        else:
+            selectionList = vtk.vtkUnsignedCharArray()
+            for v in class_list:
+                selectionList.InsertNextValue(v)
+            selectionNode = vtk.vtkSelectionNode()
+            selectionNode.SetFieldType(vtk.vtkSelectionNode.POINT)
+            selectionNode.SetContentType(vtk.vtkSelectionNode.VALUES)
+            selectionNode.SetSelectionList(selectionList)
+            
+            selection = vtk.vtkSelection()
+            selection.AddNode(selectionNode)
+            
+            self.extractSelection = vtk.vtkExtractSelection()
+            self.extractSelection.SetInputData(1, selection)
+            self.extractSelection.SetInputConnection(0, 
+                                        self.transformFilter.GetOutputPort())
+            self.extractSelection.Update()
+            
+            # Unfortunately, extractSelection produces a vtkUnstructuredGrid
+            # so we need to use vtkGeometryFilter to convert to polydata
+            self.currentFilter = vtk.vtkGeometryFilter()
+            self.currentFilter.SetInputConnection(self.extractSelection
+                                                  .GetOutputPort())
+            self.currentFilter.Update()
+        
+        # Create filt_history_dict
+        self.filt_history_dict = {
+            "type": "Filter",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.update_current_filter",
+            "input_0": self.transformed_history_dict,
+            "params": {"class_list": class_list}}
+    
     def add_sop(self):
         """
         Add the sop matrix to transform_dict. Must have exported from RiSCAN
@@ -1867,23 +1921,23 @@ class SingleScan:
         
         # If the norm_height array exists delete it we will recreate it 
         # if needed
-        if 'norm_height' in self.dsa_raw.PointData.keys():
-            self.polydata_raw.GetPointData().RemoveArray('norm_height')
-            self.polydata_raw.Modified()
-            # Update raw_history_dict accordingly
-            self.raw_history_dict = {
-                "type": "Scalar Modifier",
-                "git_hash": git_hash,
-                "method": 'SingleScan.apply_transforms',
-                "name": "Removed norm_height",
-                "input_0": json.loads(json.dumps(self.raw_history_dict))
-                }
-            self.transformed_history_dict["input_0"] = self.raw_history_dict
+        # if 'norm_height' in self.dsa_raw.PointData.keys():
+        #     self.polydata_raw.GetPointData().RemoveArray('norm_height')
+        #     self.polydata_raw.Modified()
+        #     # Update raw_history_dict accordingly
+        #     self.raw_history_dict = {
+        #         "type": "Scalar Modifier",
+        #         "git_hash": git_hash,
+        #         "method": 'SingleScan.apply_transforms',
+        #         "name": "Removed norm_height",
+        #         "input_0": json.loads(json.dumps(self.raw_history_dict))
+        #         }
+        #     self.transformed_history_dict["input_0"] = self.raw_history_dict
             
         self.transformFilter.Update()
         self.currentFilter.Update()
     
-    def random_voxel_downsample_filter(self, wx, wy, wz, seed=1234):
+    def random_voxel_downsample_filter(self, wx, wy, wz=None, seed=1234):
         """
         Downsample point cloud with one random point per voxel.
         
@@ -1897,9 +1951,10 @@ class SingleScan:
         wx : float
             Voxel x dimension in m.
         wy : float
-            Voxel x dimension in m.
-        wz : float
-            Voxel x dimension in m.
+            Voxel y dimension in m.
+        wz : float, optional
+            Voxel z dimension in m. If none then we just downsample
+            horizontally. The default is None.
         seed : int, optional
             Random seed for the shuffler. The default is 1234.
 
@@ -1910,36 +1965,95 @@ class SingleScan:
         """
         
         # Step 1, create shuffled points from current polydata
-        filt_pts = vtk_to_numpy(self.get_polydata().GetPoints().GetData())
+        pdata, history_dict = self.get_polydata(history_dict=True)
+        filt_pts = vtk_to_numpy(pdata.GetPoints().GetData())
+        point_ids = vtk_to_numpy(pdata.GetPointData()
+                                 .GetArray('PointId'))
         rng = np.random.default_rng(seed=seed)
         shuff_ind = np.arange(filt_pts.shape[0])
         rng.shuffle(shuff_ind)
         shuff_pts = filt_pts[shuff_ind, :]
+        shuff_point_ids = point_ids[shuff_ind]
         
         # Step 2, bin and downsample
-        w = [wx, wy, wz]
-        edges = 3*[None]
-        nbin = np.empty(3, np.int_)
-        
-        for i in range(3):
-            edges[i] = np.arange(int(np.ceil((shuff_pts.max(axis=0)[i] - 
-                                              shuff_pts.min(axis=0)[i])/w[i]))
-                                 + 1, dtype=
-                                 np.float32) * w[i] + shuff_pts.min(axis=0)[i]
-            # needed to avoid min point falling out of bounds
-            edges[i][0] = edges[i][0] - 0.0001 
-            nbin[i] = len(edges[i]) + 1
-        
-        Ncount = tuple(np.searchsorted(edges[i], shuff_pts[:,i], side='right')
-                      for i in range(3))
+        if wz is None:
+            w = [wx, wy]
+            edges = 2*[None]
+            nbin = np.empty(2, np.int_)
+            
+            for i in range(2):
+                edges[i] = (np.arange(int(np.ceil((shuff_pts.max(axis=0)[i] - 
+                                                  shuff_pts.min(axis=0)[i])
+                                                 /w[i]))
+                                     + 1, dtype=np.float32) 
+                            * w[i] + shuff_pts.min(axis=0)[i])
+                # needed to avoid min point falling out of bounds
+                edges[i][0] = edges[i][0] - 0.0001 
+                nbin[i] = len(edges[i]) + 1
+            
+            Ncount = tuple(np.searchsorted(edges[i], shuff_pts[:,i], 
+                                           side='right') for i in range(2))
+        else:
+            w = [wx, wy, wz]
+            edges = 3*[None]
+            nbin = np.empty(3, np.int_)
+            
+            for i in range(3):
+                edges[i] = (np.arange(int(np.ceil((shuff_pts.max(axis=0)[i] - 
+                                                  shuff_pts.min(axis=0)[i])
+                                                 /w[i]))
+                                     + 1, dtype=np.float32) 
+                            * w[i] + shuff_pts.min(axis=0)[i])
+                # needed to avoid min point falling out of bounds
+                edges[i][0] = edges[i][0] - 0.0001 
+                nbin[i] = len(edges[i]) + 1
+            
+            Ncount = tuple(np.searchsorted(edges[i], shuff_pts[:,i], 
+                                           side='right') for i in range(3))
         
         xyz = np.ravel_multi_index(Ncount, nbin)
         
-        # We want to take just one random point from each bin. Since we've shuffled the points,
-        # the first point we find in each bin will suffice. Thus we use the unique function
+        # We want to take just one random point from each bin. Since we've 
+        # shuffled the points, the first point we find in each bin will 
+        # suffice. Thus we use the unique function
         _, inds = np.unique(xyz, return_index=True)
         
-        print('here')
+        # Now apply pedigree id selection to update polydata raw
+        np_pedigreeIds = shuff_point_ids[inds]
+        if not np_pedigreeIds.dtype==np.uint32:
+            raise RuntimeError('np_pedigreeIds is not type np.uint32')
+        pedigreeIds = numpy_to_vtk(np_pedigreeIds, deep=False, array_type=
+                                   vtk.VTK_UNSIGNED_INT)
+        selectionNode = vtk.vtkSelectionNode()
+        selectionNode.SetFieldType(1) # we want to select points
+        selectionNode.SetContentType(2) # 2 corresponds to pedigreeIds
+        selectionNode.SetSelectionList(pedigreeIds)
+        selection = vtk.vtkSelection()
+        selection.AddNode(selectionNode)
+        extractSelection = vtk.vtkExtractSelection()
+        extractSelection.SetInputData(0, self.polydata_raw)
+        extractSelection.SetInputData(1, selection)
+        extractSelection.Update()
+        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+        vertexGlyphFilter.SetInputConnection(extractSelection.GetOutputPort())
+        vertexGlyphFilter.Update()
+        self.polydata_raw = vertexGlyphFilter.GetOutput()
+        self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
+        
+        # Update filters
+        self.transformFilter.SetInputData(self.polydata_raw)
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+        
+        # Update history dicts
+        self.raw_history_dict = {
+            "type": "Filter",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.random_voxel_downsample_filter",
+            "input_0": history_dict,
+            "params": {"wx": wx, "wy": wy, "wz": wz, "seed": seed}
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
         
     
     def clear_classification(self):
@@ -3294,6 +3408,34 @@ class SingleScan:
         self.dsa_raw.PointData['norm_height'][:] = normalize(
             dsa_transform.Points[:, 2].squeeze(), x, cdf)
         
+        # if np_dict doesn't exist create it
+        if not hasattr(self, 'np_dict'):
+            self.np_dict = {}
+        
+        # Create normalized height array
+        points_np = vtk_to_numpy(self.transformFilter.GetOutput().GetPoints()
+                                 .GetData())
+        self.np_dict['norm_height'] = normalize(points_np[:,2].squeeze(),
+                                                x, cdf)
+        vtk_arr = numpy_to_vtk(self.np_dict['norm_height'], deep=False,
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('norm_height')
+        self.polydata_raw.GetPointData().AddArray(vtk_arr)
+        # if z_sigma exists create error for it too
+        if self.polydata_raw.GetPointData().HasArray('z_sigma'):
+            z_sigma_np = vtk_to_numpy(self.polydata_raw.GetPointData().
+                                      GetArray('z_sigma'))
+            norm_sigma_upper = normalize(points_np[:,2].squeeze() + z_sigma_np,
+                                         x, cdf)
+            norm_sigma_lower = normalize(points_np[:,2].squeeze() - z_sigma_np,
+                                         x, cdf)
+            self.np_dict['norm_z_sigma'] = (norm_sigma_upper
+                                            - norm_sigma_lower)/2
+            vtk_arr = numpy_to_vtk(self.np_dict['norm_z_sigma'], deep=False,
+                               array_type=vtk.VTK_FLOAT)
+            vtk_arr.SetName('norm_z_sigma')
+            self.polydata_raw.GetPointData().AddArray(vtk_arr)
+        
         # Update
         self.polydata_raw.Modified()
         self.transformFilter.Update()
@@ -3827,6 +3969,10 @@ class Project:
         Creates an empirical cdf from z-values of all points within bounds.
     create_empirical_cdf_image(z_min, z_max)
         Creates an empirical cdf from z-values of image.
+    set_empirical_cdf(x, cdf, bounds)
+        Set the empirical cdf
+    create_normalized_heights()
+        Create the normalized heights, assumes that empirical cdf exists.
     create_im_gaus()
         Create normalized image based on the empirical cdf
     add_theta(theta1, theta)
@@ -4704,7 +4850,8 @@ class Project:
         renderWindow.Finalize()
         del renderWindow
     def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, leafsize, 
-                               lengthscale, outputscale, yaw=0):
+                               lengthscale, outputscale, yaw=0,
+                               corner_coords=None):
         """
         Convert a rectangular area of points to an image using gpytorch.
         
@@ -4737,9 +4884,11 @@ class Project:
         leafsize : int
             Maximum number of points for each leaf of the kdtree
         lengthscale : float
-            Length scale for the matern kernel in m. 6-12 seems reasonable.
+            Length scale for the matern kernel in m. 10 seems reasonable.
         outputscale : float
-            Outputscale for the scale kernel. Around 0.01 seems reasonable.
+            Outputscale for the scale kernel. Around 0.15 seems reasonable.
+        corner_coords : Nx3 array, optional
+            Corner coordinates of selection if we want to limit output
 
         Returns
         -------
@@ -4767,12 +4916,13 @@ class Project:
                 return gpytorch.distributions.MultivariateNormal(mean_x, 
                                                                  covar_x)
 
-        def run_gp(pts, z_sigma, grid_points, lengthscale, outputscale):
+        def run_gp(pts, norm_height, norm_z_sigma, grid_points, lengthscale, 
+                   outputscale):
             # Move arrays to gpu
             device = torch.device('cuda:0')
             t_x = torch.tensor(pts[:,:2], device=device)
-            t_y = torch.tensor(pts[:,2], device=device)
-            t_z_sigma = torch.tensor(z_sigma, device=device)
+            t_y = torch.tensor(norm_height, device=device)
+            t_z_sigma = torch.tensor(norm_z_sigma, device=device)
 
             # Initialize the likelihood and the model
             likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
@@ -4792,9 +4942,11 @@ class Project:
                 grid_mean = grid_pred.mean.to(torch.device('cpu')).numpy()
                 grid_lower = grid_pred.confidence_region()[0].to(torch.device(
                     'cpu')).numpy()
+                grid_upper = grid_pred.confidence_region()[1].to(torch.device(
+                    'cpu')).numpy()
 
             # The lower bound is 2 standard deviations below the mean
-            return grid_mean, (grid_mean-grid_lower)/2
+            return grid_mean, grid_lower, grid_upper
 
         # Get the points in this rectangular region
         pdata, point_history_dict = self.get_merged_points(history_dict=True,
@@ -4819,25 +4971,136 @@ class Project:
         # Get the points and the z_sigma as numpy arrays
         pts_np = vtk_to_numpy(imageTransformFilter.GetOutput().GetPoints()
                               .GetData())
-        z_sigma_np = vtk_to_numpy(imageTransformFilter.GetOutput()
-                                  .GetPointData().GetArray('z_sigma'))
+        norm_height_np = vtk_to_numpy(imageTransformFilter.GetOutput()
+                                  .GetPointData().GetArray('norm_height'))
+        norm_z_sigma_np = vtk_to_numpy(imageTransformFilter.GetOutput()
+                                  .GetPointData().GetArray('norm_z_sigma'))
+        # temporary fix for negative z_sigma values
+        ind = norm_z_sigma_np > 0
+        pts_np = pts_np[ind, :]
+        norm_height_np = norm_height_np[ind]
+        norm_z_sigma_np = norm_z_sigma_np[ind]
+        warnings.warn('Still has temporary fix for negative norm z sigma')
 
         # Create grid for image
         x_vals = np.arange(nx, dtype=np.float32) * dx
         y_vals = np.arange(ny, dtype=np.float32) * dy
+        X, Y = np.meshgrid(x_vals, y_vals)
+        grid_points_all = np.hstack((X.ravel()[:,np.newaxis], 
+                                    Y.ravel()[:,np.newaxis]))
+        # If we have corner_coords, limit grid points to just be within them
+        if corner_coords is None:
+            grid_points = grid_points_all
+        else:
+            # Transform each point in corner_coords into image space
+            pts = vtk.vtkPoints()
+            for i in range(corner_coords.shape[0]):
+                pts.InsertNextPoint(self.imageTransform.TransformPoint(
+                    corner_coords[i,0], corner_coords[i,1], corner_coords[i,2]))
+            grid_points_all_vtk = vtk.vtkPoints()
+            grid_points_all_vtk.SetData(numpy_to_vtk(np.hstack(
+                (grid_points_all, np.zeros((grid_points_all.shape[0],1)))),
+                                                    array_type=vtk.VTK_DOUBLE))
+            grid_points_pdata = vtk.vtkPolyData()
+            grid_points_pdata.SetPoints(grid_points_all_vtk)
+            vtkarr = numpy_to_vtk(np.arange(grid_points_all.shape[0], 
+                                            dtype='uint64'), deep=True, 
+                                  array_type=vtk.VTK_UNSIGNED_LONG)
+            vtkarr.SetName('PointId')
+            #grid_points_pdata.GetPointData().AddArray(vtkarr)
+            grid_points_pdata.GetPointData().SetPedigreeIds(vtkarr)
+            grid_points_pdata.Modified()
+            # Create implicit selection loop
+            selectionLoop = vtk.vtkImplicitSelectionLoop()
+            selectionLoop.SetNormal(0.0, 0.0, 1.0)
+            selectionLoop.SetLoop(pts)
+            # Select points
+            extractPoints = vtk.vtkExtractPoints()
+            extractPoints.SetImplicitFunction(selectionLoop)
+            extractPoints.SetInputData(grid_points_pdata)
+            extractPoints.Update()
+            # These are the indices of points inside our corner_coords
+            PointIds = vtk_to_numpy(extractPoints.GetOutput().GetPointData().
+                                    GetArray('PointId'))
+            grid_points = grid_points_all[PointIds,:]
 
         # If All of the points would fit in one leaf, skip tree creation
         if pts_np.shape[0]<=leafsize:
-            X, Y = np.meshgrid(x_vals, y_vals)
-            grid_points = np.hstack((X.ravel()[:,np.newaxis], 
-                                     Y.ravel()[:,np.newaxis]))
-            grid_mean, grid_sigma = run_gp(pts_np, z_sigma_np, grid_points,
-                                           lengthscale, outputscale)
-
+            grid_mean, grid_lower, grid_upper = run_gp(pts_np, norm_height_np,
+                                                       norm_z_sigma_np, 
+                                                       grid_points, 
+                                                       lengthscale, outputscale)
         else:
-            raise NotImplementedError('not yet...')
             # Create a kdtree from the points (xy only) and get python version
             tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
+            ptree = tree.tree
+
+            # Define function for working with tree
+            def tree_gp(node, pts_np, norm_height_np, norm_z_sigma_np, 
+                        grid_points, lengthscale, outputscale, grid_mean, 
+                        grid_lower, grid_upper):
+                # If we are not at a leaf, call this function on each child
+                if not node.split_dim==-1:
+                    # Call this function on the lesser node
+                    tree_gp(node.lesser, pts_np, norm_height_np, 
+                            norm_z_sigma_np, grid_points, lengthscale, 
+                            outputscale, grid_mean, grid_lower, grid_upper)
+                    # Call this function on the greater node
+                    tree_gp(node.greater, pts_np, norm_height_np, 
+                            norm_z_sigma_np, grid_points, lengthscale, 
+                            outputscale, grid_mean, grid_lower, grid_upper)
+                else:
+                    # We are at a leaf. Apply GP
+
+                    ind = node.indices
+                    min_x = pts_np[ind,0].min()-dx
+                    max_x = pts_np[ind,0].max()+dx
+                    min_y = pts_np[ind,1].min()-dy
+                    max_y = pts_np[ind,1].max()+dy
+        
+                    # Get grid points within this node
+                    grid_ind = ((grid_points[:,0]>=min_x) 
+                                & (grid_points[:,0]<=max_x)
+                                & (grid_points[:,1]>=min_y) 
+                                & (grid_points[:,1]<=max_y))
+                    
+                    (grid_mean[grid_ind], grid_lower[grid_ind], 
+                     grid_upper[grid_ind]) = run_gp(pts_np[ind], 
+                                                   norm_height_np[ind], 
+                                                   norm_z_sigma_np[ind], 
+                                                   grid_points[grid_ind], 
+                                                   lengthscale, outputscale)
+            # Apply function to kdtree
+            grid_mean = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            grid_upper = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            grid_lower = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            tree_gp(ptree, pts_np, norm_height_np, norm_z_sigma_np, grid_points, 
+                    lengthscale, outputscale, grid_mean, grid_lower, grid_upper)
+
+        # convert from normalized space back to real space
+        grid_mean = inormalize(grid_mean, self.empirical_cdf[1], 
+                               self.empirical_cdf[2])
+        grid_lower = inormalize(grid_lower, self.empirical_cdf[1], 
+                                self.empirical_cdf[2])
+        grid_upper = inormalize(grid_upper, self.empirical_cdf[1], 
+                                self.empirical_cdf[2])
+
+        # Now return to full domain
+        if corner_coords is None:
+            grid_mean_all = grid_mean
+            grid_lower_all = grid_lower
+            grid_upper_all = grid_upper
+        else:
+            grid_mean_all = np.ones(grid_points_all.shape[0], 
+                                    dtype=np.float32)*np.nan
+            grid_lower_all = np.ones(grid_points_all.shape[0], 
+                                     dtype=np.float32)*np.nan
+            grid_upper_all = np.ones(grid_points_all.shape[0], 
+                                     dtype=np.float32)*np.nan
+            grid_mean_all[PointIds] = grid_mean
+            grid_lower_all[PointIds] = grid_lower
+            grid_upper_all[PointIds] = grid_upper
+
 
         # Create image
         self.image = vtk.vtkImageData()
@@ -4847,18 +5110,38 @@ class Project:
         # Store np arrays related to mesh
         if not hasattr(self, 'np_dict'):
             self.np_dict = {}
-        self.np_dict['image_z'] = grid_mean
+        self.np_dict['image_z'] = grid_mean_all
         vtk_arr = numpy_to_vtk(self.np_dict['image_z'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('Elevation')
         self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_sigma'] = grid_sigma
-        vtk_arr = numpy_to_vtk(self.np_dict['image_z_sigma'], deep=False, 
+        self.np_dict['image_z_lower'] = grid_lower_all
+        vtk_arr = numpy_to_vtk(self.np_dict['image_z_lower'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
-        vtk_arr.SetName('z_sigma')
+        vtk_arr.SetName('z_lower')
+        self.image.GetPointData().AddArray(vtk_arr)
+        self.np_dict['image_z_upper'] = grid_upper_all
+        vtk_arr = numpy_to_vtk(self.np_dict['image_z_upper'], deep=False, 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('z_upper')
+        self.image.GetPointData().AddArray(vtk_arr)
+        self.np_dict['image_z_ci'] = grid_upper_all - grid_lower_all
+        vtk_arr = numpy_to_vtk(self.np_dict['image_z_ci'], deep=False, 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('z_ci')
         self.image.GetPointData().AddArray(vtk_arr)
         self.image.GetPointData().SetActiveScalars('Elevation')
         self.image.Modified()
+
+        # Create history dict
+        self.image_history_dict = {
+            "type": "Image Generator",
+            "git_hash": get_git_hash(),
+            "method": "Project.merged_points_to_image",
+            "input_0": point_history_dict,
+            "params": {"x0": x0, "y0": y0, "yaw": yaw, "leafsize": leafsize,
+                        "lengthscale": lengthscale, "outputscale": outputscale}
+            }
 
     def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0):
         """
@@ -4946,7 +5229,8 @@ class Project:
         bool_arr = self.dsa_image.PointData['vtkValidPointMask']==0
         self.dsa_image.PointData['Elevation'][bool_arr] = np.NaN
     
-    def get_image(self, field='Elevation', warp_scalars=False):
+    def get_image(self, field='Elevation', warp_scalars=False,
+                  v_min=-9999.0):
         """
         Return image as vtkImageData or vtkPolyData depending on warp_scalars
 
@@ -4965,8 +5249,16 @@ class Project:
         
         self.image.GetPointData().SetActiveScalars(field)
         if warp_scalars:
+            # copy image
+            im = vtk.vtkImageData()
+            im.DeepCopy(self.image)
+            field_np = vtk_to_numpy(im.GetPointData().GetArray(field))
+            field_np[np.isnan(field_np)] = v_min
+            im.Modified()
             geometry = vtk.vtkImageDataGeometryFilter()
-            geometry.SetInputData(self.image)
+            geometry.SetInputData(im)
+            geometry.SetThresholdValue(v_min)
+            geometry.ThresholdCellsOn()
             geometry.Update()
             tri = vtk.vtkTriangleFilter()
             tri.SetInputData(geometry.GetOutput())
@@ -4978,14 +5270,18 @@ class Project:
             warp.SetScaleFactor(1)
             warp.SetInputData(strip.GetOutput())
             warp.Update()
+            # Compute normals to make the shading look better
+            normals = vtk.vtkPPolyDataNormals()
+            normals.SetInputData(warp.GetOutput())
+            normals.Update()
             
-            return warp.GetOutput()
+            return normals.GetOutput()
         
         else:
             return self.image
     
     def display_image(self, z_min, z_max, field='Elevation',
-                      warp_scalars=False):
+                      warp_scalars=False, color_field=None):
         """
         Display image in vtk interactive window.
 
@@ -4999,6 +5295,10 @@ class Project:
             Which field in PointData to display. The default is 'Elevation'
         warp_scalars : bool, optional
             Whether to warp the scalars in the image to create 3D surface
+        color_field : str, optional
+            If we want to display the color for a different field overlain
+            on the geometry from warp scalars use this option. The defaut
+            is None.
 
         Returns
         -------
@@ -5021,7 +5321,10 @@ class Project:
         
         if warp_scalars:
             mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputData(self.get_image(field, warp_scalars))
+            mapper.SetInputData(self.get_image(field, warp_scalars, 
+                                               v_min=z_min))
+            if not color_field is None:
+                mapper.GetInput().GetPointData().SetActiveScalars(color_field)
             
         else:
             mapper = vtk.vtkDataSetMapper()
@@ -5740,6 +6043,40 @@ class Project:
         bounds = (bounds_image[0], bounds_image[1], bounds_image[2], 
                   bounds_image[3], z_min, z_max)
         self.empirical_cdf = (bounds, x, cdf)
+
+    def set_empirical_cdf(self, x, cdf, bounds=None):
+        """
+        Set the empirical cdf to the given values
+
+        Parameters
+        ----------
+        x : 1d-array
+            Bin values in empirical cdf.
+        cdf : 1d-array
+            Values of empirical cdf.
+        bounds : tuple, optional
+            Bounding box for points making up cdf. The default is None.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        self.empirical_cdf = (bounds, x, cdf)
+
+    def create_normalized_heights(self):
+        """
+        Apply the empirical cdf to each single scan to create normalized height
+
+        Returns
+        -------
+        None.
+        """
+
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].create_normalized_heights(
+                self.empirical_cdf[1], self.empirical_cdf[2])
     
     def create_im_gaus(self):
         """
@@ -5892,17 +6229,22 @@ class Project:
             self.image.GetPointData().AddArray(arr)
         self.dsa_image.PointData['im_nan_border'][:] = 0
     
-    def write_image(self, output_name=None):
+    def write_image(self, output_path=None, suffix='', name='image'):
         """
         Write the image out to a file.
         
-        Particularly useful for saving im_nan_border
+        Can specify a suffix and a name for the image.
 
         Parameters
         ----------
-        output_name : str, optional
-            Output name for the file, if None use the project_name + 
-            '_image.vti'. The default is None.
+        output_path : str, optional
+            Output name for the file, if None use the mesh directory. 
+            The default is None.
+        suffix : str, optional
+            The suffix for the vtkfiles dir. The default is ''.
+        name : str, optional
+            Name of the file if we're writing to vtkfiles dir. The default 
+            is 'image'.
 
         Returns
         -------
@@ -5913,22 +6255,57 @@ class Project:
         # Create writer and write mesh
         writer = vtk.vtkXMLImageDataWriter()
         writer.SetInputData(self.image)
-        if output_name:
-            writer.SetFileName(self.project_path + output_name)
-        else:
-            writer.SetFileName(self.project_path + self.project_name + 
-                               '_image.vti')
+        if not output_path:
+            # Create the mesh folder if it doesn't already exist
+            if not os.path.isdir(os.path.join(self.project_path, 
+                                              self.project_name, 
+                                              "vtkfiles" + suffix)):
+                os.mkdir(os.path.join(self.project_path, self.project_name, 
+                                      "vtkfiles" + suffix))
+            if not os.path.isdir(os.path.join(self.project_path,   
+                                              self.project_name, 
+                                              "vtkfiles" + suffix, "images")):
+                os.mkdir(os.path.join(self.project_path, self.project_name, 
+                         "vtkfiles" + suffix, "images"))
+            output_path = os.path.join(self.project_path, self.project_name, 
+                                       "vtkfiles" + suffix, "images", 
+                                       name + ".vti")
+        
+        # if the files already exist, remove them
+        for f in os.listdir(os.path.dirname(output_path)):
+            if re.match(name, f):
+                os.remove(os.path.join(os.path.dirname(output_path), f))
+        
+        writer.SetFileName(output_path)
         writer.Write()
+
+        # Write the imageTransform as a numpy file
+        transform_np = np.zeros((4, 4), dtype=np.float64)
+        vtk4x4 = self.imageTransform.GetMatrix()
+        for i in range(4):
+            for j in range(4):
+                transform_np[i, j] = vtk4x4.GetElement(i, j)
+        np.save(output_path.rsplit('.', maxsplit=1)[0] + '.npy', transform_np)
+
+        # Write the history_dict
+        f = open(output_path.rsplit('.', maxsplit=1)[0] + '.txt', 'w')
+        json.dump(self.image_history_dict, f, indent=4)
+        f.close()
     
-    def read_image(self, image_path=None):
+    def read_image(self, image_path=None, suffix='', name='mesh'):
         """
         Read in the image from a file.
 
         Parameters
         ----------
-        mesh_path : str, optional
-            Path to the mesh, if none use project_path + project_name + 
-            '_image.vti'. The default is None.
+        image_path : str, optional
+            Path to the image, if none use the image directory. 
+            The default is None.
+        suffix : str, optional
+            The suffix for the vtkfiles dir. The default is ''.
+        name : str, optional
+            Name of the file if we're reading in vtkfiles dir. The default 
+            is 'image'.
 
         Returns
         -------
@@ -5936,15 +6313,29 @@ class Project:
 
         """
         
-        # Create reader and read mesh
+        # Create reader and read image
         reader = vtk.vtkXMLImageDataReader()
-        if image_path:
-            reader.SetFileName(image_path)
-        else:
-            reader.SetFileName(self.project_path + self.project_name + 
-                               '_image.vti')
+        if not image_path:
+            image_path = os.path.join(self.project_path, self.project_name, 
+                                     "vtkfiles" + suffix, "images", 
+                                     name + ".vti")
+        reader.SetFileName(image_path)
         reader.Update()
         
+        # Read in history dict
+        f = open(image_path.rsplit('.', maxsplit=1)[0] + '.txt')
+        self.image_history_dict = json.load(f)
+        f.close()
+
+        # Read in the imageTransform
+        transform_np = np.load(image_path.rsplit('.', maxsplit=1)[0] + '.npy')
+        vtk4x4 = vtk.vtkMatrix4x4()
+        for i in range(4):
+            for j in range(4):
+                vtk4x4.SetElement(i, j, transform_np[i, j])
+        self.imageTransform = vtk.vtkTransform()
+        self.imageTransform.SetMatrix(vtk4x4)
+
         # If we've already created an image delete and make way for this one
         if hasattr(self, 'image'):
             del(self.image)
@@ -8160,6 +8551,7 @@ def normalize(xx, x, cdf):
 
     """
     # Flatten xx
+    dtype_out = xx.dtype
     shp = xx.shape
     xx = xx.reshape(xx.size)
     
@@ -8175,7 +8567,7 @@ def normalize(xx, x, cdf):
     u[np.isnan(xx)] = np.nan
     u = u.reshape(shp)
     # And return values transfored to standard normal distribution
-    return np.sqrt(2)*erfinv(u)
+    return (np.sqrt(2)*erfinv(u)).astype(dtype_out)
 
 def inormalize(yy, x, cdf):
     """
