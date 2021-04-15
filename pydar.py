@@ -4793,7 +4793,7 @@ class Project:
     
     def project_to_image(self, z_min, z_max, focal_point, camera_position,
                          roll=0, image_scale=500, lower_threshold=-1000, 
-                         upper_threshold=1000, mode='map', colorbar=True,
+                         upper_threshold=1000, mode=None, colorbar=True,
                          name=''):
         """
         Write an image of the project to the snapshots folder.
@@ -4821,7 +4821,7 @@ class Project:
             Value of z to clip above. The default is 1000.
         mode : str, optional
             What kind of projection system to use. 'Map' indicates parallel
-            or orthorectified projection. The default is 'map'.
+            or orthorectified projection. The default is None.
         colorbar : bool, optional
             Whether to display a colorbar.
         name : str, optional
@@ -5713,7 +5713,96 @@ class Project:
         extractPoints.SetInputData(self.get_merged_points())
         extractPoints.Update()
         return extractPoints.GetOutput()
+    
+    def transect_n_points(self, x0, y0, x1, y1, n_pts, tol=1000, d0=0.5, 
+                          dmax=50):
+        """
+        Get approximately n points around the transect.
+
+        Parameters
+        ----------
+        x0 : float
+            Coordinate in project reference frame.
+        y0 : float
+            Coordinate in project reference frame.
+        x1 : float
+            Coordinate in project reference frame.
+        y1 : float
+            Coordinate in project reference frame.
+        n_pts : int
+            Minimum number of points to acquire around transect.
+        tol : int, optional
+            Tolerance for number of points around transect to get. the default
+            is 1000.
+        d0 : float, optional
+            Starting distance. The default is 0.5.
+        dmax : float, optional
+            Max distance to look for points. the default is 50 m.
+
+        Returns
+        -------
+        vtkPolyData, d
+            with the selected points in the project reference frame. And
+            d, the distance from the transect that we selected points.
+
+        """
         
+        length = np.sqrt((x1-x0)**2 + (y1-y0)**2)
+        # we need a transformation first brings point 0 to the origin, then yaws
+        # transect axis onto x-axis
+        t_trans = vtk.vtkTransform()
+        # set mode to post multiply, so we will first translate and then rotate
+        t_trans.PostMultiply()
+        t_trans.Translate(-1*x0, -1*y0, 0)
+        # Get yaw angle of line
+        yaw = np.arctan2(y1 - y0, x1 - x0) * 180/np.pi
+        t_trans.RotateZ(-1*yaw)
+        
+        d = d0
+        dmin = 0
+        dloopmax = None
+        
+        # Create box
+        box = vtk.vtkBox()
+        box.SetBounds(-d, length + d, -d, d, -1000, 1000)
+        box.SetTransform(t_trans)
+        
+        # Extract points
+        extractPoints = vtk.vtkExtractPoints()
+        extractPoints.SetImplicitFunction(box)
+        extractPoints.SetInputData(self.get_merged_points())
+        extractPoints.Update()
+        
+        # While loop for adjusting the size of d
+        while np.abs(extractPoints.GetOutput().GetNumberOfPoints()-n_pts)>tol:
+            print(d)
+            print(extractPoints.GetOutput().GetNumberOfPoints())
+            if d>dmax:
+                warnings.warn('we have exceed max search distance. increase'
+                              ' dmax if this is not a mistake.')
+                break
+            if extractPoints.GetOutput().GetNumberOfPoints()<n_pts:
+                dmin = d # store current value of d in dmin, we won't search
+                # below this distance.
+                # if we are still ascending double d
+                if dloopmax is None:
+                    d = 2*d
+                else:
+                    #otherwise go halfway between where we are and the highest
+                    d = (d+dloopmax)/2
+            else:
+                # If we have too many points go halfway between d and dmin
+                dloopmax=d
+                d = (d+dmin)/2
+            
+            # Update box with the new d
+            box.SetBounds(-d, length + d, -d, d, -1000, 1000)
+            box.Modified()
+            extractPoints.Update()
+        
+        # Return once we are within tolerance
+        return extractPoints.GetOutput(), d
+                    
     def merged_points_transect_gp(self, x0, y0, x1, y1, N, d, leafsize, 
                                   lengthscale, outputscale):
         """

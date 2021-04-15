@@ -25,7 +25,11 @@ project = pydar.Project(project_path, project_name, import_mode=
 
 project.apply_transforms(['sop'])
 
+# %% display to pick points
+
 project.display_project(-4.5, 2.5)
+
+# %% test function and plot output
 
 # Pick p0 over the rov tent and p1 over the ship to make things easy
 x0 = 17.3
@@ -67,3 +71,15 @@ iren.Start()
 # Needed to get window to close on linux
 renderWindow.Finalize()
 iren.TerminateApp()
+
+# %% test transect_n_points
+
+x0 = -128
+y0 = -3
+x1 = -115
+y1 = -2
+n_pts = 10000
+tol = 100
+d0 = 6.4
+
+pdata, d = project.transect_n_points(x0, y0, x1, y1, n_pts, tol=tol, d0=d0)
