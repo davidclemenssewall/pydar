@@ -2486,6 +2486,9 @@ class SingleScan:
 
         """
         
+        # If the current filter output has no points, return
+        if self.currentFilter.GetOutput().GetNumberOfPoints()==0:
+            return
         # Get the points of the currentTransform as a numpy array
         Points = vtk_to_numpy(self.currentFilter.GetOutput().GetPoints()
                               .GetData())
@@ -2668,7 +2671,10 @@ class SingleScan:
             KDTree)
 
         """
-
+        
+        # If the current filter output has no points, return
+        if self.currentFilter.GetOutput().GetNumberOfPoints()==0:
+            return
         # Step 1, get pointer to points array and create tree
         Points = vtk_to_numpy(self.currentFilter.GetOutput().GetPoints()
                               .GetData())
@@ -2895,6 +2901,10 @@ class SingleScan:
         else:
             raise ValueError('mode must be currentFilter or transformFilter')
         extractPoints.Update()
+        
+        # If extractPoints has zero points in it then we can just return
+        if extractPoints.GetOutput().GetNumberOfPoints()==0:
+            return
         
         # Update classification
         PointIds = vtk_to_numpy(extractPoints.GetOutput().GetPointData().
@@ -3406,7 +3416,7 @@ class SingleScan:
         dsa_transform = dsa.WrapDataObject(self.transformFilter.GetOutput())
         # Normalize
         self.dsa_raw.PointData['norm_height'][:] = normalize(
-            dsa_transform.Points[:, 2].squeeze(), x, cdf)
+            dsa_transform.Points[:, 2], x, cdf)
         
         # if np_dict doesn't exist create it
         if not hasattr(self, 'np_dict'):
@@ -3936,6 +3946,8 @@ class Project:
     create_z_sigma()
         For the current value of the transformation, project the pointwise
         uncertainty spheroids onto the z-axis and save in PointData.
+    apply_manual_filter()
+        Manually classify points within a selection loop.
     apply_snowflake_filter(shells)
         Apply the snowflake filter.
     apply_snowflake_filter_2(z_diff, N, r_min)
@@ -4285,7 +4297,36 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].create_z_sigma(sigma_ro=sigma_ro,
                                                      sigma_bw=sigma_bw)
-    
+    def apply_manual_filter(self, corner_coords, normal=(0.0, 0.0, 1.0), 
+                            category=73, mode='currentFilter'):
+        """
+        Manually classify points using a selection loop.
+
+        Parameters
+        ----------
+        corner_coords : ndarray
+            Nx3 array of points defining corners of selection.
+        normal : array-like, optional
+            Three element vector describing normal (axis) of loop. 
+            The default is (0, 0, 1).
+        category : uint8, optional
+            Which category to classify points as. The default is 73.
+        mode : str, optional
+            What to apply filter to. Options are 'currentFilter' and
+            'transformFilter'. The default is 'currentFilter'.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].apply_manual_filter(corner_coords,
+                                                          normal=normal,
+                                                          category=category,
+                                                          mode=mode)
+
     def apply_snowflake_filter(self, shells):
         """
         Apply a snowflake filter to each SingleScan
@@ -5281,7 +5322,8 @@ class Project:
             return self.image
     
     def display_image(self, z_min, z_max, field='Elevation',
-                      warp_scalars=False, color_field=None):
+                      warp_scalars=False, color_field=None,
+                      show_points=False):
         """
         Display image in vtk interactive window.
 
@@ -5299,6 +5341,8 @@ class Project:
             If we want to display the color for a different field overlain
             on the geometry from warp scalars use this option. The defaut
             is None.
+        show_points : bool, optional
+            Whether to also render the points. The default is False.
 
         Returns
         -------
@@ -5340,6 +5384,16 @@ class Project:
         renderWindow = vtk.vtkRenderWindow()
         renderWindow.SetSize(2000, 1000)
         renderer.AddActor(actor)
+        
+        if show_points:
+            for scan_name in self.scan_dict:
+                self.scan_dict[scan_name].create_reflectance_pipeline(z_min,
+                                                                      z_max,
+                                                                      field=
+                                                                      field)
+                self.scan_dict[scan_name].actor.SetUserTransform(
+                    self.imageTransform)
+                renderer.AddActor(self.scan_dict[scan_name].actor)
         
         scalarBar = vtk.vtkScalarBarActor()
         scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
@@ -5612,6 +5666,230 @@ class Project:
             "input_0": history_dict,
             "params": {"depth": depth, "min_density": min_density}
             }
+    
+    def transect_points(self, x0, y0, x1, y1, d):
+        """
+        Get the points within a distance d of transect defined by by points.
+
+        Parameters
+        ----------
+        x0 : float
+            Coordinate in project reference frame.
+        y0 : float
+            Coordinate in project reference frame.
+        x1 : float
+            Coordinate in project reference frame.
+        y1 : float
+            Coordinate in project reference frame.
+        d : float
+            Distance from transect to select points.
+
+        Returns
+        -------
+        vtkPolyData
+            with the selected points in the project reference frame
+
+        """
+        
+        length = np.sqrt((x1-x0)**2 + (y1-y0)**2)
+        # we need a transformation first brings point 0 to the origin, then yaws
+        # transect axis onto x-axis
+        t_trans = vtk.vtkTransform()
+        # set mode to post multiply, so we will first translate and then rotate
+        t_trans.PostMultiply()
+        t_trans.Translate(-1*x0, -1*y0, 0)
+        # Get yaw angle of line
+        yaw = np.arctan2(y1 - y0, x1 - x0) * 180/np.pi
+        t_trans.RotateZ(-1*yaw)
+        
+        # Create box
+        box = vtk.vtkBox()
+        box.SetBounds(-d, length + d, -d, d, -1000, 1000)
+        box.SetTransform(t_trans)
+        
+        # Extract points
+        extractPoints = vtk.vtkExtractPoints()
+        extractPoints.SetImplicitFunction(box)
+        extractPoints.SetInputData(self.get_merged_points())
+        extractPoints.Update()
+        return extractPoints.GetOutput()
+        
+    def merged_points_transect_gp(self, x0, y0, x1, y1, N, d, leafsize, 
+                                  lengthscale, outputscale):
+        """
+        Use gpytorch to infer a surface transect.
+
+        Parameters
+        ----------
+        x0 : float
+            Coordinate in project reference frame.
+        y0 : float
+            Coordinate in project reference frame.
+        x1 : float
+            Coordinate in project reference frame.
+        y1 : float
+            Coordinate in project reference frame.
+        N : int
+            Number of points to put in transect.
+        d : float
+            Distance from transect to select points.
+        leafsize : int
+            Maximum number of points for each leaf of the kdtree
+        lengthscale : float
+            Lengthscale for kernel in m.
+        outputscale : float
+            Outputscale for kernel.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Define a class and a function to generate gaussian process evaluate 
+        # at a set of points
+        class ExactGPModel(gpytorch.models.ExactGP):
+            def __init__(self, train_x, train_y, likelihood, lengthscale):
+                super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
+                # Let's set the mean to be the sample mean
+                self.mean_module = gpytorch.means.ConstantMean()
+                self.mean_module.initialize(constant=train_y.mean())
+
+                self.covar_module = gpytorch.kernels.ScaleKernel(
+                    gpytorch.kernels.keops.MaternKernel(nu=0.5))
+                self.covar_module.base_kernel.initialize(
+                    lengthscale=lengthscale)
+
+            def forward(self, x):
+                mean_x = self.mean_module(x)
+                covar_x = self.covar_module(x)
+                return gpytorch.distributions.MultivariateNormal(mean_x, 
+                                                                 covar_x)
+        
+        def run_gp(pts, norm_height, norm_z_sigma, grid_points, lengthscale, 
+                   outputscale):
+            # Move arrays to gpu
+            device = torch.device('cuda:0')
+            t_x = torch.tensor(pts[:,:2], device=device)
+            t_y = torch.tensor(norm_height, device=device)
+            t_z_sigma = torch.tensor(norm_z_sigma, device=device)
+
+            # Initialize the likelihood and the model
+            likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
+                noise=t_z_sigma)
+            model = ExactGPModel(t_x, t_y, likelihood, 
+                                 lengthscale=lengthscale).cuda()
+            model.covar_module.initialize(outputscale=outputscale)
+
+            # Get into evaluation (predictive posterior) mode
+            model.eval()
+            likelihood.eval()
+
+            # Move grid points to gpu and evaluate gp at grid points
+            t_grid_points = torch.tensor(grid_points, device=device)
+            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+                grid_pred = model(t_grid_points)
+                grid_mean = grid_pred.mean.to(torch.device('cpu')).numpy()
+                grid_lower = grid_pred.confidence_region()[0].to(torch.device(
+                    'cpu')).numpy()
+                grid_upper = grid_pred.confidence_region()[1].to(torch.device(
+                    'cpu')).numpy()
+
+            # The lower bound is 2 standard deviations below the mean
+            return grid_mean, grid_lower, grid_upper
+        
+        # Get the points around the transect
+        pdata = self.transect_points(x0, y0, x1, y1, d)
+        
+        # Get the points and the z_sigma as numpy arrays
+        pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
+        norm_height_np = vtk_to_numpy(pdata.GetPointData()
+                                      .GetArray('norm_height'))
+        norm_z_sigma_np = vtk_to_numpy(pdata.GetPointData()
+                                       .GetArray('norm_z_sigma'))
+        # temporary fix for negative z_sigma values
+        ind = norm_z_sigma_np > 0
+        pts_np = pts_np[ind, :]
+        norm_height_np = norm_height_np[ind]
+        norm_z_sigma_np = norm_z_sigma_np[ind]
+        warnings.warn('Still has temporary fix for negative norm z sigma')
+        
+        # Create transect points
+        grid_points=np.hstack((np.linspace(x0, x1, N, dtype=np.float32)
+                               [:, np.newaxis],
+                               np.linspace(y0, y1, N, dtype=np.float32)
+                               [:, np.newaxis]))
+        
+        # If All of the points would fit in one leaf, skip tree creation
+        if pts_np.shape[0]<=leafsize:
+            grid_mean, grid_lower, grid_upper = run_gp(pts_np, norm_height_np,
+                                                       norm_z_sigma_np, 
+                                                       grid_points, 
+                                                       lengthscale, outputscale)
+        else:
+            # Create a kdtree from the points (xy only) and get python version
+            tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
+            ptree = tree.tree
+
+            # Define function for working with tree
+            def tree_gp(node, pts_np, norm_height_np, norm_z_sigma_np, 
+                        grid_points, lengthscale, outputscale, grid_mean, 
+                        grid_lower, grid_upper):
+                # If we are not at a leaf, call this function on each child
+                if not node.split_dim==-1:
+                    # Call this function on the lesser node
+                    tree_gp(node.lesser, pts_np, norm_height_np, 
+                            norm_z_sigma_np, grid_points, lengthscale, 
+                            outputscale, grid_mean, grid_lower, grid_upper)
+                    # Call this function on the greater node
+                    tree_gp(node.greater, pts_np, norm_height_np, 
+                            norm_z_sigma_np, grid_points, lengthscale, 
+                            outputscale, grid_mean, grid_lower, grid_upper)
+                else:
+                    # We are at a leaf. Apply GP
+
+                    ind = node.indices
+                    min_x = pts_np[ind,0].min()
+                    max_x = pts_np[ind,0].max()
+                    min_y = pts_np[ind,1].min()
+                    max_y = pts_np[ind,1].max()
+        
+                    # Get grid points within this node
+                    grid_ind = ((grid_points[:,0]>=min_x) 
+                                & (grid_points[:,0]<=max_x)
+                                & (grid_points[:,1]>=min_y) 
+                                & (grid_points[:,1]<=max_y))
+                    
+                    (grid_mean[grid_ind], grid_lower[grid_ind], 
+                     grid_upper[grid_ind]) = run_gp(pts_np[ind], 
+                                                   norm_height_np[ind], 
+                                                   norm_z_sigma_np[ind], 
+                                                   grid_points[grid_ind], 
+                                                   lengthscale, outputscale)
+            # Apply function to kdtree
+            grid_mean = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            grid_upper = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            grid_lower = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            tree_gp(ptree, pts_np, norm_height_np, norm_z_sigma_np, grid_points, 
+                    lengthscale, outputscale, grid_mean, grid_lower, grid_upper)
+        
+        # convert from normalized space back to real space
+        grid_mean = inormalize(grid_mean, self.empirical_cdf[1], 
+                               self.empirical_cdf[2])
+        grid_lower = inormalize(grid_lower, self.empirical_cdf[1], 
+                                self.empirical_cdf[2])
+        grid_upper = inormalize(grid_upper, self.empirical_cdf[1], 
+                                self.empirical_cdf[2])
+        
+        # Return array with x coord, y coord, length along transect, mean z
+        # lower ci, upper ci
+        return np.hstack((grid_points, 
+                          np.sqrt(np.square(grid_points 
+                                            - grid_points[0,:]).sum(axis=1))
+                          [:, np.newaxis],
+                          grid_mean[:, np.newaxis],
+                          grid_lower[:, np.newaxis],
+                          grid_upper[:, np.newaxis]))
     
     def mesh_transect(self, x0, y0, x1, y1, N):
         """
