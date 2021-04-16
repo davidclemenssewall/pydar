@@ -15,7 +15,11 @@ import numpy as np
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 import sys
-sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
+import platform
+if platform.system()=='Windows':
+    sys.path.append('C:/Users/d34763s/Desktop/DavidCS/PhD/code/pydar/')
+else:
+    sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 
 # Load a Single Scan

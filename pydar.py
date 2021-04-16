@@ -28,7 +28,6 @@ from scipy.optimize import minimize, minimize_scalar
 import pandas as pd
 import vtk
 from vtk.numpy_interface import dataset_adapter as dsa
-import open3d as o3d
 import os
 import re
 import copy
@@ -53,6 +52,10 @@ try:
     import pdal
 except ModuleNotFoundError:
     print('pdal not imported, functions relying on it will fail')
+try:
+    import open3d as o3d
+except ModuleNotFoundError:
+    print('open3d not imported, functions relying on it will fail')
 try:
     import cv2 as cv
 except ModuleNotFoundError:
@@ -5271,7 +5274,7 @@ class Project:
         self.dsa_image.PointData['Elevation'][bool_arr] = np.NaN
     
     def get_image(self, field='Elevation', warp_scalars=False,
-                  v_min=-9999.0):
+                  v_min=-9999.0, nan_value=None):
         """
         Return image as vtkImageData or vtkPolyData depending on warp_scalars
 
@@ -5294,7 +5297,10 @@ class Project:
             im = vtk.vtkImageData()
             im.DeepCopy(self.image)
             field_np = vtk_to_numpy(im.GetPointData().GetArray(field))
-            field_np[np.isnan(field_np)] = v_min
+            if nan_value:
+                field_np[np.isnan(field_np)] = nan_value
+            else:
+                field_np[np.isnan(field_np)] = v_min
             im.Modified()
             geometry = vtk.vtkImageDataGeometryFilter()
             geometry.SetInputData(im)
@@ -5311,6 +5317,7 @@ class Project:
             warp.SetScaleFactor(1)
             warp.SetInputData(strip.GetOutput())
             warp.Update()
+            #return warp.GetOutput()
             # Compute normals to make the shading look better
             normals = vtk.vtkPPolyDataNormals()
             normals.SetInputData(warp.GetOutput())
@@ -8237,15 +8244,59 @@ class ScanArea:
         
         # Merge filter combines the geometry from project_name_1 with scalars
         # from difference
-        merge = vtk.vtkMergeFilter()
-        merge.SetGeometryInputData(self.project_dict[project_name_1].
-                                   get_image(field=field, warp_scalars=True))
-        merge.SetScalarsData(self.difference_dict[(project_name_0,
-                                                  project_name_1)])
-        merge.Update()
+        # merge = vtk.vtkMergeFilter()
+        # merge.SetGeometryInputData(self.project_dict[project_name_1].
+        #                            get_image(field=field, warp_scalars=False,
+        #                                      nan_value=-5))
+        # im = vtk.vtkImageData()
+        # im.DeepCopy(self.difference_dict[(project_name_0, project_name_1)])
+        
+        im = vtk.vtkImageData()
+        im.DeepCopy(self.project_dict[project_name_1].
+                                    get_image(field=field, warp_scalars=False,
+                                              nan_value=-5))
+        im.GetPointData().SetActiveScalars(field)
+        
+        im.GetPointData().AddArray(self.difference_dict[(project_name_0, 
+                                                         project_name_1)]
+                                   .GetPointData().GetArray('Difference'))
+        field_np = vtk_to_numpy(im.GetPointData().GetArray('Difference'))
+        field_np[np.isnan(field_np)] = 0
+        field_np = vtk_to_numpy(im.GetPointData().GetArray(field))
+        field_np[np.isnan(field_np)] = -5
+        im.Modified()
+                
+        # merge.SetScalarsData(im)
+        # merge.Update()
+        
+        #merge.GetOutput().GetPointData().SetActiveScalars(field)
+        geometry = vtk.vtkImageDataGeometryFilter()
+        geometry.SetInputData(im)
+        geometry.SetThresholdValue(-4.9)
+        geometry.ThresholdCellsOn()
+        geometry.Update()
+        tri = vtk.vtkTriangleFilter()
+        tri.SetInputData(geometry.GetOutput())
+        tri.Update()
+        strip = vtk.vtkStripper()
+        strip.SetInputData(tri.GetOutput())
+        strip.Update()
+        warp = vtk.vtkWarpScalar()
+        warp.SetScaleFactor(1)
+        warp.SetInputData(strip.GetOutput())
+        warp.Update()
+        #return warp.GetOutput()
+        # Compute normals to make the shading look better
+        normals = vtk.vtkPPolyDataNormals()
+        normals.SetInputData(warp.GetOutput())
+        normals.Update()
+        normals.GetOutput().GetPointData().SetActiveScalars('Difference')
+        
         
         mapper = vtk.vtkPolyDataMapper()
-        mapper.SetInputData(merge.GetOutput())
+        #mapper = vtk.vtkDataSetMapper()
+        #mapper.SetInputData(merge.GetOutput())
+        mapper.SetInputData(normals.GetOutput())
         mapper.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
                                                 name=cmap))
         mapper.SetScalarRange(-diff_window, diff_window)
@@ -8319,15 +8370,56 @@ class ScanArea:
         """
         # Merge filter combines the geometry from project_name_1 with scalars
         # from difference
-        merge = vtk.vtkMergeFilter()
-        merge.SetGeometryInputData(self.project_dict[project_name_1].
-                                   get_image(field=field, warp_scalars=True))
-        merge.SetScalarsData(self.difference_dict[(project_name_0,
-                                                  project_name_1)])
-        merge.Update()
+        # merge = vtk.vtkMergeFilter()
+        # merge.SetGeometryInputData(self.project_dict[project_name_1].
+        #                            get_image(field=field, warp_scalars=True))
+        # merge.SetScalarsData(self.difference_dict[(project_name_0,
+        #                                           project_name_1)])
+        # merge.Update()
+        
+        im = vtk.vtkImageData()
+        im.DeepCopy(self.project_dict[project_name_1].
+                                    get_image(field=field, warp_scalars=False,
+                                              nan_value=-5))
+        im.GetPointData().SetActiveScalars(field)
+        
+        im.GetPointData().AddArray(self.difference_dict[(project_name_0, 
+                                                         project_name_1)]
+                                   .GetPointData().GetArray('Difference'))
+        field_np = vtk_to_numpy(im.GetPointData().GetArray('Difference'))
+        field_np[np.isnan(field_np)] = 0
+        field_np = vtk_to_numpy(im.GetPointData().GetArray(field))
+        field_np[np.isnan(field_np)] = -5
+        im.Modified()
+                
+        # merge.SetScalarsData(im)
+        # merge.Update()
+        
+        #merge.GetOutput().GetPointData().SetActiveScalars(field)
+        geometry = vtk.vtkImageDataGeometryFilter()
+        geometry.SetInputData(im)
+        geometry.SetThresholdValue(-4.9)
+        geometry.ThresholdCellsOn()
+        geometry.Update()
+        tri = vtk.vtkTriangleFilter()
+        tri.SetInputData(geometry.GetOutput())
+        tri.Update()
+        strip = vtk.vtkStripper()
+        strip.SetInputData(tri.GetOutput())
+        strip.Update()
+        warp = vtk.vtkWarpScalar()
+        warp.SetScaleFactor(1)
+        warp.SetInputData(strip.GetOutput())
+        warp.Update()
+        #return warp.GetOutput()
+        # Compute normals to make the shading look better
+        normals = vtk.vtkPPolyDataNormals()
+        normals.SetInputData(warp.GetOutput())
+        normals.Update()
+        normals.GetOutput().GetPointData().SetActiveScalars('Difference')
         
         mapper = vtk.vtkPolyDataMapper()
-        mapper.SetInputData(merge.GetOutput())
+        mapper.SetInputData(normals.GetOutput())
         mapper.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
                                                 name=cmap))
         mapper.SetScalarRange(-diff_window, diff_window)
