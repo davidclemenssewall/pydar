@@ -5184,6 +5184,9 @@ class Project:
                         "lengthscale": lengthscale, "outputscale": outputscale}
             }
 
+        # Also wrap with a datasetadaptor for working with numpy
+        self.dsa_image = dsa.WrapDataObject(self.image)
+
     def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0):
         """
         Interpolate mesh at regularly spaced points.
