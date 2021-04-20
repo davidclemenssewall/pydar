@@ -29,6 +29,7 @@ import pandas as pd
 import vtk
 from vtk.numpy_interface import dataset_adapter as dsa
 import os
+import sys
 import re
 import copy
 import json
@@ -4940,58 +4941,6 @@ class Project:
 
         """
 
-        # Define a class and a function to generate gaussian process evaluate 
-        # at a set of points
-        class ExactGPModel(gpytorch.models.ExactGP):
-            def __init__(self, train_x, train_y, likelihood, lengthscale):
-                super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
-                # Let's set the mean to be the sample mean
-                self.mean_module = gpytorch.means.ConstantMean()
-                self.mean_module.initialize(constant=train_y.mean())
-
-                self.covar_module = gpytorch.kernels.ScaleKernel(
-                    gpytorch.kernels.keops.MaternKernel(nu=0.5))
-                self.covar_module.base_kernel.initialize(
-                    lengthscale=lengthscale)
-
-            def forward(self, x):
-                mean_x = self.mean_module(x)
-                covar_x = self.covar_module(x)
-                return gpytorch.distributions.MultivariateNormal(mean_x, 
-                                                                 covar_x)
-
-        def run_gp(pts, norm_height, norm_z_sigma, grid_points, lengthscale, 
-                   outputscale):
-            # Move arrays to gpu
-            device = torch.device('cuda:0')
-            t_x = torch.tensor(pts[:,:2], device=device)
-            t_y = torch.tensor(norm_height, device=device)
-            t_z_sigma = torch.tensor(norm_z_sigma, device=device)
-
-            # Initialize the likelihood and the model
-            likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
-                noise=t_z_sigma)
-            model = ExactGPModel(t_x, t_y, likelihood, 
-                                 lengthscale=lengthscale).cuda()
-            model.covar_module.initialize(outputscale=outputscale)
-
-            # Get into evaluation (predictive posterior) mode
-            model.eval()
-            likelihood.eval()
-
-            # Move grid points to gpu and evaluate gp at grid points
-            t_grid_points = torch.tensor(grid_points, device=device)
-            with torch.no_grad(), gpytorch.settings.fast_pred_var():
-                grid_pred = model(t_grid_points)
-                grid_mean = grid_pred.mean.to(torch.device('cpu')).numpy()
-                grid_lower = grid_pred.confidence_region()[0].to(torch.device(
-                    'cpu')).numpy()
-                grid_upper = grid_pred.confidence_region()[1].to(torch.device(
-                    'cpu')).numpy()
-
-            # The lower bound is 2 standard deviations below the mean
-            return grid_mean, grid_lower, grid_upper
-
         # Get the points in this rectangular region
         pdata, point_history_dict = self.get_merged_points(history_dict=True,
             x0=x0, y0=y0, wx=nx*dx, wy=ny*dy, yaw=yaw)
@@ -5070,10 +5019,10 @@ class Project:
 
         # If All of the points would fit in one leaf, skip tree creation
         if pts_np.shape[0]<=leafsize:
-            grid_mean, grid_lower, grid_upper = run_gp(pts_np, norm_height_np,
-                                                       norm_z_sigma_np, 
-                                                       grid_points, 
-                                                       lengthscale, outputscale)
+            grid_mean, grid_lower, grid_upper = (
+                run_gp(pts_np, norm_height_np, grid_points, 
+                       norm_z_sigma=norm_z_sigma_np, lengthscale=lengthscale,
+                       outputscale=outputscale))
         else:
             # Create a kdtree from the points (xy only) and get python version
             tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
@@ -5110,10 +5059,9 @@ class Project:
                     
                     (grid_mean[grid_ind], grid_lower[grid_ind], 
                      grid_upper[grid_ind]) = run_gp(pts_np[ind], 
-                                                   norm_height_np[ind], 
-                                                   norm_z_sigma_np[ind], 
-                                                   grid_points[grid_ind], 
-                                                   lengthscale, outputscale)
+                        norm_height_np[ind], grid_points[grid_ind], 
+                        norm_z_sigma=norm_z_sigma_np[ind], 
+                        lengthscale=lengthscale, outputscale=outputscale)
             # Apply function to kdtree
             grid_mean = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
             grid_upper = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
@@ -5785,8 +5733,8 @@ class Project:
         
         # While loop for adjusting the size of d
         while np.abs(extractPoints.GetOutput().GetNumberOfPoints()-n_pts)>tol:
-            print(d)
-            print(extractPoints.GetOutput().GetNumberOfPoints())
+            #print(d)
+            #print(extractPoints.GetOutput().GetNumberOfPoints())
             if d>dmax:
                 warnings.warn('we have exceed max search distance. increase'
                               ' dmax if this is not a mistake.')
@@ -5813,8 +5761,12 @@ class Project:
         # Return once we are within tolerance
         return extractPoints.GetOutput(), d
                     
-    def merged_points_transect_gp(self, x0, y0, x1, y1, N, d, leafsize, 
-                                  lengthscale, outputscale):
+    def merged_points_transect_gp(self, x0, y0, x1, y1, N, leafsize, key, 
+                                  d=None, n_pts=None, tol=1000, d0=0.5, dmax=50, 
+                                  use_z_sigma=True, lengthscale=None, 
+                                  outputscale=None, mean=None, nu=0.5,
+                                  optimize=False, learning_rate=0.1, iter=None,
+                                  max_time=60):
         """
         Use gpytorch to infer a surface transect.
 
@@ -5830,88 +5782,88 @@ class Project:
             Coordinate in project reference frame.
         N : int
             Number of points to put in transect.
-        d : float
-            Distance from transect to select points.
         leafsize : int
             Maximum number of points for each leaf of the kdtree
-        lengthscale : float
-            Lengthscale for kernel in m.
-        outputscale : float
-            Outputscale for kernel.
+        key : const (str, tuple, etc)
+            Key to store this profile in profile_dict under.
+        d : float, optional
+            Distance from transect to select points. Exactly one of d or n_pts
+            must be None. If this is None then we will search for the 
+            appropriate d. The default is None.
+        n_pts : int
+            Minimum number of points to acquire around transect. Exactly one of
+             d or n_pts must be None. The default is None.
+        tol : int, optional
+            Tolerance for number of points around transect to get. the default
+            is 1000.
+        d0 : float, optional
+            Starting distance. The default is 0.5.
+        dmax : float, optional
+            Max distance to look for points. the default is 50 m.
+        use_z_sigma : bool, optional
+            Whether to use the computed pointwise uncertainties or not.
+            Generally you should have a reason for not using them. If False we
+            will just just a GaussianLikelihood for our likelihood. The default
+            is True.
+        lengthscale : float, optional
+            Lengthscale for kernel in m. See run_gp. The default is None.
+        outputscale : float, optional
+            Outputscale for kernel. See run_gp. The default is None.
+        mean : float, optional
+            Initial constant mean value for the GP. If None it will be set to 
+            the mean of norm_height. The default is None.
+        nu : float, optional
+            nu value of Matern kernel. It must be one of [0.5, 1.5, 2.5]. The
+            default is 0.5 (exponential kernel)
+        optimize : bool, optional
+            Whether or not to search for optimal hyperparameters for the GP. The
+            default is False.
+        learning_rate : float, optional
+            The learning rate if we are optimizing (currently just using ADAM). 
+            The default is 0.1.
+        iter : int, optional
+            The number of iterations to run optimizer for. Note that we will 
+            only ever run optimizer for max_time. The default is None.
+        max_time : float, optional
+            The maximum amount of time (in seconds) to run an optimization for. 
+            The default is 60.
+
 
         Returns
         -------
-        None.
+        ndarray
+            array with x coord, y coord, length along transect, mean z lower ci,
+            upper ci
 
         """
         
-        # Define a class and a function to generate gaussian process evaluate 
-        # at a set of points
-        class ExactGPModel(gpytorch.models.ExactGP):
-            def __init__(self, train_x, train_y, likelihood, lengthscale):
-                super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
-                # Let's set the mean to be the sample mean
-                self.mean_module = gpytorch.means.ConstantMean()
-                self.mean_module.initialize(constant=train_y.mean())
-
-                self.covar_module = gpytorch.kernels.ScaleKernel(
-                    gpytorch.kernels.keops.MaternKernel(nu=0.5))
-                self.covar_module.base_kernel.initialize(
-                    lengthscale=lengthscale)
-
-            def forward(self, x):
-                mean_x = self.mean_module(x)
-                covar_x = self.covar_module(x)
-                return gpytorch.distributions.MultivariateNormal(mean_x, 
-                                                                 covar_x)
         
-        def run_gp(pts, norm_height, norm_z_sigma, grid_points, lengthscale, 
-                   outputscale):
-            # Move arrays to gpu
-            device = torch.device('cuda:0')
-            t_x = torch.tensor(pts[:,:2], device=device)
-            t_y = torch.tensor(norm_height, device=device)
-            t_z_sigma = torch.tensor(norm_z_sigma, device=device)
-
-            # Initialize the likelihood and the model
-            likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
-                noise=t_z_sigma)
-            model = ExactGPModel(t_x, t_y, likelihood, 
-                                 lengthscale=lengthscale).cuda()
-            model.covar_module.initialize(outputscale=outputscale)
-
-            # Get into evaluation (predictive posterior) mode
-            model.eval()
-            likelihood.eval()
-
-            # Move grid points to gpu and evaluate gp at grid points
-            t_grid_points = torch.tensor(grid_points, device=device)
-            with torch.no_grad(), gpytorch.settings.fast_pred_var():
-                grid_pred = model(t_grid_points)
-                grid_mean = grid_pred.mean.to(torch.device('cpu')).numpy()
-                grid_lower = grid_pred.confidence_region()[0].to(torch.device(
-                    'cpu')).numpy()
-                grid_upper = grid_pred.confidence_region()[1].to(torch.device(
-                    'cpu')).numpy()
-
-            # The lower bound is 2 standard deviations below the mean
-            return grid_mean, grid_lower, grid_upper
         
         # Get the points around the transect
-        pdata = self.transect_points(x0, y0, x1, y1, d)
+        if d and (n_pts is None):
+            pdata = self.transect_points(x0, y0, x1, y1, d)
+        elif n_pts and (d is None):
+            pdata, t_dist = self.transect_n_points(x0, y0, x1, y1, n_pts, 
+                                                   tol=tol, d0=d0, dmax=dmax)
+            #print(t_dist)
+        else:
+            raise ValueError('invalid combination of d and n_pts')
         
         # Get the points and the z_sigma as numpy arrays
         pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
         norm_height_np = vtk_to_numpy(pdata.GetPointData()
                                       .GetArray('norm_height'))
-        norm_z_sigma_np = vtk_to_numpy(pdata.GetPointData()
-                                       .GetArray('norm_z_sigma'))
-        # temporary fix for negative z_sigma values
-        ind = norm_z_sigma_np > 0
-        pts_np = pts_np[ind, :]
-        norm_height_np = norm_height_np[ind]
-        norm_z_sigma_np = norm_z_sigma_np[ind]
-        warnings.warn('Still has temporary fix for negative norm z sigma')
+        if use_z_sigma:
+            norm_z_sigma_np = vtk_to_numpy(pdata.GetPointData()
+                                           .GetArray('norm_z_sigma'))
+            # temporary fix for negative z_sigma values
+            ind = norm_z_sigma_np > 0
+            pts_np = pts_np[ind, :]
+            norm_height_np = norm_height_np[ind]
+            norm_z_sigma_np = norm_z_sigma_np[ind]
+            warnings.warn('Still has temporary fix for negative norm z sigma')
+        else:
+            norm_z_sigma_np = None
         
         # Create transect points
         grid_points=np.hstack((np.linspace(x0, x1, N, dtype=np.float32)
@@ -5921,10 +5873,12 @@ class Project:
         
         # If All of the points would fit in one leaf, skip tree creation
         if pts_np.shape[0]<=leafsize:
-            grid_mean, grid_lower, grid_upper = run_gp(pts_np, norm_height_np,
-                                                       norm_z_sigma_np, 
-                                                       grid_points, 
-                                                       lengthscale, outputscale)
+            grid_mean, grid_lower, grid_upper = (
+                run_gp(pts_np, norm_height_np, grid_points, 
+                       norm_z_sigma=norm_z_sigma_np, lengthscale=lengthscale,
+                       outputscale=outputscale, mean=mean, nu=nu, 
+                       optimize=optimize, learning_rate=learning_rate,
+                       iter=iter, max_time=max_time))
         else:
             # Create a kdtree from the points (xy only) and get python version
             tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
@@ -5959,12 +5913,23 @@ class Project:
                                 & (grid_points[:,1]>=min_y) 
                                 & (grid_points[:,1]<=max_y))
                     
+                    # Adapt for whether or not we're using z_sigma
+                    if use_z_sigma:
+                        nzs = norm_z_sigma_np[ind]
+                    else:
+                        nzs = None
+
                     (grid_mean[grid_ind], grid_lower[grid_ind], 
                      grid_upper[grid_ind]) = run_gp(pts_np[ind], 
-                                                   norm_height_np[ind], 
-                                                   norm_z_sigma_np[ind], 
-                                                   grid_points[grid_ind], 
-                                                   lengthscale, outputscale)
+                                                   norm_height_np[ind],
+                                                   grid_points[grid_ind],
+                                                   norm_z_sigma=nzs, 
+                                                   lengthscale=lengthscale,
+                                                   outputscale=outputscale, 
+                                                   mean=mean, nu=nu, 
+                                                   optimize=optimize, 
+                                                   learning_rate=learning_rate, 
+                                                   iter=iter, max_time=max_time)
             # Apply function to kdtree
             grid_mean = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
             grid_upper = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
@@ -5980,6 +5945,7 @@ class Project:
         grid_upper = inormalize(grid_upper, self.empirical_cdf[1], 
                                 self.empirical_cdf[2])
         
+        !!! Modify this to save in profile_dict and write tests
         # Return array with x coord, y coord, length along transect, mean z
         # lower ci, upper ci
         return np.hstack((grid_points, 
@@ -9808,3 +9774,160 @@ def get_git_hash():
     # Return the hash
     return git_hash
 
+# Only if we have imported GPyTorch!
+# Define a class and a function to generate gaussian process evaluate 
+# at a set of points.
+if 'gpytorch' in sys.modules:
+    class ExactGPModel(gpytorch.models.ExactGP):
+        def __init__(self, train_x, train_y, likelihood, lengthscale=None,
+                     mean=None, outputscale=None, nu=0.5):
+            super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
+            # Let's create the mean module
+            self.mean_module = gpytorch.means.ConstantMean()
+            if mean is None:
+                self.mean_module.initialize(constant=train_y.mean())
+            else:
+                self.mean_module.initialize(constant=mean)
+
+            # Create the covariance module, we'll use a Matern Kernel
+            self.covar_module = gpytorch.kernels.ScaleKernel(
+                gpytorch.kernels.keops.MaternKernel(nu=nu))
+            # None and 0 evaluate to False so initialize any hyperparameters
+            # that the user has set
+            if lengthscale:
+                self.covar_module.base_kernel.initialize(lengthscale=
+                                                         lengthscale)
+            if outputscale:
+                self.covar_module.initialize(outputscale=outputscale)
+
+        def forward(self, x):
+            mean_x = self.mean_module(x)
+            covar_x = self.covar_module(x)
+            return gpytorch.distributions.MultivariateNormal(mean_x, 
+                                                             covar_x)
+
+    def run_gp(pts, norm_height, grid_points, norm_z_sigma=None, 
+               lengthscale=None, mean=None, outputscale=None, nu=0.5, 
+               optimize=False, learning_rate=0.1, iter=None, max_time=60):
+        """
+        Run Gaussian Process to predict surface at grid_points.
+
+        Create and run a gaussian process using GPyTorch to predict the surface
+        at the points in grid_points. We can choose whether or not to optimize 
+        the hyperparameters of the GP. Currently, we only use Matern kernels and
+        exact GP's with keops but that could change in the future.
+
+        Parameters:
+        -----------
+        pts : Nx2+ ndarray
+            Location coordinates of the input data. Only the first two columns 
+            will be used.
+        norm_height : Nx0 ndarray
+            Height (or response variable) in normalized space.
+        grid_points : Nx2 ndarray
+            Location coordinates where we will predict the surface
+        norm_z_sigma : Nx0 ndarray, optional
+            Array with 1 st. dev. uncertainties for each point in the input. If 
+            it is given we will use a FixedNoiseGaussianLikelihood with this 
+            array as the fixed noise. If None, we will use a GaussianLikelihood.
+            The default is None.
+        lengthscale : float, optional
+            The initial lengthscale for the kernel in the same units as pts. If
+            None this defaults to the GPyTorch's default (ln(1) I think). The 
+            default is None.
+        mean : float, optional
+            Initial constant mean value for the GP. If None it will be set to 
+            the mean of norm_height. The default is None.
+        outputscale : float, optional
+            Initial outputscale for scale of kernel. If None this defaults to 
+            the GPyTorch default. The default is None.
+        nu : float, optional
+            nu value of Matern kernel. It must be one of [0.5, 1.5, 2.5]. The
+            default is 0.5 (exponential kernel)
+        optimize : bool, optional
+            Whether or not to search for optimal hyperparameters for the GP. The
+            default is False.
+        learning_rate : float, optional
+            The learning rate if we are optimizing (currently just using ADAM). 
+            The default is 0.1.
+        iter : int, optional
+            The number of iterations to run optimizer for. Note that we will 
+            only ever run optimizer for max_time. The default is None.
+        max_time : float, optional
+            The maximum amount of time (in seconds) to run an optimization for. 
+            The default is 60.
+
+        Returns:
+        --------
+        grid_mean, grid_lower, grid_upper
+            Tuple of 3 1D arrays with the predicted values and lower and upper
+            confidence intervals at each of grid_points.
+
+        """
+
+        # Move arrays to gpu
+        device = torch.device('cuda:0')
+        t_x = torch.tensor(pts[:,:2], device=device)
+        t_y = torch.tensor(norm_height, device=device)
+        t_z_sigma = torch.tensor(norm_z_sigma, device=device)
+
+        # Initialize the likelihood
+        if norm_z_sigma is None:
+            # If no norm_z_sigma then we use a GaussianLikelihood
+            likelihood = gpytorch.likelihoods.GaussianLikelihood().cuda()
+        else:
+            # use a fixedNoiseGaussianLikelihood with our noise.
+            t_z_sigma = torch.tensor(norm_z_sigma, device=device)
+            likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
+                noise=t_z_sigma).cuda()
+
+        # Initialize Model, using our class defined above
+        model = ExactGPModel(t_x, t_y, likelihood, lengthscale=lengthscale,
+                         mean=mean, outputscale=outputscale, nu=nu).cuda()
+
+        # Optimize Model
+        if optimize:
+            # Get into train mode
+            model.train()
+            likelihood.train()
+
+            # Create adam optimizer
+            optimizer = torch.optim.Adam([{'params': model.parameters()},], 
+                                         lr=learning_rate)
+
+            # 'Loss' for GP is the marginal log likelihood
+            mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
+
+            # Run optimization loop either until we've done iter or max_time
+            ctr = 0
+            t_start = time.perf_counter()
+            while (time.perf_counter()-t_start)<max_time:
+                if not (iter is None):
+                    if ctr>=iter:
+                        break
+                # Zero gradients from previous iteration
+                optimizer.zero_grad()
+                # Output from model
+                output = model(t_train_x)
+                # Calc loss and backprop gradients
+                loss = -mll(output, t_train_y)
+                loss.backward()
+                # Take optimization step
+                optimizer.step()
+
+        # Get into evaluation (predictive posterior) mode
+        model.eval()
+        likelihood.eval()
+
+        # Move grid points to gpu and evaluate gp at grid points
+        t_grid_points = torch.tensor(grid_points, device=device)
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            grid_pred = model(t_grid_points)
+            grid_mean = grid_pred.mean.to(torch.device('cpu')).numpy()
+            grid_lower = grid_pred.confidence_region()[0].to(torch.device(
+                'cpu')).numpy()
+            grid_upper = grid_pred.confidence_region()[1].to(torch.device(
+                'cpu')).numpy()
+
+        # The lower bound is 2 standard deviations below the mean
+        return grid_mean, grid_lower, grid_upper
