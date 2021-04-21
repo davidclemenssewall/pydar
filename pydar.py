@@ -3897,6 +3897,12 @@ class Project:
         frame. Needed because vtkImageData can only be axis aligned.
     dsa_image : datasetadapter
         Wrapper to interact with image via numpy
+    profile_dict : dict
+        Dictionary holding polydata for each profile that we create in the
+        project. Each entry is a Polydata whose points are a profile and the
+        PointData optionally includes upper and lower confidence intervals
+        Various functions can either access these profile data or display
+        it. Each polydata has a single polyline as its cell.
     empirical_cdf : tuple
         (bounds, x, cdf) tuple with distribution of snow surface heights for 
         use with transforming and normalizing z-values.
@@ -4071,6 +4077,7 @@ class Project:
         self.scan_dict = {}
         self.project_date = mosaic_date_parser(project_name)
         self.current_transform_list = []
+        self.profile_dict = {}
         
         if import_mode is None:
             # Issue a deprecated warning
@@ -4689,7 +4696,7 @@ class Project:
             
     def display_project(self, z_min, z_max, lower_threshold=-1000, 
                         upper_threshold=1000, colorbar=True, field='Elevation',
-                        mapview=False):
+                        mapview=False, profile_list=[]):
         """
         Display all scans in a vtk interactive window.
         
@@ -4714,6 +4721,15 @@ class Project:
         field : str, optional
             Which scalar field to display (elevation, reflectance, etc). The
             default is 'Elevation'
+        mapview : bool, optional
+            Whether or not to use a parallel projection. The default is False.
+        profile_list : list, optional
+            Which, if any, profiles to display along with the rendering. This
+            list is composed of lists whose zeroth element is always the
+            key of the profile in self.profile_dict. Element 1 is line width
+            in pixels (optional) Elements 2, 3, 4, are color
+            channels (optional) and element 5 is opacity (optional). The default
+            is [].
 
         Returns
         -------
@@ -4752,7 +4768,30 @@ class Project:
                                                                       field=
                                                                       field)
             renderer.AddActor(self.scan_dict[scan_name].actor)
+        
+        # Add requested profiles
+        for profile_tup in profile_list:
+            #print(profile_tup)
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(self.profile_dict[profile_tup[0]])
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            if len(profile_tup)>=2:
+                actor.GetProperty().SetLineWidth(profile_tup[1])
+            else:
+                actor.GetProperty().SetLineWidth(5)
+            if len(profile_tup)>=5:
+                actor.GetProperty().SetColor(profile_tup[2:5])
+            else:
+                actor.GetProperty().SetColor(0.0, 1.0, 0.0)
+            if len(profile_tup)>=6:
+                actor.GetProperty().SetOpacity(profile_tup[5])
+            else:
+                actor.GetProperty().SetOpacity(0.8)
+            actor.GetProperty().RenderLinesAsTubesOn()
+            renderer.AddActor(actor)
             
+
         if colorbar:
             scalarBar = vtk.vtkScalarBarActor()
             if field=='Elevation':
@@ -4798,7 +4837,7 @@ class Project:
     def project_to_image(self, z_min, z_max, focal_point, camera_position,
                          roll=0, image_scale=500, lower_threshold=-1000, 
                          upper_threshold=1000, mode=None, colorbar=True,
-                         name=''):
+                         name='', window_size=(2000, 1000)):
         """
         Write an image of the project to the snapshots folder.
         
@@ -4830,6 +4869,8 @@ class Project:
             Whether to display a colorbar.
         name : str, optional
             Name to append to this snapshot. The default is ''.
+        window_size : tuple, optional
+            Window size in pixels. The default is (2000, 1000)
 
         Returns
         -------
@@ -4863,7 +4904,7 @@ class Project:
         
         # Create RenderWindow
         renderWindow = vtk.vtkRenderWindow()
-        renderWindow.SetSize(2000, 1000)
+        renderWindow.SetSize(window_size[0], window_size[1])
         renderWindow.AddRenderer(renderer)
         # Create Camera
         camera = vtk.vtkCamera()
@@ -4894,6 +4935,7 @@ class Project:
     
         renderWindow.Finalize()
         del renderWindow
+        
     def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, leafsize, 
                                lengthscale, outputscale, yaw=0,
                                corner_coords=None):
@@ -5281,7 +5323,7 @@ class Project:
     
     def display_image(self, z_min, z_max, field='Elevation',
                       warp_scalars=False, color_field=None,
-                      show_points=False):
+                      show_points=False, profile_list=[]):
         """
         Display image in vtk interactive window.
 
@@ -5352,6 +5394,41 @@ class Project:
                 self.scan_dict[scan_name].actor.SetUserTransform(
                     self.imageTransform)
                 renderer.AddActor(self.scan_dict[scan_name].actor)
+
+        # Add requested profiles
+        for profile_tup in profile_list:
+            transformFilter = vtk.vtkTransformPolyDataFilter()
+            transformFilter.SetTransform(self.imageTransform)
+            transformFilter.SetInputData(self.profile_dict[profile_tup[0]])
+            transformFilter.Update()
+            mapper = vtk.vtkPolyDataMapper()
+            if warp_scalars:
+                mapper.SetInputData(transformFilter.GetOutput())
+            else:
+                flattener = vtk.vtkTransform()
+                flattener.Scale(1, 1, 0)
+                flatFilter = vtk.vtkTransformPolyDataFilter()
+                flatFilter.SetTransform(flattener)
+                flatFilter.SetInputData(transformFilter.GetOutput())
+                flatFilter.Update()
+                mapper.SetInputData(flatFilter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            if len(profile_tup)>=2:
+                actor.GetProperty().SetLineWidth(profile_tup[1])
+            else:
+                actor.GetProperty().SetLineWidth(5)
+            if len(profile_tup)>=5:
+                actor.GetProperty().SetColor(profile_tup[2:5])
+            else:
+                actor.GetProperty().SetColor(0.0, 1.0, 0.0)
+            if len(profile_tup)>=6:
+                actor.GetProperty().SetOpacity(profile_tup[5])
+            else:
+                actor.GetProperty().SetOpacity(0.8)
+            actor.GetProperty().RenderLinesAsTubesOn()
+            renderer.AddActor(actor)
         
         scalarBar = vtk.vtkScalarBarActor()
         scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
@@ -5372,7 +5449,8 @@ class Project:
                          field='Elevation', warp_scalars=False,
                          roll=0, image_scale=500, lower_threshold=-1000, 
                          upper_threshold=1000, mode='map', colorbar=True,
-                         name=''):
+                         name='', light=None, profile_list=[],
+                         window_size=(2000,1000)):
         """
         Write an image of the image to the snapshots folder.
         
@@ -5430,7 +5508,42 @@ class Project:
         actor.SetMapper(mapper)
         renderer = vtk.vtkRenderer()
         renderer.AddActor(actor)
-            
+        
+        # Add requested profiles
+        for profile_tup in profile_list:
+            transformFilter = vtk.vtkTransformPolyDataFilter()
+            transformFilter.SetTransform(self.imageTransform)
+            transformFilter.SetInputData(self.profile_dict[profile_tup[0]])
+            transformFilter.Update()
+            mapper = vtk.vtkPolyDataMapper()
+            if warp_scalars:
+                mapper.SetInputData(transformFilter.GetOutput())
+            else:
+                flattener = vtk.vtkTransform()
+                flattener.Scale(1, 1, 0)
+                flatFilter = vtk.vtkTransformPolyDataFilter()
+                flatFilter.SetTransform(flattener)
+                flatFilter.SetInputData(transformFilter.GetOutput())
+                flatFilter.Update()
+                mapper.SetInputData(flatFilter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            if len(profile_tup)>=2:
+                actor.GetProperty().SetLineWidth(profile_tup[1])
+            else:
+                actor.GetProperty().SetLineWidth(5)
+            if len(profile_tup)>=5:
+                actor.GetProperty().SetColor(profile_tup[2:5])
+            else:
+                actor.GetProperty().SetColor(0.0, 1.0, 0.0)
+            if len(profile_tup)>=6:
+                actor.GetProperty().SetOpacity(profile_tup[5])
+            else:
+                actor.GetProperty().SetOpacity(0.8)
+            actor.GetProperty().RenderLinesAsTubesOn()
+            renderer.AddActor(actor)
+
         if colorbar:
             scalarBar = vtk.vtkScalarBarActor()
             scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
@@ -5447,7 +5560,7 @@ class Project:
         
         # Create RenderWindow
         renderWindow = vtk.vtkRenderWindow()
-        renderWindow.SetSize(2000, 1000)
+        renderWindow.SetSize(window_size[0], window_size[1])
         renderWindow.AddRenderer(renderer)
         # Create Camera
         camera = vtk.vtkCamera()
@@ -5765,8 +5878,8 @@ class Project:
                                   d=None, n_pts=None, tol=1000, d0=0.5, dmax=50, 
                                   use_z_sigma=True, lengthscale=None, 
                                   outputscale=None, mean=None, nu=0.5,
-                                  optimize=False, learning_rate=0.1, iter=None,
-                                  max_time=60):
+                                  optimize=False, learning_rate=0.1, 
+                                  n_iter=None, max_time=60):
         """
         Use gpytorch to infer a surface transect.
 
@@ -5821,7 +5934,7 @@ class Project:
         learning_rate : float, optional
             The learning rate if we are optimizing (currently just using ADAM). 
             The default is 0.1.
-        iter : int, optional
+        n_iter : int, optional
             The number of iterations to run optimizer for. Note that we will 
             only ever run optimizer for max_time. The default is None.
         max_time : float, optional
@@ -5831,9 +5944,7 @@ class Project:
 
         Returns
         -------
-        ndarray
-            array with x coord, y coord, length along transect, mean z lower ci,
-            upper ci
+        None.
 
         """
         
@@ -5878,7 +5989,7 @@ class Project:
                        norm_z_sigma=norm_z_sigma_np, lengthscale=lengthscale,
                        outputscale=outputscale, mean=mean, nu=nu, 
                        optimize=optimize, learning_rate=learning_rate,
-                       iter=iter, max_time=max_time))
+                       iter=n_iter, max_time=max_time))
         else:
             # Create a kdtree from the points (xy only) and get python version
             tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
@@ -5929,7 +6040,8 @@ class Project:
                                                    mean=mean, nu=nu, 
                                                    optimize=optimize, 
                                                    learning_rate=learning_rate, 
-                                                   iter=iter, max_time=max_time)
+                                                   iter=n_iter, 
+                                                   max_time=max_time)
             # Apply function to kdtree
             grid_mean = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
             grid_upper = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
@@ -5945,16 +6057,56 @@ class Project:
         grid_upper = inormalize(grid_upper, self.empirical_cdf[1], 
                                 self.empirical_cdf[2])
         
-        !!! Modify this to save in profile_dict and write tests
+        # create profile pdata
+        self.profile_dict[key] = vtk.vtkPolyData()
+        # Create points object and add point data arrays
+        pts = vtk.vtkPoints()
+        pts.SetData(numpy_to_vtk(np.hstack((grid_points, 
+                                            grid_mean[:,np.newaxis])),
+                                 deep=True, array_type=vtk.VTK_FLOAT))
+        self.profile_dict[key].SetPoints(pts)
+        vtk_arr = numpy_to_vtk(grid_lower, deep=True, array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('z_lower')
+        self.profile_dict[key].GetPointData().AddArray(vtk_arr)
+        vtk_arr = numpy_to_vtk(grid_upper, deep=True, array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('z_upper')
+        self.profile_dict[key].GetPointData().AddArray(vtk_arr)
+        lines = vtk.vtkCellArray()
+        lines.InsertNextCell(grid_mean.size)
+        for i in np.arange(grid_mean.size):
+            lines.InsertCellPoint(i)
+        self.profile_dict[key].SetLines(lines)
+        self.profile_dict[key].Modified()
+        
+    def get_profile(self, key):
+        """
+        Returns the requested profile as a numpy array
+
+        Parameters:
+        -----------
+        key : const
+            The key for the profile in profile_dict.
+        
+        Returns:
+        --------
+        ndarray
+            array with x coord, y coord, length along transect, mean z lower ci,
+            upper ci
+        """
+
+        prof = self.profile_dict[key]
+        pts = vtk_to_numpy(prof.GetPoints().GetData())
+
         # Return array with x coord, y coord, length along transect, mean z
         # lower ci, upper ci
-        return np.hstack((grid_points, 
-                          np.sqrt(np.square(grid_points 
-                                            - grid_points[0,:]).sum(axis=1))
+        return np.hstack((pts[:,:2], 
+                          np.sqrt(np.square(pts[:,:2] - pts[0,:2]).sum(axis=1))
                           [:, np.newaxis],
-                          grid_mean[:, np.newaxis],
-                          grid_lower[:, np.newaxis],
-                          grid_upper[:, np.newaxis]))
+                          pts[:,2][:, np.newaxis],
+                          vtk_to_numpy(prof.GetPointData().GetArray('z_lower'))
+                          [:, np.newaxis],
+                          vtk_to_numpy(prof.GetPointData().GetArray('z_upper'))
+                          [:, np.newaxis]))
     
     def mesh_transect(self, x0, y0, x1, y1, N):
         """
@@ -6300,7 +6452,7 @@ class Project:
         self.raw_history_dict = json.load(f)
         f.close()
     
-    def create_empirical_cdf(self, bounds):
+    def create_empirical_cdf(self, bounds=None):
         """
         Creates an empirical distribution of heights from histogram.
         
@@ -6309,9 +6461,10 @@ class Project:
 
         Parameters
         ----------
-        bounds : six element tuple
+        bounds : six element tuple, optional
             The boundaries of box of points to create distribution from.
-            Format is (xmin, xmax, ymin, ymax, zmin, zmax)
+            Format is (xmin, xmax, ymin, ymax, zmin, zmax). If None use all
+            points. The default is None.
 
         Returns
         -------
@@ -6319,23 +6472,26 @@ class Project:
 
         """
         
-        # Get all points within bounds
-        box = vtk.vtkBox()
-        box.SetBounds(bounds)
-        appendPolyData = vtk.vtkAppendPolyData()
-        for key in self.scan_dict:
-            self.scan_dict[key].currentFilter.Update()
-            extractPoints = vtk.vtkExtractPoints()
-            extractPoints.SetImplicitFunction(box)
-            extractPoints.SetExtractInside(1)
-            extractPoints.SetInputData(self.scan_dict[key].get_polydata())
-            extractPoints.Update()
-            appendPolyData.AddInputData(extractPoints.GetOutput())
-        
-        appendPolyData.Update()
+        if bounds is None:
+            dsa_points = dsa.WrapDataObject(self.get_merged_points())
+        else:
+            # Get all points within bounds
+            box = vtk.vtkBox()
+            box.SetBounds(bounds)
+            appendPolyData = vtk.vtkAppendPolyData()
+            for key in self.scan_dict:
+                self.scan_dict[key].currentFilter.Update()
+                extractPoints = vtk.vtkExtractPoints()
+                extractPoints.SetImplicitFunction(box)
+                extractPoints.SetExtractInside(1)
+                extractPoints.SetInputData(self.scan_dict[key].get_polydata())
+                extractPoints.Update()
+                appendPolyData.AddInputData(extractPoints.GetOutput())
+            
+            appendPolyData.Update()
+            dsa_points = dsa.WrapDataObject(appendPolyData.GetOutput())
         
         # Get z-values of points and create cdf
-        dsa_points = dsa.WrapDataObject(appendPolyData.GetOutput())
         z = dsa_points.Points[:, 2].squeeze()
         minh = np.min(z)
         maxh = np.max(z)
@@ -8113,7 +8269,7 @@ class ScanArea:
         self.difference_dict[(project_name_0, project_name_1)] = im
     
     def display_difference(self, project_name_0, project_name_1, diff_window,
-                           cmap='rainbow'):
+                           cmap='rainbow', profile_list=[]):
         """
         Display image in vtk interactive window.
 
@@ -8156,6 +8312,40 @@ class ScanArea:
         renderer = vtk.vtkRenderer()
         renderWindow = vtk.vtkRenderWindow()
         renderer.AddActor(actor)
+
+        # Add requested profiles
+        for profile_tup in profile_list:
+            transformFilter = vtk.vtkTransformPolyDataFilter()
+            transformFilter.SetTransform(self.project_dict[project_name_1]
+                                         .imageTransform)
+            transformFilter.SetInputData(self.project_dict[project_name_1]
+                                         .profile_dict[profile_tup[0]])
+            transformFilter.Update()
+            mapper = vtk.vtkPolyDataMapper()
+            flattener = vtk.vtkTransform()
+            flattener.Scale(1, 1, 0)
+            flatFilter = vtk.vtkTransformPolyDataFilter()
+            flatFilter.SetTransform(flattener)
+            flatFilter.SetInputData(transformFilter.GetOutput())
+            flatFilter.Update()
+            mapper.SetInputData(flatFilter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            if len(profile_tup)>=2:
+                actor.GetProperty().SetLineWidth(profile_tup[1])
+            else:
+                actor.GetProperty().SetLineWidth(5)
+            if len(profile_tup)>=5:
+                actor.GetProperty().SetColor(profile_tup[2:5])
+            else:
+                actor.GetProperty().SetColor(0.0, 1.0, 0.0)
+            if len(profile_tup)>=6:
+                actor.GetProperty().SetOpacity(profile_tup[5])
+            else:
+                actor.GetProperty().SetOpacity(0.8)
+            actor.GetProperty().RenderLinesAsTubesOn()
+            renderer.AddActor(actor)
         
         scalarBar = vtk.vtkScalarBarActor()
         scalarBar.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
@@ -8175,7 +8365,7 @@ class ScanArea:
     
     def display_warp_difference(self, project_name_0, project_name_1, 
                                 diff_window, field='Elevation_mean_fill',
-                                cmap='rainbow'):
+                                cmap='rainbow', profile_list=[]):
         """
         Display the surface of the image from project_name_1 colored by diff.
 
@@ -8276,6 +8466,34 @@ class ScanArea:
         renderer = vtk.vtkRenderer()
         renderWindow = vtk.vtkRenderWindow()
         renderer.AddActor(actor)
+
+        # Add requested profiles
+        for profile_tup in profile_list:
+            transformFilter = vtk.vtkTransformPolyDataFilter()
+            transformFilter.SetTransform(self.project_dict[project_name_1]
+                                         .imageTransform)
+            transformFilter.SetInputData(self.project_dict[project_name_1]
+                                         .profile_dict[profile_tup[0]])
+            transformFilter.Update()
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transformFilter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            if len(profile_tup)>=2:
+                actor.GetProperty().SetLineWidth(profile_tup[1])
+            else:
+                actor.GetProperty().SetLineWidth(5)
+            if len(profile_tup)>=5:
+                actor.GetProperty().SetColor(profile_tup[2:5])
+            else:
+                actor.GetProperty().SetColor(0.0, 1.0, 0.0)
+            if len(profile_tup)>=6:
+                actor.GetProperty().SetOpacity(profile_tup[5])
+            else:
+                actor.GetProperty().SetOpacity(0.8)
+            actor.GetProperty().RenderLinesAsTubesOn()
+            renderer.AddActor(actor)
         
         scalarBar = vtk.vtkScalarBarActor()
         scalarBar.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
@@ -8295,9 +8513,10 @@ class ScanArea:
     def write_plot_warp_difference(self, project_name_0, project_name_1, 
                                 diff_window, camera_position, focal_point,
                                 roll=0,
-                                field='Elevation_mean_fill',
-                                cmap='rainbow', filename="", name="",
-                                light=None, colorbar=True):
+                                field='Elevation',
+                                cmap='RdBu_r', filename="", name="",
+                                light=None, colorbar=True, profile_list=[],
+                                window_size=(2000, 1000)):
         """
         
 
@@ -8398,8 +8617,37 @@ class ScanArea:
         
         renderer = vtk.vtkRenderer()
         renderWindow = vtk.vtkRenderWindow()
-        renderWindow.SetSize(2000, 1000)
+        renderWindow.SetSize(window_size[0], window_size[1])
         renderer.AddActor(actor)
+
+        # Add requested profiles
+        for profile_tup in profile_list:
+            transformFilter = vtk.vtkTransformPolyDataFilter()
+            transformFilter.SetTransform(self.project_dict[project_name_1]
+                                         .imageTransform)
+            transformFilter.SetInputData(self.project_dict[project_name_1]
+                                         .profile_dict[profile_tup[0]])
+            transformFilter.Update()
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transformFilter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            if len(profile_tup)>=2:
+                actor.GetProperty().SetLineWidth(profile_tup[1])
+            else:
+                actor.GetProperty().SetLineWidth(5)
+            if len(profile_tup)>=5:
+                actor.GetProperty().SetColor(profile_tup[2:5])
+            else:
+                actor.GetProperty().SetColor(0.0, 1.0, 0.0)
+            if len(profile_tup)>=6:
+                actor.GetProperty().SetOpacity(profile_tup[5])
+            else:
+                actor.GetProperty().SetOpacity(0.8)
+            actor.GetProperty().RenderLinesAsTubesOn()
+            renderer.AddActor(actor)
+
         if light:
             renderer.AddLight(light)
         
@@ -9869,7 +10117,6 @@ if 'gpytorch' in sys.modules:
         device = torch.device('cuda:0')
         t_x = torch.tensor(pts[:,:2], device=device)
         t_y = torch.tensor(norm_height, device=device)
-        t_z_sigma = torch.tensor(norm_z_sigma, device=device)
 
         # Initialize the likelihood
         if norm_z_sigma is None:
@@ -9908,9 +10155,9 @@ if 'gpytorch' in sys.modules:
                 # Zero gradients from previous iteration
                 optimizer.zero_grad()
                 # Output from model
-                output = model(t_train_x)
+                output = model(t_x)
                 # Calc loss and backprop gradients
-                loss = -mll(output, t_train_y)
+                loss = -mll(output, t_y)
                 loss.backward()
                 # Take optimization step
                 optimizer.step()
