@@ -3323,7 +3323,7 @@ class SingleScan:
         
     
     def create_elevation_pipeline(self, z_min, z_max, lower_threshold=-1000,
-                                  upper_threshold=1000):
+                                  upper_threshold=1000, LOD=True):
         """
         create mapper and actor displaying points colored by elevation.
 
@@ -3337,6 +3337,8 @@ class SingleScan:
             Minimum elevation of point to display. The default is -1000.
         upper_threshold : float, optional
             Maximum elevation of point to display. The default is 1000.
+        LOD : bool, optional
+            Whether to generate a level of detail actor. The default is True
 
         Returns
         -------
@@ -3365,24 +3367,27 @@ class SingleScan:
         self.mapper.SetScalarRange(z_min, z_max)
         self.mapper.SetScalarVisibility(1)
         
-        # Create subsampled for LOD rendering
-        maskPoints = vtk.vtkPMaskPoints()
-        maskPoints.ProportionalMaximumNumberOfPointsOn()
-        maskPoints.SetOnRatio(10)
-        maskPoints.GenerateVerticesOn()
-        maskPoints.SetInputConnection(thresholdFilter.GetOutputPort())
-        maskPoints.Update()
-        self.mapper_sub = vtk.vtkPolyDataMapper()
-        self.mapper_sub.SetInputConnection(maskPoints.GetOutputPort())
-        self.mapper_sub.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
-        self.mapper_sub.SetScalarRange(z_min, z_max)
-        self.mapper_sub.SetScalarVisibility(1)
-        
-        
-        # Create actor
-        self.actor = vtk.vtkLODProp3D()
-        self.actor.AddLOD(self.mapper, 0.0)
-        self.actor.AddLOD(self.mapper_sub, 0.0)
+        if LOD:
+            # Create subsampled for LOD rendering
+            maskPoints = vtk.vtkPMaskPoints()
+            maskPoints.ProportionalMaximumNumberOfPointsOn()
+            maskPoints.SetOnRatio(10)
+            maskPoints.GenerateVerticesOn()
+            maskPoints.SetInputConnection(thresholdFilter.GetOutputPort())
+            maskPoints.Update()
+            self.mapper_sub = vtk.vtkPolyDataMapper()
+            self.mapper_sub.SetInputConnection(maskPoints.GetOutputPort())
+            self.mapper_sub.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+            self.mapper_sub.SetScalarRange(z_min, z_max)
+            self.mapper_sub.SetScalarVisibility(1)
+            
+            # Create actor
+            self.actor = vtk.vtkLODProp3D()
+            self.actor.AddLOD(self.mapper, 0.0)
+            self.actor.AddLOD(self.mapper_sub, 0.0)
+        else:
+            self.actor = vtk.vtkActor()
+            self.actor.SetMapper(self.mapper)
     
     def create_normalized_heights(self, x, cdf):
         """
@@ -4863,7 +4868,7 @@ class Project:
         upper_threshold : float, optional
             Value of z to clip above. The default is 1000.
         mode : str, optional
-            What kind of projection system to use. 'Map' indicates parallel
+            What kind of projection system to use. 'map' indicates parallel
             or orthorectified projection. The default is None.
         colorbar : bool, optional
             Whether to display a colorbar.
@@ -4885,7 +4890,8 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].create_elevation_pipeline(z_min, z_max, 
                                                             lower_threshold, 
-                                                            upper_threshold)
+                                                            upper_threshold,
+                                                            LOD=False)
             renderer.AddActor(self.scan_dict[scan_name].actor)
             
         if colorbar:
@@ -5848,15 +5854,15 @@ class Project:
         while np.abs(extractPoints.GetOutput().GetNumberOfPoints()-n_pts)>tol:
             #print(d)
             #print(extractPoints.GetOutput().GetNumberOfPoints())
-            if d>dmax:
-                warnings.warn('we have exceed max search distance. increase'
-                              ' dmax if this is not a mistake.')
-                break
             if extractPoints.GetOutput().GetNumberOfPoints()<n_pts:
                 dmin = d # store current value of d in dmin, we won't search
                 # below this distance.
                 # if we are still ascending double d
                 if dloopmax is None:
+                    if (2*d)>dmax:
+                        warnings.warn('we have exceed max search distance. '
+                                      'increase dmax if this is not a mistake.')
+                        break
                     d = 2*d
                 else:
                     #otherwise go halfway between where we are and the highest
