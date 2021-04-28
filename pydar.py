@@ -1030,10 +1030,11 @@ class SingleScan:
                 
             # Create VertexGlyphFilter so that we have vertices for
             # displaying
-            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-            vertexGlyphFilter.SetInputData(pdata)
-            vertexGlyphFilter.Update()
-            self.polydata_raw = vertexGlyphFilter.GetOutput()
+            pdata.Modified()
+            #vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            #vertexGlyphFilter.SetInputData(pdata)
+            #vertexGlyphFilter.Update()
+            self.polydata_raw = pdata#vertexGlyphFilter.GetOutput()
             
             # Load in history dict
             f = open(os.path.join(npy_path, 'raw_history_dict.txt'))
@@ -1137,10 +1138,11 @@ class SingleScan:
                 
                 # Create VertexGlyphFilter so that we have vertices for
                 # displaying
-                vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-                vertexGlyphFilter.SetInputData(pdata)
-                vertexGlyphFilter.Update()
-                self.polydata_raw = vertexGlyphFilter.GetOutput()
+                pdata.Modified()
+                #vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+                #vertexGlyphFilter.SetInputData(pdata)
+                #vertexGlyphFilter.Update()
+                self.polydata_raw = pdata #vertexGlyphFilter.GetOutput()
                 # We're importing from LAS (RiSCAN output) so initialize
                 # raw_history_dict as a Pointset Source
                 self.raw_history_dict = {
@@ -2038,10 +2040,13 @@ class SingleScan:
         extractSelection.SetInputData(0, self.polydata_raw)
         extractSelection.SetInputData(1, selection)
         extractSelection.Update()
-        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-        vertexGlyphFilter.SetInputConnection(extractSelection.GetOutputPort())
-        vertexGlyphFilter.Update()
-        self.polydata_raw = vertexGlyphFilter.GetOutput()
+        #vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+        #vertexGlyphFilter.SetInputConnection(extractSelection.GetOutputPort())
+        #vertexGlyphFilter.Update()
+        geoFilter = vtk.vtkGeometryFilter()
+        geoFilter.SetInputConnection(extractSelection.GetOutputPort())
+        geoFilter.Update()
+        self.polydata_raw = geoFilter.GetOutput()
         self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
         
         # Update filters
@@ -3068,10 +3073,10 @@ class SingleScan:
             pdata.Modified()
             
             # Update polydata_raw
-            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-            vertexGlyphFilter.SetInputData(pdata)
-            vertexGlyphFilter.Update()
-            self.polydata_raw = vertexGlyphFilter.GetOutput()
+            #vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            #vertexGlyphFilter.SetInputData(pdata)
+            #vertexGlyphFilter.Update()
+            self.polydata_raw = pdata #vertexGlyphFilter.GetOutput()
             self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
             
             # Update filters
@@ -3251,9 +3256,15 @@ class SingleScan:
             lut.SetTableValue(key, colors[key])
         lut.Build()
         
+        # Create vertices
+        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+        vertexGlyphFilter.SetInputConnection(
+            self.transformFilter.GetOutputPort())
+        vertexGlyphFilter.Update()
+        
         # Create mapper
         self.mapper = vtk.vtkPolyDataMapper()
-        self.mapper.SetInputConnection(self.transformFilter.GetOutputPort())
+        self.mapper.SetInputConnection(vertexGlyphFilter.GetOutputPort())
         self.mapper.SetLookupTable(lut)
         self.mapper.SetScalarRange(min(colors), max(colors))
         self.mapper.SetScalarVisibility(1)
@@ -3296,9 +3307,15 @@ class SingleScan:
         # Named colors object
         nc = vtk.vtkNamedColors()
         
+        # Create vertices
+        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+        vertexGlyphFilter.SetInputConnection(
+            self.currentFilter.GetOutputPort())
+        vertexGlyphFilter.Update()
+        
         # Create mapper
         self.mapper = vtk.vtkPolyDataMapper()
-        self.mapper.SetInputConnection(self.currentFilter.GetOutputPort())
+        self.mapper.SetInputConnection(vertexGlyphFilter.GetOutputPort())
         self.mapper.SetScalarVisibility(0)
         prop = vtk.vtkProperty()
         prop.SetColor(nc.GetColor3d(color))
@@ -3346,12 +3363,18 @@ class SingleScan:
 
         """
         
+        # Create vertices
+        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+        vertexGlyphFilter.SetInputConnection(
+            self.currentFilter.GetOutputPort())
+        vertexGlyphFilter.Update()
+        
         # # Create elevation filter
         elevFilter = vtk.vtkSimpleElevationFilter()
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
-        elevFilter.SetInputConnection(self.currentFilter.GetOutputPort())
+        elevFilter.SetInputConnection(vertexGlyphFilter.GetOutputPort())
         elevFilter.Update()
         
         # Create Threshold filter
@@ -3527,9 +3550,16 @@ class SingleScan:
         None.
 
         """
+        
+        # Create vertices
+        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+        vertexGlyphFilter.SetInputConnection(
+            self.currentFilter.GetOutputPort())
+        vertexGlyphFilter.Update()
+        
         # Create mapper, hardcode LUT for now
         self.mapper = vtk.vtkPolyDataMapper()
-        self.mapper.SetInputConnection(self.currentFilter.GetOutputPort())
+        self.mapper.SetInputConnection(vertexGlyphFilter.GetOutputPort())
         self.mapper.GetInput().GetPointData().SetActiveScalars(field)
         self.mapper.SetLookupTable(mplcmap_to_vtkLUT(v_min, v_max, 
                                                      name='plasma'))

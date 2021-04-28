@@ -31,6 +31,8 @@ project = pydar.Project(project_path, project_name, import_mode=
                       'read_scan')
 
 # that seems to work
+# Before only creating cells when needed this goes 2.8 -> 25.7 GB
+# Creating cells only as needed drops this to be 2.9 -> 23.7 GB (2GB)
 
 # %% How about empty init
 
