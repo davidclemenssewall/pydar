@@ -7426,7 +7426,7 @@ class ScanArea:
                            frac_exceed_diff_cutoff=0.1, bin_reduc_op='min',
                            diff_mode='mean'):
         """
-        Align successive scans on the basis of their gridded minima
+        Align successive scans on the basis of their gridded values
 
         !This function does not modify the tiepoint locations so it should 
         only be run after all tiepoint registration steps are done. It also
@@ -7767,6 +7767,134 @@ class ScanArea:
 
         # Return the diff
         return frac_exceed_max_diff, diff
+    
+    def max_alignment_ss(self, project_name_0, project_name_1, scan_name,
+                         w0=5, w1=5, max_diff=0.1):
+        """
+        Align singlescan with project 0 using local maxima as keypoints.
+        
+        This function breaks each pointcloud up into bins and finds the point
+        with the maximum z value in each bin, resulting in a pair of possible
+        keypoints for each bin. Then we select only those pairs whose
+        euclidean distance is less than max_diff and find the rigid
+        transformation which aligns the pairs of points in a least squares
+        sense.
+        
+        This function returns the rigid transform as a numpy 4x4 array and
+        the history dict corresponding to this transform.
+
+        Parameters
+        ----------
+        project_name_0 : str
+            The reference project we're aligning project_1 with.
+        project_name_1 : str
+            The project we are aligning.
+        scan_name : str
+            The scan we are aligning in the project we're aligning.
+        w0 : float, optional
+            Bin width in the zeroth dimension. The default is 5.
+        w1 : float, optional
+            Bin width in the first dimension. The default is 5.
+        max_diff : float, optional
+            The max distance (in m) between two gridded local maxima for us
+            to try to align them. The default is 0.1.
+
+        Returns
+        -------
+        ndarray, dict
+            Returns the 4x4 array that transforms our singlescan's local
+            maxima to align with project_0's local maxima. Also returns
+            history_dict for the transform
+
+        """
+        
+        # Get pointclouds and history_dicts
+        project_pdata, project_hist_dict = (self.project_dict[project_name_0]
+                                            .get_merged_points(history_dict=
+                                                               True))
+        ss_pdata, ss_hist_dict = (self.project_dict[project_name_1]
+                                  .scan_dict[scan_name].get_polydata(
+                                      history_dict=True))
+        ss_pts = vtk_to_numpy(ss_pdata.GetPoints().GetData())
+        project_pts = vtk_to_numpy(project_pdata.GetPoints().GetData())
+        
+        # Create grid
+        w = [w0, w1]
+        bounds = ss_pdata.GetBounds()
+        edges = 2*[None]
+        nbin = np.empty(2, np.int_)
+        for i in range(2):
+            edges[i] = np.arange(int(np.ceil((bounds[2*i + 1] - 
+                                              bounds[2*i])/w[i]))
+                                 + 1, dtype=np.float32) * w[i] + bounds[2*i]
+            # Adjust lower edge so we don't miss lower most point
+            edges[i][0] = edges[i][0] - 0.0001
+            # Adjust uppermost edge so the bin width is appropriate
+            edges[i][-1] = bounds[2*i + 1] + 0.0001
+            nbin[i] = len(edges[i]) + 1
+        
+        # Get gridded local maxima
+        ss_inds = gridded_max_ind(ss_pts, edges)
+        project_inds = gridded_max_ind(project_pts, edges)
+        
+        # We need to mask out cells that don't have points in both pointclouds
+        ss_mask = (ss_inds==ss_pts.shape[0])
+        project_mask = (project_inds==project_pts.shape[0])
+        both_mask = ss_mask | project_mask
+        ss_maxs = ss_pts[ss_inds[np.logical_not(both_mask)], :]
+        project_maxs = project_pts[project_inds[np.logical_not(both_mask)], :]
+        
+        # Extract pairs of points that meet our max_diff criteria and name
+        # according to Arun et al. (who we'll follow for the rigid alignment)
+        sq_pwdist = np.square(ss_maxs - project_maxs).sum(axis=1)
+        psubi_prime = ss_maxs[sq_pwdist<=(max_diff**2), :].T
+        psubi = project_maxs[sq_pwdist<=(max_diff**2), :].T
+        
+        # Compute centroids
+        p_prime = psubi_prime.mean(axis=1).reshape((3,1))
+        p = psubi.mean(axis=1).reshape((3,1))
+        
+        # Translate such that centroids are at zero
+        qsubi_prime = psubi_prime - p_prime
+        qsubi = psubi - p
+        
+        # Calculate the 3x3 matrix H (Using all 3 axes)
+        H = np.matmul(qsubi, qsubi_prime.T)
+        # Find it's singular value decomposition
+        U, S, Vh = svd(H)
+        # Calculate X, the candidate rotation matrix
+        X = np.matmul(Vh.T, U.T)
+        # Check if the determinant of X is near 1, this should basically 
+        # alsways be the case for our data
+        if np.isclose(1, np.linalg.det(X)):
+            R = X
+        elif np.isclose(-1, np.linalg.det(X)):
+            V_prime = np.array([Vh[0,:], Vh[1,:], -1*Vh[2,:]]).T
+            R = np.matmul(V_prime, U.T)
+            print(R)
+        else:
+            warnings.warn('Determinant of rotation matrix is not close +-1'
+                          + ' perhaps we do not have enough points?')
+        
+        # Now find translation vector to align centroids
+        T = p_prime - np.matmul(R, p)
+        
+        # Combine R and T into 4x4 matrix A, defining the rigid transform
+        A = np.eye(4)
+        A[:3, :3] = R
+        A[:3, 3] = T.squeeze()
+        
+        # Create history_dict
+        history_dict = {
+            "type": "Transform Computer",
+            "git_hash": get_git_hash(),
+            "method": "ScanArea.max_alignment_ss",
+            "input_0": project_hist_dict,
+            "input_1": ss_hist_dict,
+            "params": {"w0": w0, "w1": w1, "max_diff": max_diff}
+            }
+        
+        return A, history_dict
     
     def kernel_alignment(self, project_name_0, project_name_1, bin_width=0.15, 
                          max_points=800000, max_dist=250, blur=0.005,
@@ -10031,6 +10159,40 @@ def gridded_counts_modes(points, edges, dz_hist=0.01):
     modes[counts==0] = np.nan
 
     return counts, modes
+
+def gridded_max_ind(points, edges):
+    """
+    Grids a point cloud in x and y and returns the cellwise index of the point
+    within that cell with the max z.
+
+    Parameters
+    ----------
+    points : float[:, :]
+        Pointcloud, Nx3 array of type np.float32
+    edges : list
+        2 item list containing edges for gridding
+
+    Returns:
+    --------
+    inds : intptr_t[:]
+        Array with the index of the maximum point for each bin. 
+        Length nbin_0*nbin_1. For bins with no points in them this array will
+        contain a value equal to the number of points.
+    """
+
+    Ncount = tuple(np.searchsorted(edges[i], points[:,i], 
+                               side='right') for i in range(2))
+
+    nbin = np.empty(2, np.int_)
+    nbin[0] = len(edges[0]) + 1
+    nbin[1] = len(edges[1]) + 1
+
+    xy = np.ravel_multi_index(Ncount, nbin)
+
+    # Compute gridded inds
+    inds = cython_util.binwise_max_cy(nbin[0], nbin[1], points, np.int_(xy),
+                                      init_val=points[:,2].min()-1)
+    return inds
 
 def get_git_hash():
     """

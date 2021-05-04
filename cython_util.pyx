@@ -23,9 +23,9 @@ def create_counts_mins_cy(long nbin_0, long nbin_1, float[:, :] Points,
     Returns:
     --------
     counts : long[:]
-        Array with the counts for each bin. Same length as xy
+        Array with the counts for each bin. Length nbin_0*nbin_1
     mins : float[:]
-        Array with the min z value for each bin. Same length as xy
+        Array with the min z value for each bin. Length nbin_0*nbin_1
     """
     counts = np.zeros(nbin_0 * nbin_1, dtype=np.int64)
     cdef long[:] counts_view = counts
@@ -59,9 +59,9 @@ def create_counts_sums_cy(long nbin_0, long nbin_1, float[:, :] Points,
     Returns:
     --------
     counts : long[:]
-        Array with the counts for each bin. Same length as xy
+        Array with the counts for each bin. Length nbin_0*nbin_1
     sums : float[:]
-        Array with the sum of z values for each bin. Same length as xy
+        Array with the sum of z values for each bin. Length nbin_0*nbin_1
     """
 
     counts = np.zeros(nbin_0 * nbin_1, dtype=np.int64)
@@ -98,10 +98,10 @@ def create_counts_hists_cy(long nbin_0, long nbin_1, long[:] h_ind, long[:] xy,
     Returns:
     --------
     counts : long[:]
-        Array with the counts for each bin. Same length as xy
+        Array with the counts for each bin. Length nbin_0*nbin_1
     hists : long[:, :]
-        Array with the historam of z values for each bin. Zeroth dim same 
-        length as xy. 1st dim length nbin_h
+        Array with the historam of z values for each bin. Zeroth dim 
+        Length nbin_0*nbin_1. 1st dim length nbin_h
     """
     counts = np.zeros(nbin_0 * nbin_1, dtype=np.int64)
     cdef long[:] counts_view = counts
@@ -114,3 +114,45 @@ def create_counts_hists_cy(long nbin_0, long nbin_1, long[:] h_ind, long[:] xy,
         hists_view[xy[i], h_ind[i]] += 1
     
     return counts, hists
+
+def binwise_max_cy(long nbin_0, long nbin_1, float[:, :] Points, long[:] xy, 
+                   float init_val):
+    """
+    Given a bin point cloud, return the binwise number of items and min z val.
+
+    Parameters
+    ----------
+    nbin_0 : long
+        Number of bins along the zeroth axis
+    nbin_1 : long
+        Number of bins along the first axis
+    Points : float[:, :]
+        Pointcloud, Nx3 array of type np.float32
+    xy : long[:]
+        Bin index for each point, must be same as number of points.
+    init_val : float
+        Initial values in maxs array. Pick something smaller than smallest z
+        in Points. 
+
+    Returns:
+    --------
+    inds : intptr_t[:]
+        Array with the index of the maximum point for each bin. 
+        Length nbin_0*nbin_1
+    mins : float[:]
+        Array with the min z value for each bin. Length nbin_0*nbin_1
+    """
+
+    # Initialize inds to a value 1 greater than largest point index
+    inds = len(xy) * np.ones(nbin_0 * nbin_1, dtype=np.int64)
+    cdef long[:] inds_view = inds
+    
+    maxs = init_val * np.ones(nbin_0 * nbin_1, dtype=np.float32)
+    cdef float[:] maxs_view = maxs
+    
+    for i in range(len(xy)):
+        if maxs_view[xy[i]] < Points[i, 2]:
+            maxs_view[xy[i]] = Points[i, 2]
+            inds_view[xy[i]] = i
+    
+    return inds
