@@ -51,10 +51,11 @@ scan_area.register_all()
 
 # %% Test max_alignment_ss
 
-A, history_dict = scan_area.max_alignment_ss(project_names[1], 
-                                             project_names[0], 'ScanPos001')
+A, history_dict, count = scan_area.max_alignment_ss(project_names[1], 
+                                             project_names[0], 'ScanPos001',
+                                             return_count=True)
 
 # %% examine output
 
 print(A)
-print(json.dumps(history_dict, indent=4))
+print(count)

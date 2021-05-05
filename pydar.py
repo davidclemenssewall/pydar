@@ -7648,7 +7648,7 @@ class ScanArea:
     
     def z_alignment_ss(self, project_name_0, project_name_1, scan_name,
                               w0=10, w1=10, min_pt_dens=10, max_diff=0.15,
-                              bin_reduc_op='min'):
+                              bin_reduc_op='min', return_grid=False):
         """
         Align successive scans on the basis of their gridded minima
         
@@ -7685,13 +7685,13 @@ class ScanArea:
             Array containing gridded minima differences
 
         """
-        if project_name_0==project_name_1:
-            self.project_dict[project_name_0].add_z_offset(0)
-            transform_list = copy.deepcopy(self.project_dict[project_name_0].
-                                           current_transform_list)
-            transform_list.append('z_offset')
-            self.project_dict[project_name_0].apply_transforms(transform_list)
-            return
+        # if project_name_0==project_name_1:
+        #     self.project_dict[project_name_0].add_z_offset(0)
+        #     transform_list = copy.deepcopy(self.project_dict[project_name_0].
+        #                                    current_transform_list)
+        #     transform_list.append('z_offset')
+        #     self.project_dict[project_name_0].apply_transforms(transform_list)
+        #     return
         
         w = [w0, w1]
         min_counts = min_pt_dens * w[0] * w[1]
@@ -7704,8 +7704,16 @@ class ScanArea:
         pdata_merged_project_0 = project_0.get_merged_points()
         project_0_points_np = vtk_to_numpy(pdata_merged_project_0
                                            .GetPoints().GetData())
-        bounds = pdata_merged_project_0.GetBounds()
+        #bounds = pdata_merged_project_0.GetBounds()
+        
+        # Now get ss
+        ss = project_1.scan_dict[scan_name]        
 
+        # Get points as an array
+        ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
+                                    .GetData())
+        bounds = ss.currentFilter.GetOutput().GetBounds()
+        
         # Create grid
         edges = 2*[None]
         nbin = np.empty(2, np.int_)
@@ -7719,7 +7727,18 @@ class ScanArea:
             # Adjust uppermost edge so the bin width is appropriate
             edges[i][-1] = bounds[2*i + 1] + 0.0001
             nbin[i] = len(edges[i]) + 1
-
+        
+        # Get gridded counts and reduc op (using the same grid)
+        if bin_reduc_op=='min':
+            ss_counts, ss_arr = gridded_counts_mins(
+                ss_points_np, edges, np.float32(bounds[5] + 1))
+        elif bin_reduc_op=='mean':
+            ss_counts, ss_arr = gridded_counts_means(
+                ss_points_np, edges)
+        elif bin_reduc_op=='mode':
+            ss_counts, ss_arr = gridded_counts_modes(
+                ss_points_np, edges)
+        
         # Get gridded counts and bin reduc
         if bin_reduc_op=='min':
             project_0_counts, project_0_arr = gridded_counts_mins(
@@ -7733,22 +7752,6 @@ class ScanArea:
         else:
             raise ValueError('bin_reduc_op must be min, mean or mode')
         
-        # Now use the same grid to get on ss
-        ss = project_1.scan_dict[scan_name]
-
-        # Get points as an array
-        ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
-                                    .GetData())
-        # Get gridded counts and reduc op (using the same grid)
-        if bin_reduc_op=='min':
-            ss_counts, ss_arr = gridded_counts_mins(
-                ss_points_np, edges, np.float32(bounds[5] + 1))
-        elif bin_reduc_op=='mean':
-            ss_counts, ss_arr = gridded_counts_means(
-                ss_points_np, edges)
-        elif bin_reduc_op=='mode':
-            ss_counts, ss_arr = gridded_counts_modes(
-                ss_points_np, edges)
 
         # Compute differences of gridded minima
         diff = ss_arr - project_0_arr
@@ -7764,12 +7767,43 @@ class ScanArea:
             diff[np.abs(diff) > max_diff] = np.nan
             if np.isnan(diff).all():
                 warnings.warn("All diffs exceed max_diff")
+        
+        # If we want to return the grid as a pointcloud compute it here
+        if return_grid:
+            # Get the grid indices in the current reference frame
+            x_trans = (edges[0][:-1] + edges[0][1:])/2
+            y_trans = (edges[1][:-1] + edges[1][1:])/2
+            X_trans, Y_trans = np.meshgrid(x_trans, y_trans)
+            grid_trans = np.hstack((X_trans.ravel()[:,np.newaxis], 
+                                    Y_trans.ravel()[:,np.newaxis],
+                                    np.zeros((X_trans.size, 1)),
+                                    np.ones((X_trans.size, 1))))
+            grid_trans = np.hstack((X_trans.ravel()[:,np.newaxis], 
+                                    Y_trans.ravel()[:,np.newaxis],
+                                    np.zeros((X_trans.size, 1))))
+            pts = vtk.vtkPoints()
+            pts.SetData(numpy_to_vtk(grid_trans, array_type=vtk.VTK_DOUBLE))
+            pdata = vtk.vtkPolyData()
+            pdata.SetPoints(pts)
+            # Get the inverse of the singlescan's transform
+            invTransform = vtk.vtkTransform()
+            invTransform.DeepCopy(ss.transform)
+            invTransform.Inverse()
+            tfilter = vtk.vtkTransformPolyDataFilter()
+            tfilter.SetTransform(invTransform)
+            tfilter.SetInputData(pdata)
+            tfilter.Update()
+            grid_ss = vtk_to_numpy(tfilter.GetOutput().GetPoints().GetData())
+           
+            # Return
+            return frac_exceed_max_diff, diff.T, grid_ss.copy()
 
-        # Return the diff
-        return frac_exceed_max_diff, diff
-    
+        else:
+            # Return the diff
+            return frac_exceed_max_diff, diff
+        
     def max_alignment_ss(self, project_name_0, project_name_1, scan_name,
-                         w0=5, w1=5, max_diff=0.1):
+                         w0=5, w1=5, max_diff=0.1, return_count=False):
         """
         Align singlescan with project 0 using local maxima as keypoints.
         
@@ -7798,13 +7832,17 @@ class ScanArea:
         max_diff : float, optional
             The max distance (in m) between two gridded local maxima for us
             to try to align them. The default is 0.1.
+        return_count : bool, optional
+            Whether or not to return the number of keypoint pairs as the 3rd
+            return. The default is False.
 
         Returns
         -------
-        ndarray, dict
+        ndarray, dict, int (optional)
             Returns the 4x4 array that transforms our singlescan's local
             maxima to align with project_0's local maxima. Also returns
-            history_dict for the transform
+            history_dict for the transform. Optionally returns the number of
+            keypoint pairs.
 
         """
         
@@ -7847,8 +7885,8 @@ class ScanArea:
         # Extract pairs of points that meet our max_diff criteria and name
         # according to Arun et al. (who we'll follow for the rigid alignment)
         sq_pwdist = np.square(ss_maxs - project_maxs).sum(axis=1)
-        psubi_prime = ss_maxs[sq_pwdist<=(max_diff**2), :].T
-        psubi = project_maxs[sq_pwdist<=(max_diff**2), :].T
+        psubi_prime = project_maxs[sq_pwdist<=(max_diff**2), :].T
+        psubi = ss_maxs[sq_pwdist<=(max_diff**2), :].T
         
         # Compute centroids
         p_prime = psubi_prime.mean(axis=1).reshape((3,1))
@@ -7894,7 +7932,10 @@ class ScanArea:
             "params": {"w0": w0, "w1": w1, "max_diff": max_diff}
             }
         
-        return A, history_dict
+        if return_count:
+            return A, history_dict, psubi.shape[1]
+        else:
+            return A, history_dict
     
     def kernel_alignment(self, project_name_0, project_name_1, bin_width=0.15, 
                          max_points=800000, max_dist=250, blur=0.005,
