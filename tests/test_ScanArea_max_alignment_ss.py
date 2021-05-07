@@ -59,3 +59,35 @@ A, history_dict, count = scan_area.max_alignment_ss(project_names[1],
 
 print(A)
 print(count)
+
+# %% repeat with just closest scan
+
+A, history_dict, count = scan_area.max_alignment_ss(project_names[1], 
+                                             project_names[0], 'ScanPos001',
+                                             return_count=True, use_closest=
+                                             True)
+
+# %% examine output
+
+print(A)
+print(count)
+
+# %% repeat using cylindrical divergence
+
+p_thresh = 0.1
+az_thresh = 0.0008
+z_intcpt = 0.02
+z_slope = 0.001
+
+A, history_dict, count = scan_area.max_alignment_ss(project_names[1], 
+                                             project_names[0], 'ScanPos001',
+                                             return_count=True, use_closest=
+                                             True, max_diff=None, p_thresh=
+                                             p_thresh, az_thresh=az_thresh,
+                                             z_intcpt=z_intcpt, z_slope=
+                                             z_slope)
+
+# %% examine output
+
+print(A)
+print(count)

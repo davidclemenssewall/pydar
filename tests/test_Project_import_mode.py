@@ -17,7 +17,7 @@ import pydar
 # %% location
 
 project_path = "/media/thayer/Data/mosaic_lidar/ROV"
-project_name = "mosaic_rov_190120.RiSCAN"
+project_name = "mosaic_rov_040120.RiSCAN"
 
 # %% Old fashioned init
 

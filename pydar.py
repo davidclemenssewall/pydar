@@ -1343,8 +1343,9 @@ class SingleScan:
             # Save Points
             np.save(os.path.join(write_dir, 'Points.npy'), self.dsa_raw.Points)
             # Save Normals
-            np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
-                self.polydata_raw.GetPointData().GetNormals()))
+            if not self.polydata_raw.GetPointData().GetNormals() is None:
+                np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
+                    self.polydata_raw.GetPointData().GetNormals()))
             # Save arrays
             for name in self.dsa_raw.PointData.keys():
                 np.save(os.path.join(write_dir, name), 
@@ -1359,9 +1360,10 @@ class SingleScan:
             # Save Points
             np.save(os.path.join(write_dir, 'Points.npy'), 
                     self.dsa_raw.Points[ind, :])
-            # Save Normals
-            np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
-                self.polydata_raw.GetPointData().GetNormals())[ind, :])
+            # Save Normals if we have them
+            if not self.polydata_raw.GetPointData().GetNormals() is None:
+                np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
+                    self.polydata_raw.GetPointData().GetNormals())[ind, :])
             # Save arrays
             for name in self.dsa_raw.PointData.keys():
                 np.save(os.path.join(write_dir, name), 
@@ -7803,7 +7805,9 @@ class ScanArea:
             return frac_exceed_max_diff, diff
         
     def max_alignment_ss(self, project_name_0, project_name_1, scan_name,
-                         w0=5, w1=5, max_diff=0.1, return_count=False):
+                         w0=5, w1=5, max_diff=0.1, return_count=False,
+                         use_closest=False, p_thresh=None, az_thresh=None,
+                         z_intcpt=None, z_slope=None):
         """
         Align singlescan with project 0 using local maxima as keypoints.
         
@@ -7835,6 +7839,25 @@ class ScanArea:
         return_count : bool, optional
             Whether or not to return the number of keypoint pairs as the 3rd
             return. The default is False.
+        use_closest : bool, optional
+            If True, just align off of the closest singlescan in project_0
+            as opposed to all of project_0. The default is False.
+        p_thresh : float, optional
+            Radial difference threshold for keypoint pairs if using 
+            cylindrical divergence. Will only be used if max_diff is None.
+            The default is None.
+        az_thresh : float, optional
+            Azimuthal difference threshold for keypoint pairs if using 
+            cylindrical divergence. Will only be used if max_diff is None.
+            The default is None.
+        z_intcpt : float, optional
+            Z intercept difference threshold for keypoint pairs if using 
+            cylindrical divergence. Will only be used if max_diff is None.
+            The default is None.
+        z_slope : float, optional
+            Z slope difference threshold for keypoint pairs if using 
+            cylindrical divergence. Will only be used if max_diff is None.
+            The default is None.
 
         Returns
         -------
@@ -7847,9 +7870,27 @@ class ScanArea:
         """
         
         # Get pointclouds and history_dicts
-        project_pdata, project_hist_dict = (self.project_dict[project_name_0]
-                                            .get_merged_points(history_dict=
-                                                               True))
+        if use_closest:
+            # Get the position of the scan we're aligning in common ref frame
+            pos = np.array(self.project_dict[project_name_1]
+                           .scan_dict[scan_name].transform.GetPosition())
+            # find the closest scan in project 0
+            dist = 1000
+            for scan_name_0 in self.project_dict[project_name_0].scan_dict:
+                p0 = np.array(self.project_dict[project_name_0]
+                              .scan_dict[scan_name_0].transform.GetPosition())
+                d0 = np.sqrt(np.square(p0 - pos).sum())
+                if d0<dist:
+                    dist = d0
+                    closest_scan = scan_name_0
+            project_pdata, project_hist_dict = (
+                self.project_dict[project_name_0].scan_dict[closest_scan]
+                .get_polydata(history_dict=True))
+        else:
+            project_pdata, project_hist_dict = (self
+                                                .project_dict[project_name_0]
+                                                .get_merged_points(
+                                                    history_dict=True))
         ss_pdata, ss_hist_dict = (self.project_dict[project_name_1]
                                   .scan_dict[scan_name].get_polydata(
                                       history_dict=True))
@@ -7884,9 +7925,43 @@ class ScanArea:
         
         # Extract pairs of points that meet our max_diff criteria and name
         # according to Arun et al. (who we'll follow for the rigid alignment)
-        sq_pwdist = np.square(ss_maxs - project_maxs).sum(axis=1)
-        psubi_prime = project_maxs[sq_pwdist<=(max_diff**2), :].T
-        psubi = ss_maxs[sq_pwdist<=(max_diff**2), :].T
+        # If we are just filtering point on the basis of max diff
+        if not (max_diff is None):
+            sq_pwdist = np.square(ss_maxs - project_maxs).sum(axis=1)
+            ind = sq_pwdist<=(max_diff**2)
+        # Otherwise, use the cylindrical divergence around ss
+        else:
+            pos = np.array(self.project_dict[project_name_1]
+                           .scan_dict[scan_name].transform.GetPosition()
+                           )[np.newaxis, :]
+            # Transform selected points to cylindrical reference frame
+            pos_pts0 = project_maxs[:,:2]-pos[:,:2]
+            cyl_pts0 = np.hstack((np.sqrt(np.square(pos_pts0).sum(axis=1))
+                                  [:, np.newaxis],
+                                  np.arctan2(pos_pts0[:,1], pos_pts0[:,0])
+                                  [:, np.newaxis],
+                                  (project_maxs[:,2] - pos[0,2])
+                                  [:, np.newaxis]))
+            pos_pts1 = ss_maxs[:,:2]-pos[:,:2]
+            cyl_pts1 = np.hstack((np.sqrt(np.square(pos_pts1).sum(axis=1))
+                                  [:, np.newaxis],
+                                  np.arctan2(pos_pts1[:,1], pos_pts1[:,0])
+                                  [:, np.newaxis],
+                                  (ss_maxs[:,2] - pos[0,2])[:, np.newaxis]))
+            # Get vectors between paired points in cylindrical coords
+            cyl_vec = cyl_pts1 - cyl_pts0
+            # handle case when azimuth's are on either side of pi
+            atol = 0.5
+            cyl_vec[np.isclose(cyl_vec[:,1], 2*np.pi, atol=atol)] -= 2*np.pi
+            cyl_vec[np.isclose(cyl_vec[:,1], -2*np.pi, atol=atol)] += 2*np.pi
+            # Subset to point pairs that meet radial, azimuthal, and z 
+            # tolerances
+            ind = ((cyl_vec[:,0]<p_thresh) & (cyl_vec[:,0]>-p_thresh)
+                    & (cyl_vec[:,1]<az_thresh) & (cyl_vec[:,1]>-az_thresh)
+                    & (cyl_vec[:,2]<(z_intcpt + z_slope*cyl_pts1[:,0])) 
+                    & (cyl_vec[:,2]>(-z_intcpt - z_slope*cyl_pts1[:,0])))
+        psubi_prime = project_maxs[ind, :].T
+        psubi = ss_maxs[ind, :].T
         
         # Compute centroids
         p_prime = psubi_prime.mean(axis=1).reshape((3,1))
