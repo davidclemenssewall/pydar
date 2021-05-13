@@ -4974,21 +4974,23 @@ class Project:
         renderWindow.Finalize()
         del renderWindow
         
-    def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, leafsize, 
-                               lengthscale, outputscale, yaw=0,
-                               corner_coords=None):
+    def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, lengthscale, 
+                               outputscale, nu, yaw=0, n_neighbors=50, 
+                               mx=32, my=32, eps=0, corner_coords=None):
         """
         Convert a rectangular area of points to an image using gpytorch.
         
-        Take a rectangular area, use a kd decomposition to break it up into
-        buckets of at most leafsize points. Then for each of these buckets
-        fit the points with a gaussian process using a matern (nu=1/2) kernel
-        aka exponential with lengthscale given by lengthscale, scaled by
-        outputscale and with a constant mean set to the mean of all of the
-        points in the bucket. The z uncertainties come from the z_sigma field
-        in the polydata. Evaluate this gaussian process on a regular grid and
-        get the uncertainty for each grid point. Save the result as an image.
-
+        Take a rectangular area, create an array of gridded coordinates where
+        we want to evaluate surface (grid_points). For each grid_point, find
+        the n_neighbors nearest neighbors in the lidar point cloud. Group
+        grid_points into squarish groups of mx x my grid_points. For each of
+        these M groups pool the nearest neighbors. Now we have groups of
+        at most mx x my x n_neighbors lidar points with which to estimate the
+        surface height and mx x my grid_points. For each M group, run 
+        gaussian process regression to estimate the surface height at the grid
+        points. Combine all grid points together into one image and save the
+        result in the self.image attribute.
+        
         Parameters
         ----------
         nx : int
@@ -5006,12 +5008,23 @@ class Project:
         yaw : float, optional
             yaw angle in degrees of image to create, for generating 
             non-axis aligned image. The default is 0.
-        leafsize : int
-            Maximum number of points for each leaf of the kdtree
         lengthscale : float
-            Length scale for the matern kernel in m. 10 seems reasonable.
+            Length scale for the matern kernel in m. 2 seems reasonable.
         outputscale : float
-            Outputscale for the scale kernel. Around 0.15 seems reasonable.
+            Outputscale for the scale kernel. Around 0.01 seems reasonable.
+        nu : float
+            Nu for the Matern kernel, must be one of 0.5, 1.5, or 2.5
+        n_neighbors: int, optional
+            Number of neighbors around each grid point. The default is 50.
+        mx : int, optional
+            Number of grid points in the x direction to group together in M
+            groups. The default is 32.
+        my : int, optional
+            Number of grid points in the y direction to group together in M
+            groups. The default is 32.
+        eps : float, optional
+            Eps for nearest neighbors search (see scipy.spatial.cKDTree) for
+            more details. The default is 0 (exact nearest neighbors)
         corner_coords : Nx3 array, optional
             Corner coordinates of selection if we want to limit output
 
@@ -5044,16 +5057,8 @@ class Project:
         # Get the points and the z_sigma as numpy arrays
         pts_np = vtk_to_numpy(imageTransformFilter.GetOutput().GetPoints()
                               .GetData())
-        norm_height_np = vtk_to_numpy(imageTransformFilter.GetOutput()
-                                  .GetPointData().GetArray('norm_height'))
-        norm_z_sigma_np = vtk_to_numpy(imageTransformFilter.GetOutput()
-                                  .GetPointData().GetArray('norm_z_sigma'))
-        # temporary fix for negative z_sigma values
-        ind = norm_z_sigma_np > 0
-        pts_np = pts_np[ind, :]
-        norm_height_np = norm_height_np[ind]
-        norm_z_sigma_np = norm_z_sigma_np[ind]
-        warnings.warn('Still has temporary fix for negative norm z sigma')
+        z_sigma_np = vtk_to_numpy(imageTransformFilter.GetOutput()
+                                  .GetPointData().GetArray('z_sigma'))
 
         # Create grid for image
         x_vals = np.arange(nx, dtype=np.float32) * dx
@@ -5096,66 +5101,55 @@ class Project:
             PointIds = vtk_to_numpy(extractPoints.GetOutput().GetPointData().
                                     GetArray('PointId'))
             grid_points = grid_points_all[PointIds,:]
-
-        # If All of the points would fit in one leaf, skip tree creation
-        if pts_np.shape[0]<=leafsize:
-            grid_mean, grid_lower, grid_upper = (
-                run_gp(pts_np, norm_height_np, grid_points, 
-                       norm_z_sigma=norm_z_sigma_np, lengthscale=lengthscale,
-                       outputscale=outputscale))
-        else:
-            # Create a kdtree from the points (xy only) and get python version
-            tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
-            ptree = tree.tree
-
-            # Define function for working with tree
-            def tree_gp(node, pts_np, norm_height_np, norm_z_sigma_np, 
-                        grid_points, lengthscale, outputscale, grid_mean, 
-                        grid_lower, grid_upper):
-                # If we are not at a leaf, call this function on each child
-                if not node.split_dim==-1:
-                    # Call this function on the lesser node
-                    tree_gp(node.lesser, pts_np, norm_height_np, 
-                            norm_z_sigma_np, grid_points, lengthscale, 
-                            outputscale, grid_mean, grid_lower, grid_upper)
-                    # Call this function on the greater node
-                    tree_gp(node.greater, pts_np, norm_height_np, 
-                            norm_z_sigma_np, grid_points, lengthscale, 
-                            outputscale, grid_mean, grid_lower, grid_upper)
-                else:
-                    # We are at a leaf. Apply GP
-
-                    ind = node.indices
-                    min_x = pts_np[ind,0].min()-dx
-                    max_x = pts_np[ind,0].max()+dx
-                    min_y = pts_np[ind,1].min()-dy
-                    max_y = pts_np[ind,1].max()+dy
         
-                    # Get grid points within this node
-                    grid_ind = ((grid_points[:,0]>=min_x) 
-                                & (grid_points[:,0]<=max_x)
-                                & (grid_points[:,1]>=min_y) 
-                                & (grid_points[:,1]<=max_y))
-                    
-                    (grid_mean[grid_ind], grid_lower[grid_ind], 
-                     grid_upper[grid_ind]) = run_gp(pts_np[ind], 
-                        norm_height_np[ind], grid_points[grid_ind], 
-                        norm_z_sigma=norm_z_sigma_np[ind], 
-                        lengthscale=lengthscale, outputscale=outputscale)
-            # Apply function to kdtree
-            grid_mean = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
-            grid_upper = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
-            grid_lower = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
-            tree_gp(ptree, pts_np, norm_height_np, norm_z_sigma_np, grid_points, 
-                    lengthscale, outputscale, grid_mean, grid_lower, grid_upper)
-
-        # convert from normalized space back to real space
-        grid_mean = inormalize(grid_mean, self.empirical_cdf[1], 
-                               self.empirical_cdf[2])
-        grid_lower = inormalize(grid_lower, self.empirical_cdf[1], 
-                                self.empirical_cdf[2])
-        grid_upper = inormalize(grid_upper, self.empirical_cdf[1], 
-                                self.empirical_cdf[2])
+        # Build a cKDTree from the xy coordinates of pts_np
+        kdtree = cKDTree(pts_np[:,:2])
+        
+        # Indices for stepping through grid_points in mx x my chunks
+        i_mx = 0
+        j_my = 0
+        ctr = 0
+        # Output
+        grid_mean = np.empty(nx*ny, dtype=np.float32) * np.nan
+        grid_lower = np.empty(nx*ny, dtype=np.float32) * np.nan
+        grid_upper = np.empty(nx*ny, dtype=np.float32) * np.nan
+        while ctr<(nx*ny):
+            # Get start and end indices for x and y values
+            x_s = mx*i_mx
+            x_e = nx if x_s+mx>nx else x_s+mx
+            y_s = my*j_my
+            y_e = ny if y_s+my>ny else y_s+my
+            step = (y_e-y_s)*(x_e-x_s)
+            
+            # Get the grid points in this chunk and use kdtree to pull point 
+            # indices
+            igridX, igridY = np.meshgrid(np.arange(x_s, x_e), 
+                                         np.arange(y_s, y_e))
+            ind = igridX + nx*igridY
+            ind = ind.ravel()
+            m_grid = grid_points[ind, :]
+            _, pt_ind = kdtree.query(m_grid, n_neighbors, eps=eps, workers=-1)
+            del _
+            pt_ind = np.unique(pt_ind.ravel())
+            
+            # Run our GP on this chunk and estimate values at grid points
+            # use indices from above to place output in the right places
+            grid_mean[ind], grid_lower[ind], grid_upper[ind] = run_gp(
+                pts_np[pt_ind,:], pts_np[pt_ind,2], m_grid,
+                z_sigma=z_sigma_np[pt_ind], lengthscale=lengthscale, 
+                outputscale=outputscale, nu=nu)
+            
+            # Move i_mx and j_my to the next grid_points group
+            if x_e==nx:
+                # If we are at the end of a row, return i_mx to 0 and 
+                # increment j_my
+                i_mx = 0
+                j_my += 1
+            else:
+                # Otherwise, just increment i_mx and leave j_my
+                i_mx += 1
+            # Increment counter
+            ctr += step
 
         # Now return to full domain
         if corner_coords is None:
@@ -5211,8 +5205,10 @@ class Project:
             "git_hash": get_git_hash(),
             "method": "Project.merged_points_to_image",
             "input_0": point_history_dict,
-            "params": {"x0": x0, "y0": y0, "yaw": yaw, "leafsize": leafsize,
-                        "lengthscale": lengthscale, "outputscale": outputscale}
+            "params": {"x0": x0, "y0": y0, "yaw": yaw, "lengthscale": 
+                       lengthscale, "outputscale": outputscale, "nu": nu,
+                       "n_neighbors": n_neighbors, "mx": mx, "my": my,
+                       "eps": eps, "corner_coords": corner_coords}
             }
 
         # Also wrap with a datasetadaptor for working with numpy
@@ -5331,11 +5327,11 @@ class Project:
             if nan_value:
                 field_np[np.isnan(field_np)] = nan_value
             else:
-                field_np[np.isnan(field_np)] = v_min
+                field_np[np.isnan(field_np)] = v_min - 0.1
             im.Modified()
             geometry = vtk.vtkImageDataGeometryFilter()
             geometry.SetInputData(im)
-            geometry.SetThresholdValue(v_min)
+            geometry.SetThresholdValue(v_min - 0.05)
             geometry.ThresholdCellsOn()
             geometry.Update()
             tri = vtk.vtkTriangleFilter()
@@ -5403,8 +5399,10 @@ class Project:
         
         if warp_scalars:
             mapper = vtk.vtkPolyDataMapper()
+            min_scalar = np.nanmin(vtk_to_numpy(self.image.GetPointData().
+                                                GetArray(field)))
             mapper.SetInputData(self.get_image(field, warp_scalars, 
-                                               v_min=z_min))
+                                               v_min=min_scalar))
             if not color_field is None:
                 mapper.GetInput().GetPointData().SetActiveScalars(color_field)
             
@@ -10368,8 +10366,8 @@ if 'gpytorch' in sys.modules:
             return gpytorch.distributions.MultivariateNormal(mean_x, 
                                                              covar_x)
 
-    def run_gp(pts, norm_height, grid_points, norm_z_sigma=None, 
-               lengthscale=None, mean=None, outputscale=None, nu=0.5, 
+    def run_gp(pts, height, grid_points, z_sigma=None, 
+               lengthscale=None, mean=None, outputscale=None, nu=1.5, 
                optimize=False, learning_rate=0.1, iter=None, max_time=60):
         """
         Run Gaussian Process to predict surface at grid_points.
@@ -10384,11 +10382,11 @@ if 'gpytorch' in sys.modules:
         pts : Nx2+ ndarray
             Location coordinates of the input data. Only the first two columns 
             will be used.
-        norm_height : Nx0 ndarray
-            Height (or response variable) in normalized space.
+        height : Nx0 ndarray
+            Height (or response variable).
         grid_points : Nx2 ndarray
             Location coordinates where we will predict the surface
-        norm_z_sigma : Nx0 ndarray, optional
+        z_sigma : Nx0 ndarray, optional
             Array with 1 st. dev. uncertainties for each point in the input. If 
             it is given we will use a FixedNoiseGaussianLikelihood with this 
             array as the fixed noise. If None, we will use a GaussianLikelihood.
@@ -10405,7 +10403,7 @@ if 'gpytorch' in sys.modules:
             the GPyTorch default. The default is None.
         nu : float, optional
             nu value of Matern kernel. It must be one of [0.5, 1.5, 2.5]. The
-            default is 0.5 (exponential kernel)
+            default is 1.5
         optimize : bool, optional
             Whether or not to search for optimal hyperparameters for the GP. The
             default is False.
@@ -10430,15 +10428,15 @@ if 'gpytorch' in sys.modules:
         # Move arrays to gpu
         device = torch.device('cuda:0')
         t_x = torch.tensor(pts[:,:2], device=device)
-        t_y = torch.tensor(norm_height, device=device)
+        t_y = torch.tensor(height, device=device)
 
         # Initialize the likelihood
-        if norm_z_sigma is None:
+        if z_sigma is None:
             # If no norm_z_sigma then we use a GaussianLikelihood
             likelihood = gpytorch.likelihoods.GaussianLikelihood().cuda()
         else:
             # use a fixedNoiseGaussianLikelihood with our noise.
-            t_z_sigma = torch.tensor(norm_z_sigma, device=device)
+            t_z_sigma = torch.tensor(z_sigma, device=device)
             likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
                 noise=t_z_sigma).cuda()
 
