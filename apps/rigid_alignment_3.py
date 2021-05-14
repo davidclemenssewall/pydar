@@ -18,7 +18,7 @@ import vtk
 import math
 import numpy as np
 from scipy.stats import mode
-from vtk.util.numpy_support import vtk_to_numpy
+from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 from vtk.numpy_interface import dataset_adapter as dsa
 from PyQt5 import Qt
 from collections import namedtuple
@@ -42,6 +42,173 @@ class MplCanvas(FigureCanvasQTAgg):
         fig = Figure(figsize=(width, height), dpi=dpi)
         self.axes = fig.add_subplot(111)
         super(MplCanvas, self).__init__(fig)
+
+class AreaPointList():
+    
+    def __init__(self):
+        """
+        
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.polyline = vtk.vtkPolyData()
+        # List for containing AreaPoint objects
+        self.list = []
+        # Qt objects
+        self.scroll = Qt.QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.inner = Qt.QFrame(self.scroll)
+        self.layout = Qt.QVBoxLayout()
+        self.inner.setLayout(self.layout)
+        self.scroll.setWidget(self.inner)
+        self.button_group = Qt.QButtonGroup()
+        
+        # Add first areapoint
+        self.add_areapoint()
+    
+    def get_scroll(self):
+        return self.scroll
+    
+    def add_areapoint(self):
+        self.list.append(AreaPoint(len(self.list), self))
+
+class AreaPoint():
+    
+    def __init__(self, position, areapointlist):
+        """
+        Create new AreaPoint
+
+        Parameters
+        ----------
+        position : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Our button starts empty
+        self.empty = True
+        self.position = position
+        self.areapointlist = areapointlist
+        
+        # Qt stuff
+        self.layout = Qt.QHBoxLayout()
+        self.radio = Qt.QRadioButton('empty')
+        self.layout.addWidget(self.radio)
+        self.areapointlist.button_group.addButton(self.radio)
+        self.radio.setChecked(True)
+        self.areapointlist.layout.addLayout(self.layout)
+    
+    def set_point(self, PointId, ss):
+        """
+        Set the point in the singlescan that we've picked
+
+        Parameters
+        ----------
+        PointId : int
+            PointId, see singlescan's pedigree ids.
+        ss : pydar.SingleScan
+            SingleScan object that the point belongs too.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if self.empty:
+            # If we were empty to begin with create buttons
+            up = Qt.QPushButton("up")
+            self.layout.addWidget(up)
+            up.clicked.connect(self.move_up)
+            down = Qt.QPushButton("down")
+            self.layout.addWidget(down)
+            down.clicked.connect(self.move_down)
+            delete = Qt.QPushButton("del")
+            self.layout.addWidget(delete)
+            delete.clicked.connect(self.delete)
+            
+            !!! Next step handle if we already had a point here
+        
+        # Set the button text to the single scan name
+        self.radio.text(ss.scan_name)
+        # Create VTK Selection pipeline
+        selectionList = numpy_to_vtk(np.array([PointId], dtype=np.uint32),
+                                     deep=True, 
+                                     array_type=vtk.VTK_UNSIGNED_INT)
+        selectionNode = vtk.vtkSelectionNode()
+        selectionNode.SetFieldType(vtk.vtkSelectionNode.POINT)
+        selectionNode.SetContentType(vtk.vtkSelectionNode.PEDIGREEIDS)
+        selection = vtk.vtkSelection()
+        selection.AddNode(selectionNode)
+        extractSelection = vtk.vtkExtractSelection()
+        extractSelection.SetInputData(1, selection)
+        extractSelection.SetInputConnection(0, ss.currentFilter
+                                            .GetOutputPort())
+        extractSelection.Update()
+        self.geoFilter = vtk.vtkGeometryFilter()
+        self.geoFilter.SetInputConnection(extractSelection.GetOutputPort())
+        self.geoFilter.Update()
+        
+        !!! Next step, render point, then deal with polyline
+        
+    
+    def move_up(self, s):
+        """
+        Tell our areapointlist to move this item up
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.areapointlist.move(self.position, 'up')
+    
+    def move_down(self, s):
+        """
+        Tell our areapointlist to move this item down
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.areapointlist.move(self.position, 'down')
+    
+    def delete(self, s):
+        """
+        
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        raise NotImplementedError()
 
 class MainWindow(Qt.QMainWindow):
     
@@ -305,8 +472,6 @@ class MainWindow(Qt.QMainWindow):
         opt_layout_2.addWidget(Qt.QLabel('Classes to Display:'))
         self.class_layout = Qt.QVBoxLayout()
         class_group_box = Qt.QGroupBox()
-        #self.class_button_group = Qt.QButtonGroup()
-        #self.class_button_group.setExclusive(0)
         # Dictionary object containing checkboxes keyed on classes (or 'all')
         self.class_check_dict = {}
         # Add 'all' class 
@@ -317,6 +482,13 @@ class MainWindow(Qt.QMainWindow):
         opt_layout_2.addWidget(class_group_box)
         update_class_button = Qt.QPushButton('Update Class Display')
         opt_layout_2.addWidget(update_class_button)
+        # Add interface for creating enclosed areas
+        opt_layout_2.addWidget(Qt.QLabel('Pointwise Area Selection'))
+        self.edit_area_check = Qt.QCheckBox('Edit Area Points')
+        opt_layout_2.addWidget(self.edit_area_check)
+        self.area_point_list = AreaPointList()
+        opt_layout_2.addWidget(self.area_point_list.get_scroll())
+        
 
         # Populate the main layout
         main_layout.addWidget(vis_splitter, stretch=5)
@@ -349,6 +521,7 @@ class MainWindow(Qt.QMainWindow):
         reset_param_button.clicked.connect(self.on_reset_param_button_click)
         # opt_layout_2
         update_class_button.clicked.connect(self.on_update_class_button_click)
+        self.edit_area_check.toggled.connect(self.on_edit_area_check_toggled)
         
         self.show()
         
@@ -989,6 +1162,34 @@ class MainWindow(Qt.QMainWindow):
         self.ss.create_solid_pipeline('Lime')
         self.renderer.AddActor(self.ss.actor)
         self.vtkWidget.GetRenderWindow().Render()
+    
+    def on_edit_area_check_toggled(self, checked):
+        """
+        Switch what we want picking a point to do from transects to area and
+        vice versa.
+
+        Parameters
+        ----------
+        checked : bool
+            Check button state.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if checked:
+            # Disable transect endpoint selection
+            for i in range(4):
+                self.point_button_group.button(i).setEnabled(0)
+            # Enable area selection
+        else:
+            # Enable transect endpoint selection
+            for i in range(4):
+                self.point_button_group.button(i).setEnabled(1)
+            # Disable area selection
+
 
     def look_down(self):
         """
