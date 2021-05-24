@@ -45,7 +45,7 @@ class MplCanvas(FigureCanvasQTAgg):
 
 class AreaPointList():
     
-    def __init__(self):
+    def __init__(self, vtkWidget):
         """
         
         Returns
@@ -54,6 +54,7 @@ class AreaPointList():
 
         """
         
+        self.vtkWidget = vtkWidget
         self.polyline = vtk.vtkPolyData()
         # List for containing AreaPoint objects
         self.list = []
@@ -74,6 +75,34 @@ class AreaPointList():
     
     def add_areapoint(self):
         self.list.append(AreaPoint(len(self.list), self))
+    
+    def update(self):
+        for ap in self.list:
+            if not ap.empty:
+                ap.actor.Update()
+        self.vtkWidget.GetRenderWindow().Render()
+    
+    def move(self, areapoint, direction):
+        # Get the current position of the areapoint object
+        ind = self.list.index(areapoint)
+        # Handle cases where we're at the edge of the list
+        if (ind==0) and (direction=='up'):
+            return
+        if (ind==(len(self.list)-2)) and (direction=='down'):
+            return
+        # Pop the element out of the list
+        areapoint = self.list.pop(ind)
+        # Remove the layout from the scroll
+        self.layout.removeItem(areapoint.layout)
+        if direction=='up':
+            # If we want to move up subtract from ind
+            self.list.insert(ind-1, areapoint)
+            self.layout.insertLayout(ind-1, areapoint.layout)
+        elif direction=='down':
+            # If we want to move up subtract from ind
+            self.list.insert(ind+1, areapoint)
+            self.layout.insertLayout(ind+1, areapoint.layout)
+        
 
 class AreaPoint():
     
@@ -105,7 +134,7 @@ class AreaPoint():
         self.radio.setChecked(True)
         self.areapointlist.layout.addLayout(self.layout)
     
-    def set_point(self, PointId, ss):
+    def set_point(self, PointId, ss, renderer):
         """
         Set the point in the singlescan that we've picked
 
@@ -115,7 +144,9 @@ class AreaPoint():
             PointId, see singlescan's pedigree ids.
         ss : pydar.SingleScan
             SingleScan object that the point belongs too.
-
+        renderer : vtk.vtkRenderer
+            Renderer object for the render window
+            
         Returns
         -------
         None.
@@ -133,11 +164,18 @@ class AreaPoint():
             delete = Qt.QPushButton("del")
             self.layout.addWidget(delete)
             delete.clicked.connect(self.delete)
-            
-            !!! Next step handle if we already had a point here
+            # Create a new empty area point
+            self.areapointlist.add_areapoint()
+            self.empty = False
+            # Connect with toggled slot
+            self.radio.toggled.connect(self.toggled)
+        else:
+            # remove the existing point from the renderer
+            renderer.RemoveActor(self.actor)
+            del self.actor
         
         # Set the button text to the single scan name
-        self.radio.text(ss.scan_name)
+        self.radio.setText(ss.scan_name)
         # Create VTK Selection pipeline
         selectionList = numpy_to_vtk(np.array([PointId], dtype=np.uint32),
                                      deep=True, 
@@ -145,6 +183,7 @@ class AreaPoint():
         selectionNode = vtk.vtkSelectionNode()
         selectionNode.SetFieldType(vtk.vtkSelectionNode.POINT)
         selectionNode.SetContentType(vtk.vtkSelectionNode.PEDIGREEIDS)
+        selectionNode.SetSelectionList(selectionList)
         selection = vtk.vtkSelection()
         selection.AddNode(selectionNode)
         extractSelection = vtk.vtkExtractSelection()
@@ -152,11 +191,19 @@ class AreaPoint():
         extractSelection.SetInputConnection(0, ss.currentFilter
                                             .GetOutputPort())
         extractSelection.Update()
-        self.geoFilter = vtk.vtkGeometryFilter()
-        self.geoFilter.SetInputConnection(extractSelection.GetOutputPort())
-        self.geoFilter.Update()
-        
-        !!! Next step, render point, then deal with polyline
+        geoFilter = vtk.vtkGeometryFilter()
+        geoFilter.SetInputConnection(extractSelection.GetOutputPort())
+        geoFilter.Update()
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(geoFilter.GetOutputPort())
+        mapper.SetScalarVisibility(0)
+        self.actor = vtk.vtkActor()
+        self.actor.SetMapper(mapper)
+        self.actor.GetProperty().RenderPointsAsSpheresOn()
+        self.actor.GetProperty().SetPointSize(20)
+        self.actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+        renderer.AddActor(self.actor)
+        #!!! Next step, render point, then deal with polyline
         
     
     def move_up(self, s):
@@ -174,7 +221,7 @@ class AreaPoint():
 
         """
         
-        self.areapointlist.move(self.position, 'up')
+        self.areapointlist.move(self, 'up')
     
     def move_down(self, s):
         """
@@ -191,7 +238,7 @@ class AreaPoint():
 
         """
         
-        self.areapointlist.move(self.position, 'down')
+        self.areapointlist.move(self, 'down')
     
     def delete(self, s):
         """
@@ -209,6 +256,29 @@ class AreaPoint():
         """
         
         raise NotImplementedError()
+    
+    def toggled(self, checked):
+        """
+        Change the color when we toggle the radio button
+
+        Parameters
+        ----------
+        checked : bool
+            Whether radio button is now checked or unchecked.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if checked:
+            #print('toggled on')
+            self.actor.GetProperty().SetColor(0.5, 0.5, 0.5)
+        else:
+            #print('toggled off')
+            self.actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+        self.areapointlist.vtkWidget.GetRenderWindow().Render()
 
 class MainWindow(Qt.QMainWindow):
     
@@ -292,7 +362,13 @@ class MainWindow(Qt.QMainWindow):
 
         # Create the Options layout, which will contain tools to select files
         # classify points, etc
+        # Some additions here to make this scrollable
+        opt_scroll = Qt.QScrollArea()
+        opt_scroll.setWidgetResizable(True)
+        opt_inner = Qt.QFrame(opt_scroll)
         opt_layout = Qt.QVBoxLayout()
+        opt_inner.setLayout(opt_layout)
+        opt_scroll.setWidget(opt_inner)
         
         # Populate the opt_layout
         
@@ -486,13 +562,14 @@ class MainWindow(Qt.QMainWindow):
         opt_layout_2.addWidget(Qt.QLabel('Pointwise Area Selection'))
         self.edit_area_check = Qt.QCheckBox('Edit Area Points')
         opt_layout_2.addWidget(self.edit_area_check)
-        self.area_point_list = AreaPointList()
+        self.area_point_list = AreaPointList(self.vtkWidget)
         opt_layout_2.addWidget(self.area_point_list.get_scroll())
         
 
         # Populate the main layout
         main_layout.addWidget(vis_splitter, stretch=5)
-        main_layout.addLayout(opt_layout)
+        #main_layout.addLayout(opt_layout)
+        main_layout.addWidget(opt_scroll)
         main_layout.addLayout(opt_layout_2)
         
         # Set layout for the frame and set central widget
@@ -725,7 +802,8 @@ class MainWindow(Qt.QMainWindow):
         self.scan_area = pydar.ScanArea(self.project_path)
         
         self.scan_area.add_project(project_name_0, import_mode='read_scan',
-                                   las_fieldnames=['Points', 'Classification'], 
+                                   las_fieldnames=['Points', 'Classification',
+                                                   'PointId'], 
                                    class_list='all', create_id=False,
                                    suffix=self.proj_suffix_0.text())
         self.scan_area.project_dict[project_name_0].read_transforms(
@@ -736,7 +814,7 @@ class MainWindow(Qt.QMainWindow):
         if not project_name_0==project_name_1:
             self.scan_area.add_project(project_name_1, import_mode=
                                        'read_scan', las_fieldnames=['Points',
-                                        'Classification'],
+                                        'Classification', 'PointId'],
                                        class_list='all', create_id=False,
                                        suffix=self.proj_suffix_1.text())
             
@@ -1416,24 +1494,40 @@ class MainWindow(Qt.QMainWindow):
         # Get the picked point
         pt = obj.GetPickPosition()
         
-        # Depending on which point we want to update, update that point
-        if self.point_button_group.checkedId()==0:
-            self.transect_dict['x0'].setText(str(pt[0]))
-            self.transect_dict['y0'].setText(str(pt[1]))
-            self.transect_dict['z0'].setText(str(pt[2]))
-        elif self.point_button_group.checkedId()==1:
-            self.transect_dict['x1'].setText(str(pt[0]))
-            self.transect_dict['y1'].setText(str(pt[1]))
-            self.transect_dict['z1'].setText(str(pt[2]))
-        elif self.point_button_group.checkedId()==2:
-            self.transect_dict['x2'].setText(str(pt[0]))
-            self.transect_dict['y2'].setText(str(pt[1]))
-            self.transect_dict['z2'].setText(str(pt[2]))
-        elif self.point_button_group.checkedId()==3:
-            self.transect_dict['x3'].setText(str(pt[0]))
-            self.transect_dict['y3'].setText(str(pt[1]))
-            self.transect_dict['z3'].setText(str(pt[2]))
-        self.update_trans_endpoints()
+        if self.edit_area_check.isChecked():
+            # Find the pedigree id of the point in the current singlescan
+            # That's closest to the picked point (usually this will be picked)
+            # point
+            ind = self.ss.currentFilter.GetOutput().FindPoint(pt)
+            PointId = vtk_to_numpy(self.ss.currentFilter.GetOutput()
+                                   .GetPointData().GetPedigreeIds())[ind]
+            # Find the checked area point and set it
+            for ap in self.area_point_list.list:
+                if ap.radio.isChecked():
+                    ap.set_point(PointId, self.ss, self.renderer)
+                    self.vtkWidget.GetRenderWindow().Render()
+                    break
+            
+        else:
+            # We are updating the transect endpoints
+            # Depending on which point we want to update, update that point
+            if self.point_button_group.checkedId()==0:
+                self.transect_dict['x0'].setText(str(pt[0]))
+                self.transect_dict['y0'].setText(str(pt[1]))
+                self.transect_dict['z0'].setText(str(pt[2]))
+            elif self.point_button_group.checkedId()==1:
+                self.transect_dict['x1'].setText(str(pt[0]))
+                self.transect_dict['y1'].setText(str(pt[1]))
+                self.transect_dict['z1'].setText(str(pt[2]))
+            elif self.point_button_group.checkedId()==2:
+                self.transect_dict['x2'].setText(str(pt[0]))
+                self.transect_dict['y2'].setText(str(pt[1]))
+                self.transect_dict['z2'].setText(str(pt[2]))
+            elif self.point_button_group.checkedId()==3:
+                self.transect_dict['x3'].setText(str(pt[0]))
+                self.transect_dict['y3'].setText(str(pt[1]))
+                self.transect_dict['z3'].setText(str(pt[2]))
+            self.update_trans_endpoints()
 
     def update_trans_endpoints(self):
         """
