@@ -55,7 +55,6 @@ class AreaPointList():
         """
         
         self.vtkWidget = vtkWidget
-        self.polyline = vtk.vtkPolyData()
         # List for containing AreaPoint objects
         self.list = []
         # Qt objects
@@ -77,9 +76,42 @@ class AreaPointList():
         self.list.append(AreaPoint(len(self.list), self))
     
     def update(self):
-        for ap in self.list:
-            if not ap.empty:
-                ap.actor.Update()
+        # Handle displaying polyline
+        renderer = (self.vtkWidget.GetRenderWindow().GetRenderers()
+                    .GetFirstRenderer())
+        if hasattr(self, 'actor'):
+            # If a polyline already exists, delete it
+            renderer.RemoveActor(self.actor)
+            del self.actor
+        if len(self.list)>=3:
+            # If we have at least two picked points create line and render
+            # Get the point coordinates for each area point
+            pts_np = np.empty((len(self.list)-1, 3), dtype=np.float32)
+            for i in np.arange(len(self.list)-1):
+                pts_np[i,:] = (self.list[i].actor.GetMapper().GetInput().
+                               GetPoint(0))
+            pts = vtk.vtkPoints()
+            pts.SetData(numpy_to_vtk(pts_np, deep=True, 
+                                     array_type=vtk.VTK_FLOAT))
+            pdata = vtk.vtkPolyData()
+            pdata.SetPoints(pts)
+            lines = vtk.vtkCellArray()
+            lines.InsertNextCell(len(self.list))
+            for i in np.arange(len(self.list)-1):
+                lines.InsertCellPoint(i)
+            lines.InsertCellPoint(0) # closing the loop
+            pdata.SetLines(lines)
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(pdata)
+            self.actor = vtk.vtkActor()
+            self.actor.SetMapper(mapper)
+            self.actor.GetProperty().SetLineWidth(5)
+            self.actor.GetProperty().SetColor(1.0, 1.0, 0.0)
+            self.actor.GetProperty().RenderLinesAsTubesOn()
+            renderer.AddActor(self.actor)
+        
+        
+        
         self.vtkWidget.GetRenderWindow().Render()
     
     def move(self, areapoint, direction):
@@ -103,6 +135,31 @@ class AreaPointList():
             self.list.insert(ind+1, areapoint)
             self.layout.insertLayout(ind+1, areapoint.layout)
         
+        self.update()
+    
+    def delete(self, areapoint):
+        # Get the current position of the areapoint object
+        ind = self.list.index(areapoint)
+        # Pop the element out of the list
+        areapoint = self.list.pop(ind)
+        # Remove button from button group
+        self.button_group.removeButton(areapoint.radio)
+        # Delete each item in the layout
+        while areapoint.layout.count()>0:
+            widget = areapoint.layout.takeAt(0).widget()
+            widget.deleteLater()
+        # Remove the layout from the scroll
+        self.layout.removeItem(areapoint.layout)
+        del areapoint.layout
+        # Remove point from renderwindow
+        renderer = (self.vtkWidget.GetRenderWindow().GetRenderers()
+                    .GetFirstRenderer())
+        renderer.RemoveActor(areapoint.actor)
+        del areapoint.actor
+        # Delete areapoint object, there should be no more references
+        del areapoint
+        
+        self.update()
 
 class AreaPoint():
     
@@ -201,10 +258,14 @@ class AreaPoint():
         self.actor.SetMapper(mapper)
         self.actor.GetProperty().RenderPointsAsSpheresOn()
         self.actor.GetProperty().SetPointSize(20)
-        self.actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+        if self.radio.isChecked():
+            self.actor.GetProperty().SetColor(0.5, 0.5, 0.5)
+        else:
+            self.actor.GetProperty().SetColor(1.0, 1.0, 1.0)
         renderer.AddActor(self.actor)
-        #!!! Next step, render point, then deal with polyline
         
+        # Update polyline
+        self.areapointlist.update()
     
     def move_up(self, s):
         """
@@ -255,7 +316,7 @@ class AreaPoint():
 
         """
         
-        raise NotImplementedError()
+        self.areapointlist.delete(self)
     
     def toggled(self, checked):
         """
@@ -1161,7 +1222,9 @@ class MainWindow(Qt.QMainWindow):
         # renderwindow
         self.ss.add_transform('app', M)
         self.ss.apply_transforms(['app'])
-        self.vtkWidget.GetRenderWindow().Render()
+        #self.vtkWidget.GetRenderWindow().Render()
+        # Update area point list
+        self.area_point_list.update()
 
 
     def on_reset_param_button_click(self, s):
@@ -1195,7 +1258,9 @@ class MainWindow(Qt.QMainWindow):
         self.param_dict['yaw'].setText(str(ori[2]))
 
         # Render
-        self.vtkWidget.GetRenderWindow().Render()
+        #self.vtkWidget.GetRenderWindow().Render()
+        # Update area point list
+        self.area_point_list.update()
         
     def on_update_class_button_click(self, s):
         """
