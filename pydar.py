@@ -4048,6 +4048,9 @@ class Project:
         Create reflectance for each scan.
     correct_reflectance_radial()
         Attempt to correct for reflectance bias due to distance from scanner.
+    areapoints_to_cornercoords(areapoints)
+        Given a set of points, identified by their scan names and point ids,
+        return the coordinates of those points in the current reference frame.
     """
     
     def __init__(self, project_path, project_name, poly='.1_.1_.01', 
@@ -7060,6 +7063,35 @@ class Project:
                                                                  r_max=r_max, 
                                                                  num=num, 
                                                                  base=base)
+    
+    def areapoints_to_cornercoords(self, areapoints):
+        """
+        Takes a set of areapoints given as scan_name, PointId pairs. Returns
+        the coordinates of these points in the current reference frame
+
+        Parameters
+        ----------
+        areapoints : List of tuples
+            List of area points in the desired order. Each point is a tuple
+            in which the zeroth element is the scan_name and the first
+            element is the PointId
+
+        Returns
+        -------
+        ndarray.
+            Nx3 array where N is the number of points.
+
+        """
+        
+        cornercoords = np.empty((len(areapoints), 3), dtype=np.float32)
+        # Step through areapoints and get each point
+        for i in np.arange(len(areapoints)):
+            pdata = self.scan_dict[areapoints[i][0]
+                                   ].transformFilter.GetOutput()
+            PointId = vtk_to_numpy(pdata.GetPointData().GetArray('PointId'))
+            pts = vtk_to_numpy(pdata.GetPoints().GetData())
+            cornercoords[i,:] = pts[PointId==areapoints[i][1],:]
+        return cornercoords
             
 
 class ScanArea:

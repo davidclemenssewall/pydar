@@ -17,6 +17,7 @@ import sys
 import vtk
 import math
 import numpy as np
+import pyperclip
 from scipy.stats import mode
 from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 from vtk.numpy_interface import dataset_adapter as dsa
