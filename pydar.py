@@ -5067,11 +5067,11 @@ class Project:
         x_vals = np.arange(nx, dtype=np.float32) * dx
         y_vals = np.arange(ny, dtype=np.float32) * dy
         X, Y = np.meshgrid(x_vals, y_vals)
-        grid_points_all = np.hstack((X.ravel()[:,np.newaxis], 
-                                    Y.ravel()[:,np.newaxis]))
+        grid_points = np.hstack((X.ravel()[:,np.newaxis], 
+                                 Y.ravel()[:,np.newaxis]))
         # If we have corner_coords, limit grid points to just be within them
         if corner_coords is None:
-            grid_points = grid_points_all
+            grid_points_mask = np.ones(grid_points.shape[0], dtype=np.bool)
         else:
             # Transform each point in corner_coords into image space
             pts = vtk.vtkPoints()
@@ -5080,11 +5080,11 @@ class Project:
                     corner_coords[i,0], corner_coords[i,1], corner_coords[i,2]))
             grid_points_all_vtk = vtk.vtkPoints()
             grid_points_all_vtk.SetData(numpy_to_vtk(np.hstack(
-                (grid_points_all, np.zeros((grid_points_all.shape[0],1)))),
-                                                    array_type=vtk.VTK_DOUBLE))
+                (grid_points, np.zeros((grid_points.shape[0],1)))),
+                                        array_type=vtk.VTK_DOUBLE))
             grid_points_pdata = vtk.vtkPolyData()
             grid_points_pdata.SetPoints(grid_points_all_vtk)
-            vtkarr = numpy_to_vtk(np.arange(grid_points_all.shape[0], 
+            vtkarr = numpy_to_vtk(np.arange(grid_points.shape[0], 
                                             dtype='uint64'), deep=True, 
                                   array_type=vtk.VTK_UNSIGNED_LONG)
             vtkarr.SetName('PointId')
@@ -5103,7 +5103,10 @@ class Project:
             # These are the indices of points inside our corner_coords
             PointIds = vtk_to_numpy(extractPoints.GetOutput().GetPointData().
                                     GetArray('PointId'))
-            grid_points = grid_points_all[PointIds,:]
+            #grid_points = grid_points_all[PointIds,:]
+            # Get as a mask of true or falses (for logical indexing)
+            grid_points_mask = np.isin(vtk_to_numpy(vtkarr), PointIds,
+                                       assume_unique=True)
         
         # Build a cKDTree from the xy coordinates of pts_np
         kdtree = cKDTree(pts_np[:,:2])
@@ -5130,6 +5133,9 @@ class Project:
                                          np.arange(y_s, y_e))
             ind = igridX + nx*igridY
             ind = ind.ravel()
+            # Subset to just those indices that are within corner coords
+            # that is, indices where grid_points_mask is True
+            ind = ind[grid_points_mask[ind]]
             m_grid = grid_points[ind, :]
             _, pt_ind = kdtree.query(m_grid, n_neighbors, eps=eps, workers=-1)
             del _
@@ -5154,6 +5160,7 @@ class Project:
             # Increment counter
             ctr += step
 
+        """
         # Now return to full domain
         if corner_coords is None:
             grid_mean_all = grid_mean
@@ -5169,6 +5176,7 @@ class Project:
             grid_mean_all[PointIds] = grid_mean
             grid_lower_all[PointIds] = grid_lower
             grid_upper_all[PointIds] = grid_upper
+        """
 
 
         # Create image
@@ -5179,22 +5187,22 @@ class Project:
         # Store np arrays related to mesh
         if not hasattr(self, 'np_dict'):
             self.np_dict = {}
-        self.np_dict['image_z'] = grid_mean_all
+        self.np_dict['image_z'] = grid_mean
         vtk_arr = numpy_to_vtk(self.np_dict['image_z'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('Elevation')
         self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_lower'] = grid_lower_all
+        self.np_dict['image_z_lower'] = grid_lower
         vtk_arr = numpy_to_vtk(self.np_dict['image_z_lower'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_lower')
         self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_upper'] = grid_upper_all
+        self.np_dict['image_z_upper'] = grid_upper
         vtk_arr = numpy_to_vtk(self.np_dict['image_z_upper'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_upper')
         self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_ci'] = grid_upper_all - grid_lower_all
+        self.np_dict['image_z_ci'] = grid_upper - grid_lower
         vtk_arr = numpy_to_vtk(self.np_dict['image_z_ci'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_ci')
