@@ -5921,8 +5921,8 @@ class Project:
         # Return once we are within tolerance
         return extractPoints.GetOutput(), d
                     
-    def merged_points_transect_gp(self, x0, y0, x1, y1, N, leafsize, key, 
-                                  d=None, n_pts=None, tol=1000, d0=0.5, dmax=50, 
+    def merged_points_transect_gp(self, x0, y0, x1, y1, N, key, 
+                                  mx=256, n_neighbors=256, eps=0,
                                   use_z_sigma=True, lengthscale=None, 
                                   outputscale=None, mean=None, nu=0.5,
                                   optimize=False, learning_rate=0.1, 
@@ -5942,24 +5942,17 @@ class Project:
             Coordinate in project reference frame.
         N : int
             Number of points to put in transect.
-        leafsize : int
-            Maximum number of points for each leaf of the kdtree
         key : const (str, tuple, etc)
             Key to store this profile in profile_dict under.
-        d : float, optional
-            Distance from transect to select points. Exactly one of d or n_pts
-            must be None. If this is None then we will search for the 
-            appropriate d. The default is None.
-        n_pts : int
-            Minimum number of points to acquire around transect. Exactly one of
-             d or n_pts must be None. The default is None.
-        tol : int, optional
-            Tolerance for number of points around transect to get. the default
-            is 1000.
-        d0 : float, optional
-            Starting distance. The default is 0.5.
-        dmax : float, optional
-            Max distance to look for points. the default is 50 m.
+        mx : int, optional
+            Number of transect points to estimate in each chunk. The default
+            is 256.
+        n_neighbors : int, optional
+            Number of neighbors around each transect point to use. The default
+            is 256
+        eps : float, optional
+            Eps for nearest neighbors search (see scipy.spatial.cKDTree) for
+            more details. The default is 0 (exact nearest neighbors)
         use_z_sigma : bool, optional
             Whether to use the computed pointwise uncertainties or not.
             Generally you should have a reason for not using them. If False we
@@ -5995,33 +5988,16 @@ class Project:
 
         """
         
-        
-        
-        # Get the points around the transect
-        if d and (n_pts is None):
-            pdata = self.transect_points(x0, y0, x1, y1, d)
-        elif n_pts and (d is None):
-            pdata, t_dist = self.transect_n_points(x0, y0, x1, y1, n_pts, 
-                                                   tol=tol, d0=d0, dmax=dmax)
-            #print(t_dist)
-        else:
-            raise ValueError('invalid combination of d and n_pts')
-        
+        # Get the points in this rectangular region
+        pdata, point_history_dict = self.get_merged_points(history_dict=True)
+
         # Get the points and the z_sigma as numpy arrays
         pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
-        norm_height_np = vtk_to_numpy(pdata.GetPointData()
-                                      .GetArray('norm_height'))
         if use_z_sigma:
-            norm_z_sigma_np = vtk_to_numpy(pdata.GetPointData()
-                                           .GetArray('norm_z_sigma'))
-            # temporary fix for negative z_sigma values
-            ind = norm_z_sigma_np > 0
-            pts_np = pts_np[ind, :]
-            norm_height_np = norm_height_np[ind]
-            norm_z_sigma_np = norm_z_sigma_np[ind]
-            warnings.warn('Still has temporary fix for negative norm z sigma')
+            z_sigma_np = vtk_to_numpy(pdata.GetPointData()
+                                    .GetArray('z_sigma'))
         else:
-            norm_z_sigma_np = None
+            z_sigma_np = None
         
         # Create transect points
         grid_points=np.hstack((np.linspace(x0, x1, N, dtype=np.float32)
@@ -6029,80 +6005,44 @@ class Project:
                                np.linspace(y0, y1, N, dtype=np.float32)
                                [:, np.newaxis]))
         
-        # If All of the points would fit in one leaf, skip tree creation
-        if pts_np.shape[0]<=leafsize:
-            grid_mean, grid_lower, grid_upper = (
-                run_gp(pts_np, norm_height_np, grid_points, 
-                       norm_z_sigma=norm_z_sigma_np, lengthscale=lengthscale,
-                       outputscale=outputscale, mean=mean, nu=nu, 
-                       optimize=optimize, learning_rate=learning_rate,
-                       iter=n_iter, max_time=max_time))
-        else:
-            # Create a kdtree from the points (xy only) and get python version
-            tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
-            ptree = tree.tree
+        # Indices for stepping through grid_points in mx x my chunks
+        i_mx = 0
+        ctr = 0
 
-            # Define function for working with tree
-            def tree_gp(node, pts_np, norm_height_np, norm_z_sigma_np, 
-                        grid_points, lengthscale, outputscale, grid_mean, 
-                        grid_lower, grid_upper):
-                # If we are not at a leaf, call this function on each child
-                if not node.split_dim==-1:
-                    # Call this function on the lesser node
-                    tree_gp(node.lesser, pts_np, norm_height_np, 
-                            norm_z_sigma_np, grid_points, lengthscale, 
-                            outputscale, grid_mean, grid_lower, grid_upper)
-                    # Call this function on the greater node
-                    tree_gp(node.greater, pts_np, norm_height_np, 
-                            norm_z_sigma_np, grid_points, lengthscale, 
-                            outputscale, grid_mean, grid_lower, grid_upper)
-                else:
-                    # We are at a leaf. Apply GP
+        # Build a cKDTree from the xy coordinates of pts_np
+        kdtree = cKDTree(pts_np[:,:2])
 
-                    ind = node.indices
-                    min_x = pts_np[ind,0].min()
-                    max_x = pts_np[ind,0].max()
-                    min_y = pts_np[ind,1].min()
-                    max_y = pts_np[ind,1].max()
-        
-                    # Get grid points within this node
-                    grid_ind = ((grid_points[:,0]>=min_x) 
-                                & (grid_points[:,0]<=max_x)
-                                & (grid_points[:,1]>=min_y) 
-                                & (grid_points[:,1]<=max_y))
-                    
-                    # Adapt for whether or not we're using z_sigma
-                    if use_z_sigma:
-                        nzs = norm_z_sigma_np[ind]
-                    else:
-                        nzs = None
-
-                    (grid_mean[grid_ind], grid_lower[grid_ind], 
-                     grid_upper[grid_ind]) = run_gp(pts_np[ind], 
-                                                   norm_height_np[ind],
-                                                   grid_points[grid_ind],
-                                                   norm_z_sigma=nzs, 
-                                                   lengthscale=lengthscale,
-                                                   outputscale=outputscale, 
-                                                   mean=mean, nu=nu, 
-                                                   optimize=optimize, 
-                                                   learning_rate=learning_rate, 
-                                                   iter=n_iter, 
-                                                   max_time=max_time)
-            # Apply function to kdtree
-            grid_mean = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
-            grid_upper = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
-            grid_lower = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
-            tree_gp(ptree, pts_np, norm_height_np, norm_z_sigma_np, grid_points, 
-                    lengthscale, outputscale, grid_mean, grid_lower, grid_upper)
-        
-        # convert from normalized space back to real space
-        grid_mean = inormalize(grid_mean, self.empirical_cdf[1], 
-                               self.empirical_cdf[2])
-        grid_lower = inormalize(grid_lower, self.empirical_cdf[1], 
-                                self.empirical_cdf[2])
-        grid_upper = inormalize(grid_upper, self.empirical_cdf[1], 
-                                self.empirical_cdf[2])
+        # Output
+        grid_mean = np.empty(N, dtype=np.float32) * np.nan
+        grid_lower = np.empty(N, dtype=np.float32) * np.nan
+        grid_upper = np.empty(N, dtype=np.float32) * np.nan
+        while ctr<N:
+            # Get start and end indices for x and y values
+            x_s = mx*i_mx
+            x_e = N if x_s+mx>N else x_s+mx
+            step = (x_e-x_s)
+            
+            # Get the grid points in this chunk and use kdtree to pull point 
+            # indices
+            ind = np.arange(x_s, x_e)
+            m_grid = grid_points[ind, :]
+            _, pt_ind = kdtree.query(m_grid, n_neighbors, eps=eps, workers=-1)
+            del _
+            pt_ind = np.unique(pt_ind.ravel())
+            
+            # Run our GP on this chunk and estimate values at grid points
+            # use indices from above to place output in the right places
+            grid_mean[ind], grid_lower[ind], grid_upper[ind] = run_gp(
+                pts_np[pt_ind,:], pts_np[pt_ind,2], m_grid,
+                z_sigma=None if z_sigma_np is None else z_sigma_np[pt_ind], 
+                lengthscale=lengthscale, outputscale=outputscale, mean=mean,
+                nu=nu, optimize=optimize, learning_rate=learning_rate,
+                iter=n_iter, max_time=max_time)
+            
+            # Move i_mx 
+            i_mx += 1
+            # Increment counter
+            ctr += step
         
         # create profile pdata
         self.profile_dict[key] = vtk.vtkPolyData()
