@@ -60,6 +60,7 @@ class AreaPointList():
         self.list = []
         # Qt objects
         self.scroll = Qt.QScrollArea()
+        self.scroll.setMinimumWidth(200)
         self.scroll.setWidgetResizable(True)
         self.inner = Qt.QFrame(self.scroll)
         self.layout = Qt.QVBoxLayout()
@@ -161,6 +162,21 @@ class AreaPointList():
         del areapoint
         
         self.update()
+    
+    def copy_areapoints(self):
+        # Create the list of tuples of the areapointlist as a string
+        
+        output = "["
+        
+        for ap in self.list:
+            if ap.empty:
+                continue
+            output += "('" + ap.radio.text() + "', " +str(ap.PointId)+ "),\n"
+        
+        output += "]"
+        
+        print(output)
+        pyperclip.copy(output)
 
 class AreaPoint():
     
@@ -183,6 +199,7 @@ class AreaPoint():
         self.empty = True
         self.position = position
         self.areapointlist = areapointlist
+        self.PointId = None
         
         # Qt stuff
         self.layout = Qt.QHBoxLayout()
@@ -211,15 +228,20 @@ class AreaPoint():
 
         """
         
+        self.PointId = PointId
+        
         if self.empty:
             # If we were empty to begin with create buttons
             up = Qt.QPushButton("up")
+            up.setMinimumWidth(40)
             self.layout.addWidget(up)
             up.clicked.connect(self.move_up)
             down = Qt.QPushButton("down")
+            down.setMinimumWidth(40)
             self.layout.addWidget(down)
             down.clicked.connect(self.move_down)
             delete = Qt.QPushButton("del")
+            delete.setMinimumWidth(40)
             self.layout.addWidget(delete)
             delete.clicked.connect(self.delete)
             # Create a new empty area point
@@ -626,7 +648,11 @@ class MainWindow(Qt.QMainWindow):
         opt_layout_2.addWidget(self.edit_area_check)
         self.area_point_list = AreaPointList(self.vtkWidget)
         opt_layout_2.addWidget(self.area_point_list.get_scroll())
-        
+        # Add buttons for copying selected points
+        copy_areapoints_button = Qt.QPushButton('Copy areapoints')
+        opt_layout_2.addWidget(copy_areapoints_button)
+        copy_cornercoords_button = Qt.QPushButton('Copy cornercoords')
+        opt_layout_2.addWidget(copy_cornercoords_button)
 
         # Populate the main layout
         main_layout.addWidget(vis_splitter, stretch=5)
@@ -661,6 +687,8 @@ class MainWindow(Qt.QMainWindow):
         # opt_layout_2
         update_class_button.clicked.connect(self.on_update_class_button_click)
         self.edit_area_check.toggled.connect(self.on_edit_area_check_toggled)
+        copy_areapoints_button.clicked.connect(
+            self.on_copy_areapoints_button_click)
         
         self.show()
         
@@ -1333,6 +1361,23 @@ class MainWindow(Qt.QMainWindow):
             for i in range(4):
                 self.point_button_group.button(i).setEnabled(1)
             # Disable area selection
+        
+    def on_copy_areapoints_button_click(self, s):
+        """
+        copy areapointlist to clipboard in convenient format
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.area_point_list.copy_areapoints()
 
 
     def look_down(self):
