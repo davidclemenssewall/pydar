@@ -6,6 +6,7 @@ Created on Tue May 25 16:33:20 2021
 @author: thayer
 """
 
+import time
 import sys
 sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
@@ -68,8 +69,15 @@ areapoints = [('ScanPos001', 7359197),
 ]
 
 cornercoords = project.areapoints_to_cornercoords(areapoints)
+print(cornercoords)
+#cornercoords[:,2] = 0
+#print(cornercoords)
 
 # %% Let's check if we manually filtered cornercoords correctly
+t0 = time.perf_counter()
+project.apply_manual_filter(cornercoords, mode='transformFilter')
+t1 = time.perf_counter()
+print(t1 - t0)
 
-project.apply_manual_filter(cornercoords)
+
 project.display_project(-4, -1, field='Classification')

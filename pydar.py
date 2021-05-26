@@ -2899,18 +2899,39 @@ class SingleScan:
         
         # Create implicit selection loop
         selectionLoop = vtk.vtkImplicitSelectionLoop()
+        selectionLoop.AutomaticNormalGenerationOff()
         selectionLoop.SetNormal(normal[0], normal[1], normal[2])
         selectionLoop.SetLoop(pts)
         
-        # Create Extract Points
-        extractPoints = vtk.vtkExtractPoints()
-        extractPoints.SetImplicitFunction(selectionLoop)
+        # The extract points function is just too slow with the entire 
+        # dataset. Let's see if we can quickly subset the points first.
         if mode=='currentFilter':
-            extractPoints.SetInputData(self.currentFilter.GetOutput())
+            pdata = self.currentFilter.GetOutput()
         elif mode=='transformFilter':
-            extractPoints.SetInputData(self.transformFilter.GetOutput())
+            pdata = self.transformFilter.GetOutput()
         else:
             raise ValueError('mode must be currentFilter or transformFilter')
+        minx, miny, _ = corner_coords.min(axis=0)
+        maxx, maxy, _ = corner_coords.max(axis=0)
+        pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
+        PointIds_np = vtk_to_numpy(pdata.GetPointData().GetArray('PointId'))
+        mask = ((pts_np[:,0]>=minx) & (pts_np[:,0]<=maxx) &
+                (pts_np[:,1]>=miny) & (pts_np[:,1]<=maxy))
+        pts_np = pts_np[mask, :]
+        PointIds_np = PointIds_np[mask]
+        pts = vtk.vtkPoints()
+        pts.SetData(numpy_to_vtk(pts_np, array_type=vtk.VTK_FLOAT))
+        pdata = vtk.vtkPolyData()
+        pdata.SetPoints(pts)
+        vtkarr = numpy_to_vtk(PointIds_np, array_type=vtk.VTK_UNSIGNED_INT)
+        vtkarr.SetName('PointId')
+        pdata.GetPointData().AddArray(vtkarr)
+        
+        # Create Extract Points
+        extractPoints = vtk.vtkExtractPoints()
+        extractPoints.GenerateVerticesOff()
+        extractPoints.SetImplicitFunction(selectionLoop)
+        extractPoints.SetInputData(pdata)
         extractPoints.Update()
         
         # If extractPoints has zero points in it then we can just return
