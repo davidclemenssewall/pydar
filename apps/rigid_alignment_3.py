@@ -16,6 +16,9 @@ Created on Fri Mar  26  2021
 import sys
 import vtk
 import math
+import json
+import os
+import warnings
 import numpy as np
 import pyperclip
 from scipy.stats import mode
@@ -139,6 +142,24 @@ class AreaPointList():
         
         self.update()
     
+    def insert_below(self, areapoint):
+        # Take the areapoint at the bottom of the list and move it below
+        # this areapoint
+        # Get the current position of the areapoint object
+        ind = self.list.index(areapoint)
+        # Handle case where we're at the edge of the list
+        if ind==(len(self.list)-2):
+            return
+        # Pop the bottom filled areapoint out of the list
+        b_areapoint = self.list.pop(-2)
+        # Remove the layout from the scroll
+        self.layout.removeItem(b_areapoint.layout)
+        # Insert areapoint and layout below this one
+        self.list.insert(ind+1, b_areapoint)
+        self.layout.insertLayout(ind+1, b_areapoint.layout)
+        
+        self.update()
+    
     def delete(self, areapoint):
         # Get the current position of the areapoint object
         ind = self.list.index(areapoint)
@@ -163,20 +184,33 @@ class AreaPointList():
         
         self.update()
     
-    def copy_areapoints(self):
-        # Create the list of tuples of the areapointlist as a string
+    def copy_areapoints(self, project_name):
+        # Create the list of lists of the areapointlist as a json string
         
-        output = "["
+        output = []
         
         for ap in self.list:
             if ap.empty:
                 continue
-            output += "('" + ap.radio.text() + "', " +str(ap.PointId)+ "),\n"
+            output.append((ap.radio.text(), int(ap.PointId)))
         
-        output += "]"
+        #print(output)
+        pyperclip.copy(json.dumps({project_name: output}, indent=4))
+    
+    def save_areapoints(self, project_name, path):
         
-        print(output)
-        pyperclip.copy(output)
+        # Write json formatted areapoints to file given by path
+        output = []
+        
+        for ap in self.list:
+            if ap.empty:
+                continue
+            output.append((ap.radio.text(), int(ap.PointId)))
+        
+        #print(output)
+        f = open(path, 'w')
+        json.dump({project_name: output}, f, indent=4)
+        f.close()
 
 class AreaPoint():
     
@@ -244,6 +278,10 @@ class AreaPoint():
             delete.setMinimumWidth(40)
             self.layout.addWidget(delete)
             delete.clicked.connect(self.delete)
+            ins = Qt.QPushButton("ins")
+            ins.setMinimumWidth(40)
+            self.layout.addWidget(ins)
+            ins.clicked.connect(self.insert_below)
             # Create a new empty area point
             self.areapointlist.add_areapoint()
             self.empty = False
@@ -340,6 +378,23 @@ class AreaPoint():
         """
         
         self.areapointlist.delete(self)
+    
+    def insert_below(self, s):
+        """
+        
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.areapointlist.insert_below(self)
     
     def toggled(self, checked):
         """
@@ -473,12 +528,12 @@ class MainWindow(Qt.QMainWindow):
         opt_layout.addWidget(self.proj_combobox_0)
         temp_layout = Qt.QHBoxLayout()
         temp_layout.addWidget(Qt.QLabel("Points Suffix:"))
-        self.proj_suffix_0 = Qt.QLineEdit('slfsnow')
+        self.proj_suffix_0 = Qt.QLineEdit('')
         temp_layout.addWidget(self.proj_suffix_0)
         opt_layout.addLayout(temp_layout)
         temp_layout = Qt.QHBoxLayout()
         temp_layout.addWidget(Qt.QLabel("Trans Suffix:"))
-        self.proj_t_suffix_0 = Qt.QLineEdit('slfsnow')
+        self.proj_t_suffix_0 = Qt.QLineEdit('')
         temp_layout.addWidget(self.proj_t_suffix_0)
         opt_layout.addLayout(temp_layout)
         proj_label_1 = Qt.QLabel("Project 1: ")
@@ -489,12 +544,12 @@ class MainWindow(Qt.QMainWindow):
         opt_layout.addWidget(self.proj_combobox_1)
         temp_layout = Qt.QHBoxLayout()
         temp_layout.addWidget(Qt.QLabel("Points Suffix:"))
-        self.proj_suffix_1 = Qt.QLineEdit('slfsnow')
+        self.proj_suffix_1 = Qt.QLineEdit('')
         temp_layout.addWidget(self.proj_suffix_1)
         opt_layout.addLayout(temp_layout)
         temp_layout = Qt.QHBoxLayout()
         temp_layout.addWidget(Qt.QLabel("Trans Suffix:"))
-        self.proj_t_suffix_1 = Qt.QLineEdit('slfsnow')
+        self.proj_t_suffix_1 = Qt.QLineEdit('')
         temp_layout.addWidget(self.proj_t_suffix_1)
         opt_layout.addLayout(temp_layout)
         
@@ -622,6 +677,8 @@ class MainWindow(Qt.QMainWindow):
             opt_layout.addLayout(temp_layout)
 
         # Create buttons for reseting or update transformation
+        copy_transform_button = Qt.QPushButton("Copy Transform")
+        opt_layout.addWidget(copy_transform_button)
         update_param_button = Qt.QPushButton("Update Transform")
         opt_layout.addWidget(update_param_button)
         reset_param_button = Qt.QPushButton("Reset Transform")
@@ -642,6 +699,17 @@ class MainWindow(Qt.QMainWindow):
         opt_layout_2.addWidget(class_group_box)
         update_class_button = Qt.QPushButton('Update Class Display')
         opt_layout_2.addWidget(update_class_button)
+        # Add interface for displaying elevation instead of solid color
+        elev_layout = Qt.QHBoxLayout()
+        self.elev_checkbox = Qt.QCheckBox("Elev. Range: ")
+        self.z_min = Qt.QLineEdit("-5.0")
+        self.z_min.setValidator(Qt.QDoubleValidator())
+        self.z_max = Qt.QLineEdit("-1.0")
+        self.z_max.setValidator(Qt.QDoubleValidator())
+        elev_layout.addWidget(self.elev_checkbox)
+        elev_layout.addWidget(self.z_min)
+        elev_layout.addWidget(self.z_max)
+        opt_layout_2.addLayout(elev_layout)
         # Add interface for creating enclosed areas
         opt_layout_2.addWidget(Qt.QLabel('Pointwise Area Selection'))
         self.edit_area_check = Qt.QCheckBox('Edit Area Points')
@@ -651,8 +719,22 @@ class MainWindow(Qt.QMainWindow):
         # Add buttons for copying selected points
         copy_areapoints_button = Qt.QPushButton('Copy areapoints')
         opt_layout_2.addWidget(copy_areapoints_button)
-        copy_cornercoords_button = Qt.QPushButton('Copy cornercoords')
-        opt_layout_2.addWidget(copy_cornercoords_button)
+        # copy_cornercoords_button = Qt.QPushButton('Copy cornercoords')
+        # opt_layout_2.addWidget(copy_cornercoords_button)
+        sel_area_dir_button = Qt.QPushButton("Select areapoint dir")
+        # Create the file dialog that we'll use
+        self.area_dialog = Qt.QFileDialog(self)
+        self.area_dialog.setDirectory('/media/thayer/Data/mosaic_lidar/')
+        self.area_dialog.setFileMode(4) # set file mode to pick directories
+        opt_layout_2.addWidget(sel_area_dir_button)
+        self.area_filename_lineedit = Qt.QLineEdit('areapoint filename')
+        opt_layout_2.addWidget(self.area_filename_lineedit)
+        save_areapoint_button = Qt.QPushButton('Save areapoints')
+        opt_layout_2.addWidget(save_areapoint_button)
+        delete_areapoints_button = Qt.QPushButton('Delete areapoints')
+        opt_layout_2.addWidget(delete_areapoints_button)
+        load_areapoint_button = Qt.QPushButton('Load areapoints')
+        opt_layout_2.addWidget(load_areapoint_button)
 
         # Populate the main layout
         main_layout.addWidget(vis_splitter, stretch=5)
@@ -682,13 +764,25 @@ class MainWindow(Qt.QMainWindow):
         z_align_button.clicked.connect(self.on_z_align_button_clicked)
         self.diff_mode_buttongroup.buttonPressed.connect(self.diff_mode_changed)
         z_update_button.clicked.connect(self.on_z_update_button_clicked)
+        copy_transform_button.clicked.connect(
+            self.on_copy_transform_button_click)
         update_param_button.clicked.connect(self.on_update_param_button_click)
         reset_param_button.clicked.connect(self.on_reset_param_button_click)
         # opt_layout_2
         update_class_button.clicked.connect(self.on_update_class_button_click)
+        self.elev_checkbox.toggled.connect(self.on_elev_checkbox_toggled)
+        self.z_min.editingFinished.connect(self.on_z_edit)
+        self.z_max.editingFinished.connect(self.on_z_edit)
         self.edit_area_check.toggled.connect(self.on_edit_area_check_toggled)
         copy_areapoints_button.clicked.connect(
             self.on_copy_areapoints_button_click)
+        sel_area_dir_button.clicked.connect(self.on_sel_area_dir_button_click)
+        self.area_dialog.fileSelected.connect(self.on_area_dir_selected)
+        save_areapoint_button.clicked.connect(
+            self.on_save_areapoint_button_click)
+        delete_areapoints_button.clicked.connect(
+            self.on_delete_areapoints_button)
+        load_areapoint_button.clicked.connect(self.on_load_areapoint_button)
         
         self.show()
         
@@ -768,7 +862,7 @@ class MainWindow(Qt.QMainWindow):
         self.vtkWidget.GetRenderWindow().AddRenderer(self.renderer)
         style = vtk.vtkInteractorStyleTrackballCamera()
         pointPicker = vtk.vtkPointPicker()
-        pointPicker.SetTolerance(0.03)
+        pointPicker.SetTolerance(0.01)
         pointPicker.AddObserver("EndPickEvent", self.on_end_pick)
         self.iren = self.vtkWidget.GetRenderWindow().GetInteractor()
         self.iren.SetPicker(pointPicker)
@@ -971,7 +1065,11 @@ class MainWindow(Qt.QMainWindow):
                 # Remove it's actor from the renderer
                 self.renderer.RemoveActor(self.ss.actor)
                 # Create pipeline add back to scan_dict
-                self.ss.create_solid_pipeline('Cyan')
+                if self.elev_checkbox.isChecked():
+                    self.ss.create_elevation_pipeline(float(self.z_min.text()),
+                                                      float(self.z_max.text()))
+                else:
+                    self.ss.create_solid_pipeline('cyan')
                 self.project_0.scan_dict[self.ss.scan_name] = self.ss
                 self.renderer.AddActor(self.ss.actor)
             self.renderer.RemoveActor(self.project_0.scan_dict[s].actor)
@@ -989,10 +1087,14 @@ class MainWindow(Qt.QMainWindow):
             
             # If we are looking at just one project, render all of the scans
             # from project 0 except the requested.
-        
+            
 
         # Create Actor and add to renderer
-        self.ss.create_solid_pipeline('Lime')
+        if self.elev_checkbox.isChecked():
+            self.ss.create_elevation_pipeline(float(self.z_min.text()),
+                                              float(self.z_max.text()))
+        else:
+            self.ss.create_solid_pipeline('Lime')
         self.renderer.AddActor(self.ss.actor)
 
         # Call on_reset_param_button_click to update entry fields and render
@@ -1119,9 +1221,8 @@ class MainWindow(Qt.QMainWindow):
         """
         
         # Get gridded difference
-        frac_exceed_max_diff, diff, grid = self.scan_area.z_alignment_ss(
-            self.project_0.project_name, self.project_1.project_name, 
-            self.ss.scan_name, float(self.z_align_dict['cell_w'].text()),
+        frac_exceed_max_diff, diff, grid = pydar.z_alignment_ss(
+            self.project_0, self.ss, float(self.z_align_dict['cell_w'].text()),
             float(self.z_align_dict['cell_w'].text()), 
             float(self.z_align_dict['min_dens'].text()), 
             float(self.z_align_dict['max_diff'].text()),
@@ -1200,6 +1301,32 @@ class MainWindow(Qt.QMainWindow):
             float(self.param_dict['dz'].text()) + float(self.z_change.text())))
         # Update transformation applied to scan
         self.on_update_param_button_click(1)
+    
+    def on_copy_transform_button_click(self, s):
+        """
+        Copy function call to the clipboard with the current transform
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        output = ('replace_current_transform(\n    "' + self.ss.project_path 
+                  + '",\n    "' + self.ss.project_name + '",\n    "' +
+                  self.ss.scan_name + '",\n    "' + self.proj_t_suffix_1.text()
+                  + '",\n    ' + self.param_dict['dx'].text() + ",\n    " +
+                  self.param_dict['dy'].text() + ",\n    " +
+                  self.param_dict['dz'].text() + ",\n    " +
+                  self.param_dict['roll'].text() + ",\n    " +
+                  self.param_dict['pitch'].text() + ",\n    " +
+                  self.param_dict['yaw'].text() + ")\n" )
+        pyperclip.copy(output)
         
     def on_update_param_button_click(self, s):
         """
@@ -1335,6 +1462,90 @@ class MainWindow(Qt.QMainWindow):
         self.renderer.AddActor(self.ss.actor)
         self.vtkWidget.GetRenderWindow().Render()
     
+    def on_elev_checkbox_toggled(self, checked):
+        """
+        Switch visualization to color by elevation
+
+        Parameters
+        ----------
+        checked : bool
+            Check button state.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if checked:
+            for scan_name in self.project_0.scan_dict:
+                self.renderer.RemoveActor(self.project_0.scan_dict[scan_name]
+                                          .actor)
+                self.project_0.scan_dict[scan_name].create_elevation_pipeline(
+                    float(self.z_min.text()), float(self.z_max.text()))
+                self.renderer.AddActor(self.project_0.scan_dict[scan_name]
+                                       .actor)
+            self.renderer.RemoveActor(self.ss.actor)
+            if self.project_0==self.project_1:
+                self.ss.create_elevation_pipeline(float(self.z_min.text()), 
+                                                  float(self.z_max.text()))
+            else:
+                for scan_name in self.project_1.scan_dict:
+                    (self.project_1.scan_dict[scan_name]
+                     .create_elevation_pipeline(float(self.z_min.text()), 
+                                                float(self.z_max.text())))
+            self.renderer.AddActor(self.ss.actor)
+        else:
+            for scan_name in self.project_0.scan_dict:
+                self.renderer.RemoveActor(self.project_0.scan_dict[scan_name]
+                                          .actor)
+                self.project_0.scan_dict[scan_name].create_solid_pipeline(
+                    "cyan")
+                self.renderer.AddActor(self.project_0.scan_dict[scan_name]
+                                       .actor)
+            self.renderer.RemoveActor(self.ss.actor)
+            if self.project_0==self.project_1:
+                self.ss.create_solid_pipeline("lime")
+            else:
+                for scan_name in self.project_1.scan_dict:
+                    self.project_1.scan_dict[scan_name].create_solid_pipeline(
+                        "lime")
+            self.renderer.AddActor(self.ss.actor)
+        self.vtkWidget.GetRenderWindow().Render()
+    
+    def on_z_edit(self):
+        """
+        Update elevation colorscale
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if self.elev_checkbox.isChecked():
+            if float(self.z_min.text())<float(self.z_max.text()):
+                for scan_name in self.project_0.scan_dict:
+                    self.project_0.scan_dict[scan_name].mapper.SetLookupTable(
+                        pydar.mplcmap_to_vtkLUT(float(self.z_min.text()),
+                                                float(self.z_max.text())))
+                    self.project_0.scan_dict[scan_name].mapper.SetScalarRange(
+                        float(self.z_min.text()), float(self.z_max.text()))
+                if self.project_0==self.project_1:
+                    self.ss.mapper.SetLookupTable(
+                        pydar.mplcmap_to_vtkLUT(float(self.z_min.text()),
+                                                float(self.z_max.text())))
+                    self.ss.mapper.SetScalarRange(
+                        float(self.z_min.text()), float(self.z_max.text()))
+                else:
+                    for scan_name in self.project_1.scan_dict:
+                        self.project_1.scan_dict[scan_name].mapper.SetLookupTable(
+                            pydar.mplcmap_to_vtkLUT(float(self.z_min.text()),
+                                                    float(self.z_max.text())))
+                        self.project_1.scan_dict[scan_name].mapper.SetScalarRange(
+                            float(self.z_min.text()), float(self.z_max.text()))
+                self.vtkWidget.GetRenderWindow().Render()
+    
     def on_edit_area_check_toggled(self, checked):
         """
         Switch what we want picking a point to do from transects to area and
@@ -1377,8 +1588,126 @@ class MainWindow(Qt.QMainWindow):
 
         """
         
-        self.area_point_list.copy_areapoints()
+        self.area_point_list.copy_areapoints(self.ss.project_name)
+    
+    def on_sel_area_dir_button_click(self, s):
+        """
+        Open file dialog to select scan area directory
 
+        Parameters
+        ----------
+        s : int
+            Button status. Not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.area_dialog.exec_()
+        
+    def on_area_dir_selected(self, dir_str):
+        """
+        Save the area directory path for when we want to save areapoints
+
+        Parameters
+        ----------
+        dir_str : str
+            filepath we just selected.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.areapoint_dir_str = dir_str
+    
+    def on_save_areapoint_button_click(self, s):
+        """
+        Write areapoints as a json formatted string to a file
+
+        Parameters
+        ----------
+        s : int
+            Button status not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        try:
+            path = os.path.join(self.areapoint_dir_str, 
+                                self.area_filename_lineedit.text())
+            self.area_point_list.save_areapoints(self.ss.project_name, path)
+        except:
+            warnings.warn('Save areapoints failed. Have you selected a '
+                          'directory?')
+    
+    def on_delete_areapoints_button(self, s):
+        """
+        Delete all areapoints
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        while len(self.area_point_list.list)>1:
+            self.area_point_list.delete(self.area_point_list.list[0])
+
+    def on_load_areapoint_button(self, s):
+        """
+        Load areapoints from file. Most useful if we have emptied the list
+        first
+
+        Parameters
+        ----------
+        s : int
+            Button status not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Try loading the file
+        try:
+            path = os.path.join(self.areapoint_dir_str, 
+                                self.area_filename_lineedit.text())
+            f = open(path, 'r')
+            areapoint_dict = json.load(f)
+            f.close()
+        except:
+            warnings.warn('File not found. Aborting')
+            return
+        
+        # Check that the project matches our project_1
+        if not (self.project_1.project_name in areapoint_dict):
+            warnings.warn('areapoints project does not match project 1.'
+                          + ' Aborting.')
+            return
+        
+        # For each areapoint in the list add it to self.area_point_list
+        # the only tricky part here is that we need to get the singlescan
+        # associated with it.
+        for scan_name, PointId in areapoint_dict[self.project_1.project_name]:
+            if scan_name==self.ss.scan_name:
+                ss = self.ss
+            else:
+                ss = self.project_1.scan_dict[scan_name]
+            self.area_point_list.list[-1].set_point(PointId, ss, self.renderer)
+        self.vtkWidget.GetRenderWindow().Render()
 
     def look_down(self):
         """

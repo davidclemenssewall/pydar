@@ -7040,7 +7040,7 @@ class Project:
 
         Parameters
         ----------
-        areapoints : List of tuples
+        areapoints : List of lists or tuples
             List of area points in the desired order. Each point is a tuple
             in which the zeroth element is the scan_name and the first
             element is the PointId
@@ -7928,6 +7928,9 @@ class ScanArea:
         if not (max_diff is None):
             sq_pwdist = np.square(ss_maxs - project_maxs).sum(axis=1)
             ind = sq_pwdist<=(max_diff**2)
+            if not (p_thresh is None):
+                warnings.warn('You have passed p_thresh without negating' +
+                              'max_diff, using max_diff')
         # Otherwise, use the cylindrical divergence around ss
         else:
             pos = np.array(self.project_dict[project_name_1]
@@ -10308,6 +10311,147 @@ def gridded_max_ind(points, edges):
     inds = cython_util.binwise_max_cy(nbin[0], nbin[1], points, np.int_(xy),
                                       init_val=points[:,2].min()-1)
     return inds
+
+def z_alignment_ss(project_0, ss,
+                              w0=10, w1=10, min_pt_dens=10, max_diff=0.15,
+                              bin_reduc_op='min', return_grid=False):
+        """
+        Align successive scans on the basis of their gridded minima
+        
+        ss version is for looking at the change in just a singlescan.
+        This version is for running outside of the scan_area object.
+
+        !This function does not modify the tiepoint locations so it should 
+        only be run after all tiepoint registration steps are done. It also
+        requires that there hasn't been ice deformation and will try to not
+        run if the fraction that changed by more than the diff cutoff exceeds
+        frac_exceed_diff_cutoff.
+        Parameters
+        ----------
+        project_0 : pydar.Project
+            The project to align to.
+        ss : pydar.SingleScan
+            The singlescan to align
+        w0 : float, optional
+            Grid cell width in x dimension (m). The default is 10.
+        w1 : float, optional
+            Grid cell width in y dimension (m). The default is 10.
+        min_pt_dens : float, optional
+            minimum density of points/m^2 for us to compare grid cells from
+            projects 0 and 1. The default is 30.
+        max_diff : float, optional
+            Maximum difference in minima to consider (higher values must be
+            noise) in m. The default is 0.1.
+        bin_reduc_op : str, optional
+            What type of gridded reduction to apply. Options are 'min', 'mean'
+            and 'mode'. The default is 'min'
+
+        Returns
+        -------
+        diff : ndarray
+            Array containing gridded minima differences
+
+        """
+        w = [w0, w1]
+        min_counts = min_pt_dens * w[0] * w[1]
+
+        # Get the merged points polydata, by not using port we should prevent
+        # this memory allocation from persisting
+        pdata_merged_project_0 = project_0.get_merged_points()
+        project_0_points_np = vtk_to_numpy(pdata_merged_project_0
+                                           .GetPoints().GetData())
+        # Get points as an array
+        ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
+                                    .GetData())
+        bounds = ss.currentFilter.GetOutput().GetBounds()
+        
+        # Create grid
+        edges = 2*[None]
+        nbin = np.empty(2, np.int_)
+
+        for i in range(2):
+            edges[i] = np.arange(int(np.ceil((bounds[2*i + 1] - 
+                                              bounds[2*i])/w[i]))
+                                 + 1, dtype=np.float32) * w[i] + bounds[2*i]
+            # Adjust lower edge so we don't miss lower most point
+            edges[i][0] = edges[i][0] - 0.0001
+            # Adjust uppermost edge so the bin width is appropriate
+            edges[i][-1] = bounds[2*i + 1] + 0.0001
+            nbin[i] = len(edges[i]) + 1
+        
+        # Get gridded counts and reduc op (using the same grid)
+        if bin_reduc_op=='min':
+            ss_counts, ss_arr = gridded_counts_mins(
+                ss_points_np, edges, np.float32(bounds[5] + 1))
+        elif bin_reduc_op=='mean':
+            ss_counts, ss_arr = gridded_counts_means(
+                ss_points_np, edges)
+        elif bin_reduc_op=='mode':
+            ss_counts, ss_arr = gridded_counts_modes(
+                ss_points_np, edges)
+        
+        # Get gridded counts and bin reduc
+        if bin_reduc_op=='min':
+            project_0_counts, project_0_arr = gridded_counts_mins(
+                project_0_points_np, edges, np.float32(bounds[5] + 1))
+        elif bin_reduc_op=='mean':
+            project_0_counts, project_0_arr = gridded_counts_means(
+                project_0_points_np, edges)
+        elif bin_reduc_op=='mode':
+            project_0_counts, project_0_arr = gridded_counts_modes(
+                project_0_points_np, edges)
+        else:
+            raise ValueError('bin_reduc_op must be min, mean or mode')
+        
+
+        # Compute differences of gridded minima
+        diff = ss_arr - project_0_arr
+        diff[project_0_counts < min_counts] = np.nan
+        diff[ss_counts < min_counts] = np.nan
+        if np.isnan(diff).all():
+            frac_exceed_max_diff = np.nan
+            warnings.warn("No overlap for " + ss.scan_name +
+                          " set z_offset to 0", UserWarning)
+        else:
+            frac_exceed_max_diff = ((np.abs(diff) > max_diff).sum()
+                                    /np.logical_not(np.isnan(diff)).sum())
+            diff[np.abs(diff) > max_diff] = np.nan
+            if np.isnan(diff).all():
+                warnings.warn("All diffs exceed max_diff")
+        
+        # If we want to return the grid as a pointcloud compute it here
+        if return_grid:
+            # Get the grid indices in the current reference frame
+            x_trans = (edges[0][:-1] + edges[0][1:])/2
+            y_trans = (edges[1][:-1] + edges[1][1:])/2
+            X_trans, Y_trans = np.meshgrid(x_trans, y_trans)
+            grid_trans = np.hstack((X_trans.ravel()[:,np.newaxis], 
+                                    Y_trans.ravel()[:,np.newaxis],
+                                    np.zeros((X_trans.size, 1)),
+                                    np.ones((X_trans.size, 1))))
+            grid_trans = np.hstack((X_trans.ravel()[:,np.newaxis], 
+                                    Y_trans.ravel()[:,np.newaxis],
+                                    np.zeros((X_trans.size, 1))))
+            pts = vtk.vtkPoints()
+            pts.SetData(numpy_to_vtk(grid_trans, array_type=vtk.VTK_DOUBLE))
+            pdata = vtk.vtkPolyData()
+            pdata.SetPoints(pts)
+            # Get the inverse of the singlescan's transform
+            invTransform = vtk.vtkTransform()
+            invTransform.DeepCopy(ss.transform)
+            invTransform.Inverse()
+            tfilter = vtk.vtkTransformPolyDataFilter()
+            tfilter.SetTransform(invTransform)
+            tfilter.SetInputData(pdata)
+            tfilter.Update()
+            grid_ss = vtk_to_numpy(tfilter.GetOutput().GetPoints().GetData())
+           
+            # Return
+            return frac_exceed_max_diff, diff.T, grid_ss.copy()
+
+        else:
+            # Return the diff
+            return frac_exceed_max_diff, diff.T
 
 def get_git_hash():
     """
