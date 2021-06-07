@@ -4999,8 +4999,9 @@ class Project:
         del renderWindow
         
     def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, lengthscale, 
-                               outputscale, nu, yaw=0, n_neighbors=50, 
-                               mx=32, my=32, eps=0, corner_coords=None):
+                               outputscale, nu, yaw=0, n_neighbors=50, max_pts=
+                               64000, mx=32, my=32, eps=0, corner_coords=None,
+                               max_dist=None):
         """
         Convert a rectangular area of points to an image using gpytorch.
         
@@ -5038,8 +5039,11 @@ class Project:
             Outputscale for the scale kernel. Around 0.01 seems reasonable.
         nu : float
             Nu for the Matern kernel, must be one of 0.5, 1.5, or 2.5
-        n_neighbors: int, optional
+        n_neighbors : int, optional
             Number of neighbors around each grid point. The default is 50.
+        max_pts : int, optional
+            If we have more points than max_pts, then reduce n_neigbors by
+            10% until we're within max_pts.
         mx : int, optional
             Number of grid points in the x direction to group together in M
             groups. The default is 32.
@@ -5157,17 +5161,27 @@ class Project:
             # Subset to just those indices that are within corner coords
             # that is, indices where grid_points_mask is True
             ind = ind[grid_points_mask[ind]]
-            m_grid = grid_points[ind, :]
-            _, pt_ind = kdtree.query(m_grid, n_neighbors, eps=eps, workers=-1)
-            del _
-            pt_ind = np.unique(pt_ind.ravel())
-            
-            # Run our GP on this chunk and estimate values at grid points
-            # use indices from above to place output in the right places
-            grid_mean[ind], grid_lower[ind], grid_upper[ind] = run_gp(
-                pts_np[pt_ind,:], pts_np[pt_ind,2], m_grid,
-                z_sigma=z_sigma_np[pt_ind], lengthscale=lengthscale, 
-                outputscale=outputscale, nu=nu)
+            # If ind is empty that means all grid points in this chunk have been
+            # masked, skip this chunk and go to the next one
+            if ind.size>0:
+                m_grid = grid_points[ind, :]
+                # This while loop enforces that we're below max_pts
+                while True:
+                    _, pt_ind = kdtree.query(m_grid, n_neighbors, eps=eps, 
+                                             workers=-1)
+                    del _
+                    pt_ind = np.unique(pt_ind.ravel())
+                    if pt_ind.size<max_pts:
+                        break
+
+                    n_neighbors = (n_neighbors*9)//10
+                    
+                # Run our GP on this chunk and estimate values at grid points
+                # use indices from above to place output in the right places
+                grid_mean[ind], grid_lower[ind], grid_upper[ind] = run_gp(
+                    pts_np[pt_ind,:], pts_np[pt_ind,2], m_grid,
+                    z_sigma=z_sigma_np[pt_ind], lengthscale=lengthscale, 
+                    outputscale=outputscale, nu=nu)
             
             # Move i_mx and j_my to the next grid_points group
             if x_e==nx:
@@ -5181,23 +5195,6 @@ class Project:
             # Increment counter
             ctr += step
 
-        """
-        # Now return to full domain
-        if corner_coords is None:
-            grid_mean_all = grid_mean
-            grid_lower_all = grid_lower
-            grid_upper_all = grid_upper
-        else:
-            grid_mean_all = np.ones(grid_points_all.shape[0], 
-                                    dtype=np.float32)*np.nan
-            grid_lower_all = np.ones(grid_points_all.shape[0], 
-                                     dtype=np.float32)*np.nan
-            grid_upper_all = np.ones(grid_points_all.shape[0], 
-                                     dtype=np.float32)*np.nan
-            grid_mean_all[PointIds] = grid_mean
-            grid_lower_all[PointIds] = grid_lower
-            grid_upper_all[PointIds] = grid_upper
-        """
 
 
         # Create image
