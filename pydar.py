@@ -5000,8 +5000,11 @@ class Project:
         
     def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, lengthscale, 
                                outputscale, nu, yaw=0, n_neighbors=50, max_pts=
-                               64000, mx=32, my=32, eps=0, corner_coords=None,
-                               max_dist=None):
+                               64000, min_pts=100, mx=32, my=32, eps=0, 
+                               corner_coords=None,
+                               max_dist=None, optimize=False, learning_rate=0.1,
+                               n_iter=5, max_time=0.5, optim_param=None,
+                               multiply_outputscale=False, var_radius=None):
         """
         Convert a rectangular area of points to an image using gpytorch.
         
@@ -5042,8 +5045,12 @@ class Project:
         n_neighbors : int, optional
             Number of neighbors around each grid point. The default is 50.
         max_pts : int, optional
-            If we have more points than max_pts, then reduce n_neigbors by
+            If a chunk has more points than max_pts, then reduce n_neighbors by
             10% until we're within max_pts.
+        min_pts : int, optional
+            If a chunk has fewer points than min_pts, increase n_neighbors by
+            10% until we're greater than min_pts.
+
         mx : int, optional
             Number of grid points in the x direction to group together in M
             groups. The default is 32.
@@ -5055,6 +5062,31 @@ class Project:
             more details. The default is 0 (exact nearest neighbors)
         corner_coords : Nx3 array, optional
             Corner coordinates of selection if we want to limit output
+        optimize : bool, optional
+            Whether or not to search for optimal hyperparameters for the GP. The
+            default is False.
+        learning_rate : float, optional
+            The learning rate if we are optimizing (currently just using ADAM). 
+            The default is 0.1.
+        n_iter : int, optional
+            The number of iterations to run optimizer for. Note that we will 
+            only ever run optimizer for max_time. The default is None.
+        max_time : float, optional
+            The maximum amount of time (in seconds) to run an optimization for. 
+            The default is 60.
+        optim_param : list, optional
+            The parameters to optimize, as a list of dicts. If None, we will
+            optimize across all parameters. The default is None.
+        multiply_outputscale : bool, optional
+            If True, set outputscale for each chunk to be outputscale times
+            the variance of the z-values of points in that chunk. The default 
+            is False.
+        var_radius : float, optional
+            If this is given and multiply_outputscale is True, instead of 
+            using the variance of the points in the chunk, we use the variance
+            of the z values of points within var_radius of the centroid of
+            the chunk. The default is None.
+
 
         Returns
         -------
@@ -5132,6 +5164,20 @@ class Project:
             # Get as a mask of true or falses (for logical indexing)
             grid_points_mask = np.isin(vtk_to_numpy(vtkarr), PointIds,
                                        assume_unique=True)
+        # If we have set max_dist, limit grid_points_mask to be within max_dist
+        if not (max_dist is None):
+            dist_mask = np.zeros(grid_points.shape[0], dtype=np.bool)
+            for scan_name in self.scan_dict:
+                # For each scan, get scanner position image coordinates
+                scan_pos = np.array(self.imageTransform.TransformPoint(
+                            self.scan_dict[scan_name].transform.GetPosition())
+                            )[np.newaxis,:2]
+                # set all points that are within max_dist of scanner to True
+                dist_mask = dist_mask | (
+                            np.square(grid_points - scan_pos).sum(axis=1)
+                                <=max_dist**2)
+            grid_points_mask = grid_points_mask & dist_mask
+
         
         # Build a cKDTree from the xy coordinates of pts_np
         kdtree = cKDTree(pts_np[:,:2])
@@ -5144,7 +5190,13 @@ class Project:
         grid_mean = np.empty(nx*ny, dtype=np.float32) * np.nan
         grid_lower = np.empty(nx*ny, dtype=np.float32) * np.nan
         grid_upper = np.empty(nx*ny, dtype=np.float32) * np.nan
+        gp_mean = np.empty(nx*ny, dtype=np.float32) * np.nan
+        gp_outputscale = np.empty(nx*ny, dtype=np.float32) * np.nan
+        gp_lengthscale = np.empty(nx*ny, dtype=np.float32) * np.nan
         while ctr<(nx*ny):
+            if ctr%1000==0:
+                print(ctr)
+
             # Get start and end indices for x and y values
             x_s = mx*i_mx
             x_e = nx if x_s+mx>nx else x_s+mx
@@ -5166,22 +5218,57 @@ class Project:
             if ind.size>0:
                 m_grid = grid_points[ind, :]
                 # This while loop enforces that we're below max_pts
+                c_n_neighbors = n_neighbors
                 while True:
-                    _, pt_ind = kdtree.query(m_grid, n_neighbors, eps=eps, 
+                    _, pt_ind = kdtree.query(m_grid, c_n_neighbors, eps=eps, 
                                              workers=-1)
                     del _
                     pt_ind = np.unique(pt_ind.ravel())
                     if pt_ind.size<max_pts:
                         break
 
-                    n_neighbors = (n_neighbors*9)//10
-                    
+                    c_n_neighbors = (c_n_neighbors*9)//10
+                # This while loop enforces that we're greater than min_pts
+                while len(pt_ind)<min_pts:
+                    c_n_neighbors = (c_n_neighbors*11)//10
+                    _, pt_ind = kdtree.query(m_grid, c_n_neighbors, eps=eps, 
+                                             workers=-1)
+                    del _
+                    pt_ind = np.unique(pt_ind.ravel())
+                
+                # If we are using a non-constant outputscale
+                if multiply_outputscale:
+                    # if we have no var_radius, set to multiple of variance
+                    # of points in chunk
+                    if var_radius is None:
+                        c_outputscale = outputscale * pts_np[pt_ind,2].var()
+                    else:
+                        # query points around centroid of grid points and
+                        # and multiply their variance by outputscale
+                        # If there are few points within this radius increase it
+                        var_ind = []
+                        cntr = m_grid.mean(axis=0)
+                        c_var_radius = var_radius
+                        while len(var_ind)<1000:
+                            var_ind = kdtree.query_ball_point(cntr,
+                                                            r=c_var_radius,
+                                                            eps=0.2, workers=-1)
+                            c_var_radius = c_var_radius * 1.1
+
+                        c_outputscale = outputscale * pts_np[np.array(var_ind), 
+                                                            2].var()
+
                 # Run our GP on this chunk and estimate values at grid points
                 # use indices from above to place output in the right places
-                grid_mean[ind], grid_lower[ind], grid_upper[ind] = run_gp(
+                grid_mean[ind], grid_lower[ind], grid_upper[ind], m, v, l = run_gp(
                     pts_np[pt_ind,:], pts_np[pt_ind,2], m_grid,
                     z_sigma=z_sigma_np[pt_ind], lengthscale=lengthscale, 
-                    outputscale=outputscale, nu=nu)
+                    outputscale=c_outputscale, nu=nu, optimize=optimize,
+                    learning_rate=learning_rate, iter=n_iter, max_time=max_time,
+                    optim_param=optim_param, multiply_outputscale=False)
+                gp_mean[ind] = np.float32(m)
+                gp_outputscale[ind] = np.float32(v)
+                gp_lengthscale[ind] = np.float32(l)
             
             # Move i_mx and j_my to the next grid_points group
             if x_e==nx:
@@ -5225,6 +5312,21 @@ class Project:
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_ci')
         self.image.GetPointData().AddArray(vtk_arr)
+        self.np_dict['gp_mean'] = gp_mean
+        vtk_arr = numpy_to_vtk(self.np_dict['gp_mean'], deep=False, 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('gp_mean')
+        self.image.GetPointData().AddArray(vtk_arr)
+        self.np_dict['gp_outputscale'] = gp_outputscale
+        vtk_arr = numpy_to_vtk(self.np_dict['gp_outputscale'], deep=False, 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('gp_outputscale')
+        self.image.GetPointData().AddArray(vtk_arr)
+        self.np_dict['gp_lengthscale'] = gp_lengthscale
+        vtk_arr = numpy_to_vtk(self.np_dict['gp_lengthscale'], deep=False, 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('gp_lengthscale')
+        self.image.GetPointData().AddArray(vtk_arr)
         self.image.GetPointData().SetActiveScalars('Elevation')
         self.image.Modified()
 
@@ -5234,8 +5336,7 @@ class Project:
             "git_hash": get_git_hash(),
             "method": "Project.merged_points_to_image",
             "input_0": point_history_dict,
-            "params": {"x0": x0, "y0": y0, "yaw": yaw, "lengthscale": 
-                       lengthscale, "outputscale": outputscale, "nu": nu,
+            "params": {"x0": x0, "y0": y0, "yaw": yaw, "nu": nu,
                        "n_neighbors": n_neighbors, "mx": mx, "my": my,
                        "eps": eps, "corner_coords": corner_coords}
             }
@@ -10129,6 +10230,34 @@ def radial_spacing(r, dtheta=0.025, dphi=0.025, scanner_height=2.5, slope=0):
     
     return spac
 
+def matern_semivariance(theta_1, theta_2, h, nu):
+    """
+    Computes the semivariance at lag h for C(0)=theta_1 and lengthscale theta_2
+    
+    From Gelfand et al. Handbook of Spatial Statistics pg. 37
+    
+    Parameters:
+    -----------
+    theta_1 : array
+        Array of variances, must be same size as theta_2.
+    theta_2 : array
+        Array of lengthscales, must be same size as theta_1.
+    h : float
+        Lag distance at which to compute semivariance.
+    nu : float
+        Matern nu.
+
+    Returns:
+    --------
+        Array of semivariances at lag distance h, for all theta_1, theta_2
+
+    """
+
+    if nu==0.5:
+        return theta_1 * (1 - np.exp(-h/theta_2))
+    else:
+        raise NotImplementedError()
+
 ##### Functions that require cython_util
 
 def gridded_counts_mins(points, edges, init_val=np.float32(1000)):
@@ -10510,7 +10639,8 @@ if 'gpytorch' in sys.modules:
 
     def run_gp(pts, height, grid_points, z_sigma=None, 
                lengthscale=None, mean=None, outputscale=None, nu=1.5, 
-               optimize=False, learning_rate=0.1, iter=None, max_time=60):
+               optimize=False, learning_rate=0.1, iter=None, max_time=60,
+               optim_param=None, multiply_outputscale=False):
         """
         Run Gaussian Process to predict surface at grid_points.
 
@@ -10558,10 +10688,18 @@ if 'gpytorch' in sys.modules:
         max_time : float, optional
             The maximum amount of time (in seconds) to run an optimization for. 
             The default is 60.
+        optim_param : list, optional
+            The parameters to optimize, as a list of dicts. If None, we will
+            optimize across all parameters. The default is None.
+        multiply_outputscale : bool, optional
+            If True, set outputscale for each chunk to be outputscale times
+            the variance of the z-values of points in that chunk. The default 
+            is False.
+
 
         Returns:
         --------
-        grid_mean, grid_lower, grid_upper
+        grid_mean, grid_lower, grid_upper, mean, outputscale, lengthscale
             Tuple of 3 1D arrays with the predicted values and lower and upper
             confidence intervals at each of grid_points.
 
@@ -10582,6 +10720,10 @@ if 'gpytorch' in sys.modules:
             likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
                 noise=t_z_sigma).cuda()
 
+        # If we have multiply outputscale True adjust accordingly
+        if multiply_outputscale:
+            outputscale = outputscale * torch.var(t_y)
+
         # Initialize Model, using our class defined above
         model = ExactGPModel(t_x, t_y, likelihood, lengthscale=lengthscale,
                          mean=mean, outputscale=outputscale, nu=nu).cuda()
@@ -10593,8 +10735,23 @@ if 'gpytorch' in sys.modules:
             likelihood.train()
 
             # Create adam optimizer
-            optimizer = torch.optim.Adam([{'params': model.parameters()},], 
-                                         lr=learning_rate)
+            if optim_param is None:
+                optimizer = torch.optim.Adam([{'params': model.parameters()},], 
+                                             lr=learning_rate)
+            else:
+                def param_parser(model, p):
+                    if p=='mean':
+                        return model.mean_module.constant
+                    elif p=='lengthscale':
+                        return model.covar_module.base_kernel.raw_lengthscale
+                    else:
+                        raise RuntimeError('Param ' + p + ' not implemented')
+                param_list = []
+                for param_dict in optim_param:
+                    param_list.append({'params': param_parser(model, 
+                                                              param_dict['p']),
+                                       'lr': param_dict['lr']})
+                optimizer = torch.optim.Adam(param_list, lr=learning_rate)
 
             # 'Loss' for GP is the marginal log likelihood
             mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
@@ -10631,4 +10788,7 @@ if 'gpytorch' in sys.modules:
                 'cpu')).numpy()
 
         # The lower bound is 2 standard deviations below the mean
-        return grid_mean, grid_lower, grid_upper
+        return (grid_mean, grid_lower, grid_upper, 
+                model.mean_module.constant.item(),
+                model.covar_module.outputscale.item(),
+                model.covar_module.base_kernel.lengthscale.item())
