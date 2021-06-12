@@ -831,6 +831,8 @@ class SingleScan:
         Classify points by a selection loop.
     random_voxel_downsample_filter(wx, wy, wz, seed=1234)
         Subset the filtered pointcloud randomly by voxels. Replaces Polydata!!
+    apply_man_class()
+        For points that we have manually classified, set their classification.
     clear_classification
         Reset all Classification values to 0.
     update_man_class(pdata, classification)
@@ -2091,6 +2093,36 @@ class SingleScan:
             "input_0": json.loads(json.dumps(self.raw_history_dict))
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
+    
+    def apply_man_class(self):
+        """
+        Set the classification of manually classified points in polydata_raw
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Get the unique classes in man_class table
+        unique_classes = np.unique(self.man_class['Classification'])
+        
+        # For each class, get the pointids from 
+        for uq in unique_classes:
+            # Get pointIds for points with given classification
+            PointIdsClass = np.uint32(self.man_class.index.values[
+                np.where(self.man_class['Classification']==uq)[0]])
+            # Set those points in polydata_raw to their classification
+            Classification = vtk_to_numpy(self.polydata_raw.GetPointData()
+                                          .GetArray('Classification'))
+            PointIds = vtk_to_numpy(self.polydata_raw.GetPointData()
+                                          .GetArray('PointId'))
+            Classification[np.isin(PointIds, PointIdsClass, assume_unique=True)
+                           ] = np.uint8(uq)
+        
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
     
     def update_man_class(self, pdata, classification):
         """
@@ -4302,6 +4334,19 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].load_man_class()
     
+    def apply_man_class(self):
+        """
+        Update all point Classifications with their values in man_class
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].apply_man_class()
+    
     def create_normals(self, radius=2, max_nn=30):
         """
         Use Open3d to compute pointwise normals and store.
@@ -5193,9 +5238,12 @@ class Project:
         gp_mean = np.empty(nx*ny, dtype=np.float32) * np.nan
         gp_outputscale = np.empty(nx*ny, dtype=np.float32) * np.nan
         gp_lengthscale = np.empty(nx*ny, dtype=np.float32) * np.nan
+        total_points = grid_points_mask.sum()
+        t0 = time.perf_counter()
         while ctr<(nx*ny):
             if ctr%1000==0:
-                print(ctr)
+                print(str(ctr) + ' / ' + str(total_points) + ' ~time: ' 
+                      + str((total_points-ctr)*(time.perf_counter - t0)/ctr))
 
             # Get start and end indices for x and y values
             x_s = mx*i_mx

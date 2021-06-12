@@ -735,6 +735,31 @@ class MainWindow(Qt.QMainWindow):
         opt_layout_2.addWidget(delete_areapoints_button)
         load_areapoint_button = Qt.QPushButton('Load areapoints')
         opt_layout_2.addWidget(load_areapoint_button)
+        # Create interface for rubberband selection
+        rb_layout = Qt.QHBoxLayout()
+        self.rb_checkbox = Qt.QCheckBox("Rubberband Pick")
+        self.rb_checkbox.setEnabled(0)
+        self.near_label = Qt.QLineEdit('0.1')
+        self.near_label.setValidator(Qt.QDoubleValidator())
+        self.far_label = Qt.QLineEdit('1000.0')
+        self.far_label.setValidator(Qt.QDoubleValidator())
+        rb_layout.addWidget(self.rb_checkbox)
+        rb_layout.addWidget(self.near_label)
+        rb_layout.addWidget(self.far_label)
+        opt_layout_2.addLayout(rb_layout)
+        rb_layout_2 = Qt.QHBoxLayout()
+        rb_layout_2.addWidget(Qt.QLabel('Classification: '))
+        self.class_lineedit = Qt.QLineEdit('0')
+        self.class_lineedit.setValidator(Qt.QIntValidator(0, 255))
+        rb_layout_2.addWidget(self.class_lineedit)
+        clear_button = Qt.QPushButton("Clear")
+        rb_layout_2.addWidget(clear_button)
+        self.class_button = Qt.QPushButton("Classify")
+        self.class_button.setEnabled(0)
+        rb_layout_2.addWidget(self.class_button)
+
+        opt_layout_2.addLayout(rb_layout_2)
+
 
         # Populate the main layout
         main_layout.addWidget(vis_splitter, stretch=5)
@@ -783,6 +808,11 @@ class MainWindow(Qt.QMainWindow):
         delete_areapoints_button.clicked.connect(
             self.on_delete_areapoints_button)
         load_areapoint_button.clicked.connect(self.on_load_areapoint_button)
+        self.rb_checkbox.toggled.connect(self.on_rb_checkbox_toggled)
+        self.near_label.editingFinished.connect(self.on_clip_changed)
+        self.far_label.editingFinished.connect(self.on_clip_changed)
+        self.class_button.clicked.connect(self.on_classify_button_click)
+        clear_button.clicked.connect(self.on_clear_button_click)
         
         self.show()
         
@@ -853,19 +883,39 @@ class MainWindow(Qt.QMainWindow):
         actor_pt_3.GetProperty().SetPointSize(20)
         actor_pt_3.GetProperty().SetColor(1, 0, 1)
 
+        # Selected dict, to hold points until we classify them
+        self.selected_poly_dict = {}
+        self.selected_append = vtk.vtkAppendPolyData()
+        pdata = vtk.vtkPolyData()
+        self.selected_append.AddInputData(pdata)
+        self.selected_mapper = vtk.vtkPolyDataMapper()
+        self.selected_mapper.SetInputConnection(
+            self.selected_append.GetOutputPort())
+        self.selected_mapper.ScalarVisibilityOff()
+        self.selected_actor = vtk.vtkActor()
+        self.selected_actor.SetMapper(self.selected_mapper)
+        self.selected_actor.GetProperty().SetColor(1, 1, 1)
+        self.selected_actor.GetProperty().SetPointSize(2.0)
+
         # Renderer and interactor
         self.renderer = vtk.vtkRenderer()
         self.renderer.AddActor(actor_pt_0)
         self.renderer.AddActor(actor_pt_1)
         self.renderer.AddActor(actor_pt_2)
         self.renderer.AddActor(actor_pt_3)
+        self.renderer.AddActor(self.selected_actor)
         self.vtkWidget.GetRenderWindow().AddRenderer(self.renderer)
+        self.vtkWidget.GetRenderWindow().AddObserver("ModifiedEvent", 
+                                                     self.
+                                                     on_modified_renderwindow)
         style = vtk.vtkInteractorStyleTrackballCamera()
-        pointPicker = vtk.vtkPointPicker()
-        pointPicker.SetTolerance(0.01)
-        pointPicker.AddObserver("EndPickEvent", self.on_end_pick)
+        self.pointPicker = vtk.vtkPointPicker()
+        self.pointPicker.SetTolerance(0.01)
+        self.pointPicker.AddObserver("EndPickEvent", self.on_end_pick)
+        self.areaPicker = vtk.vtkAreaPicker()
+        self.areaPicker.AddObserver("EndPickEvent", self.on_area_pick)
         self.iren = self.vtkWidget.GetRenderWindow().GetInteractor()
-        self.iren.SetPicker(pointPicker)
+        self.iren.SetPicker(self.pointPicker)
         self.iren.Initialize()
         self.iren.SetInteractorStyle(style)
         self.iren.Start()
@@ -990,6 +1040,8 @@ class MainWindow(Qt.QMainWindow):
                                                    'PointId'], 
                                    class_list='all', create_id=False,
                                    suffix=self.proj_suffix_0.text())
+        self.scan_area.project_dict[project_name_0].load_man_class()
+        self.scan_area.project_dict[project_name_0].apply_man_class()
         self.scan_area.project_dict[project_name_0].read_transforms(
             suffix=self.proj_t_suffix_0.text())
         self.scan_area.project_dict[project_name_0].apply_transforms(
@@ -1001,14 +1053,30 @@ class MainWindow(Qt.QMainWindow):
                                         'Classification', 'PointId'],
                                        class_list='all', create_id=False,
                                        suffix=self.proj_suffix_1.text())
-            
+            self.scan_area.project_dict[project_name_1].load_man_class()
+            self.scan_area.project_dict[project_name_1].apply_man_class()
             self.scan_area.project_dict[project_name_1].read_transforms(
                 suffix=self.proj_t_suffix_1.text())
             self.scan_area.project_dict[project_name_1].apply_transforms(
                 ['current_transform'])
+        else:
+            # Only enable rubberband selection if we are just looking at 1 proj
+            self.rb_checkbox.setEnabled(1)
         
         self.project_0 = self.scan_area.project_dict[project_name_0]
         self.project_1 = self.scan_area.project_dict[project_name_1]
+
+        # Create appendPolyData, Mappers and actors in selection dicts
+        for scan_name in self.project_0.scan_dict:
+            # Create appendPolyData, mappers and actors in selection dicts
+            self.selected_poly_dict[(project_name_0, scan_name)
+                ] = vtk.vtkAppendPolyData()
+            pdata = vtk.vtkPolyData()
+            self.selected_poly_dict[(project_name_0, scan_name)].AddInputData(
+                pdata)
+            self.selected_append.AddInputConnection(
+                self.selected_poly_dict[(project_name_0, scan_name)
+                ].GetOutputPort())
 
         # Render project 0 (we will never need to change this one)
         for scan_name in self.project_0.scan_dict:
@@ -1709,6 +1777,96 @@ class MainWindow(Qt.QMainWindow):
             self.area_point_list.list[-1].set_point(PointId, ss, self.renderer)
         self.vtkWidget.GetRenderWindow().Render()
 
+    def on_rb_checkbox_toggled(self, checked):
+        """
+        Turn rubberband area selection on or off
+
+        Parameters:
+        -----------
+        checked : bool
+            Whether the check is on or off
+
+        Returns:
+        --------
+        None.
+
+        """
+
+        if checked:
+            self.iren.SetPicker(self.areaPicker)
+            self.iren.SetInteractorStyle(vtk.vtkInteractorStyleRubberBandPick())
+        else:
+            self.iren.SetPicker(self.pointPicker)
+            self.iren.SetInteractorStyle(
+                vtk.vtkInteractorStyleTrackballCamera())
+
+
+    def on_clip_changed(self):
+        """
+        
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.renderer.GetActiveCamera().SetClippingRange(
+            float(self.near_label.text()), float(self.far_label.text()))
+        self.vtkWidget.GetRenderWindow().Render()
+
+    def on_clear_button_click(self, s):
+        """
+        Clears out the selected points from the viewport and dicts.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Clear the inputs from each appendPolyData in the dict
+        for key in self.selected_poly_dict:
+            self.selected_poly_dict[key].RemoveAllInputs()
+            pdata = vtk.vtkPolyData()
+            self.selected_poly_dict[key].AddInputData(pdata)
+            self.selected_poly_dict[key].Update()
+        
+        self.vtkWidget.GetRenderWindow().Render()
+        self.class_button.setEnabled(0)
+
+    def on_classify_button_click(self, s):
+        """
+        Adds the classified points to man_class and updates classifications
+
+        Returns:
+        --------
+        None.
+
+        """
+
+        for key in self.selected_poly_dict:
+            if (self.selected_poly_dict[key].GetOutput().GetNumberOfPoints()>0):
+                # Get the singlescan that this poly came from
+                if key[1]==self.ss.scan_name:
+                    ss = self.ss
+                else:
+                    ss = self.project_0.scan_dict[key[1]]
+                # Add points to man_class table
+                c = np.uint8(self.class_lineedit.text())
+                ss.update_man_class(self.selected_poly_dict[key].GetOutput(), c)
+                # And update
+                ss.apply_man_class()
+        # Clear points
+        self.on_clear_button_click(1)
+
+        if not c in self.class_check_dict.keys():
+            self.class_check_dict[c] = Qt.QCheckBox(str(c))
+            self.class_check_dict[c].setChecked(0)
+            self.class_layout.addWidget(self.class_check_dict[c])
+
+
+
     def look_down(self):
         """
         Set camera view to be looking straight down.
@@ -1969,6 +2127,93 @@ class MainWindow(Qt.QMainWindow):
                 self.transect_dict['z3'].setText(str(pt[2]))
             self.update_trans_endpoints()
 
+    def on_area_pick(self, obj, event):
+        """
+        After a pick action concludes we want to select those points.
+
+        Parameters
+        ----------
+        obj : TYPE
+            DESCRIPTION.
+        event : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Variable for checking if we successfully selected any points
+        pts_selected = False
+        
+        for scan_name in self.project_0.scan_dict:
+                
+            # Select points via frustum selection
+            arr = vtk.vtkDoubleArray()
+            arr.SetNumberOfComponents(4)
+            arr.SetNumberOfTuples(8)
+            for i in range(8):
+                pt = obj.GetClipPoints().GetPoint(i)
+                tup = (pt[0], pt[1], pt[2], 1)
+                arr.SetTuple(i, tup)
+            selectionNode = vtk.vtkSelectionNode()
+            selectionNode.SetFieldType(1) # we want to select points
+            selectionNode.SetContentType(5) # Frustum selection is 5 
+            selectionNode.SetSelectionList(arr)
+            selection = vtk.vtkSelection()
+            selection.AddNode(selectionNode)
+            extractSelection = vtk.vtkExtractSelection()
+            extractSelection.SetInputData(0, self.project_0.scan_dict
+                                          [scan_name].mapper.GetInput())
+            extractSelection.SetInputData(1, selection)
+            extractSelection.Update()
+            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            vertexGlyphFilter.SetInputConnection(
+                extractSelection.GetOutputPort())
+            vertexGlyphFilter.Update()
+            
+            if vertexGlyphFilter.GetOutput().GetNumberOfPoints()>0:
+                pts_selected = True
+            
+            # Add selected points to appropriate appendPolyData
+            self.selected_poly_dict[(self.project_0.project_name, scan_name)
+                ].AddInputData(vertexGlyphFilter.GetOutput())
+
+        # Select points via frustum selection
+        arr = vtk.vtkDoubleArray()
+        arr.SetNumberOfComponents(4)
+        arr.SetNumberOfTuples(8)
+        for i in range(8):
+            pt = obj.GetClipPoints().GetPoint(i)
+            tup = (pt[0], pt[1], pt[2], 1)
+            arr.SetTuple(i, tup)
+        selectionNode = vtk.vtkSelectionNode()
+        selectionNode.SetFieldType(1) # we want to select points
+        selectionNode.SetContentType(5) # Frustum selection is 5 
+        selectionNode.SetSelectionList(arr)
+        selection = vtk.vtkSelection()
+        selection.AddNode(selectionNode)
+        extractSelection = vtk.vtkExtractSelection()
+        extractSelection.SetInputData(0, self.ss.mapper.GetInput())
+        extractSelection.SetInputData(1, selection)
+        extractSelection.Update()
+        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+        vertexGlyphFilter.SetInputConnection(
+            extractSelection.GetOutputPort())
+        vertexGlyphFilter.Update()
+        
+        if vertexGlyphFilter.GetOutput().GetNumberOfPoints()>0:
+            pts_selected = True
+        
+        # Add selected points to appropriate appendPolyData
+        self.selected_poly_dict[(self.ss.project_name, self.ss.scan_name)
+            ].AddInputData(vertexGlyphFilter.GetOutput())
+        
+        # If we selected any points enable class_button
+        if pts_selected:
+            self.class_button.setEnabled(1)
+
     def update_trans_endpoints(self):
         """
         Update the spheres marking the transect endpoints
@@ -2018,6 +2263,31 @@ class MainWindow(Qt.QMainWindow):
         self.vgf_pt_3.Update()
         
         self.vtkWidget.GetRenderWindow().Render()
+
+    def on_modified_renderwindow(self, obj, event):
+        """
+        When the renderwindow is modified, update near and far clipping
+        plane labels.
+
+        Parameters
+        ----------
+        obj : TYPE
+            DESCRIPTION.
+        event : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Get current clipping distances
+        clipping_dists = self.renderer.GetActiveCamera().GetClippingRange()
+        
+        # update labels
+        self.near_label.setText(str(clipping_dists[0]))
+        self.far_label.setText(str(clipping_dists[1]))
 
 if __name__ == "__main__":
     app = Qt.QApplication(sys.argv)
