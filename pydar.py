@@ -5240,10 +5240,12 @@ class Project:
         gp_lengthscale = np.empty(nx*ny, dtype=np.float32) * np.nan
         total_points = grid_points_mask.sum()
         t0 = time.perf_counter()
+        true_ctr = 0
         while ctr<(nx*ny):
-            if ctr%1000==0:
-                print(str(ctr) + ' / ' + str(total_points) + ' ~time: ' 
-                      + str((total_points-ctr)*(time.perf_counter - t0)/ctr))
+            if (ctr%10000)<=(mx*my):
+                print(str(true_ctr) + ' / ' + str(total_points) + ' ~time: ' 
+                      + str((total_points-true_ctr)*(time.perf_counter() - t0)
+                            /true_ctr))
 
             # Get start and end indices for x and y values
             x_s = mx*i_mx
@@ -5261,6 +5263,7 @@ class Project:
             # Subset to just those indices that are within corner coords
             # that is, indices where grid_points_mask is True
             ind = ind[grid_points_mask[ind]]
+            true_ctr += ind.size
             # If ind is empty that means all grid points in this chunk have been
             # masked, skip this chunk and go to the next one
             if ind.size>0:
@@ -5386,7 +5389,7 @@ class Project:
             "input_0": point_history_dict,
             "params": {"x0": x0, "y0": y0, "yaw": yaw, "nu": nu,
                        "n_neighbors": n_neighbors, "mx": mx, "my": my,
-                       "eps": eps, "corner_coords": corner_coords}
+                       "eps": eps, "corner_coords": np.float64(corner_coords)}
             }
 
         # Also wrap with a datasetadaptor for working with numpy
@@ -6976,9 +6979,12 @@ class Project:
         reader.Update()
         
         # Read in history dict
-        f = open(image_path.rsplit('.', maxsplit=1)[0] + '.txt')
-        self.image_history_dict = json.load(f)
-        f.close()
+        try:
+            f = open(image_path.rsplit('.', maxsplit=1)[0] + '.txt')
+            self.image_history_dict = json.load(f)
+            f.close()
+        except:
+            warnings.warn('History Dict not read properly!')
 
         # Read in the imageTransform
         transform_np = np.load(image_path.rsplit('.', maxsplit=1)[0] + '.npy')
@@ -8646,7 +8652,8 @@ class ScanArea:
                                                      yaw=yaw)
 
     def difference_projects(self, project_name_0, project_name_1, 
-                            difference_field='Elevation'):
+                            difference_field='Elevation', 
+                            confidence_interval=False):
         """
         Subtract project_0 from project_1 and store in difference_dict.
 
@@ -8658,6 +8665,9 @@ class ScanArea:
             Name of project to subtract from (usually younger).
         difference_field : str, optional
             Which field in ImageData to use. The default is 'Elevation'
+        confidence_interval : bool, optional
+            Whether to estimate a confidence interval as well. The default
+            is False.
 
         Returns
         -------
@@ -8689,6 +8699,20 @@ class ScanArea:
                 difference_field]
             - self.project_dict[project_name_0].dsa_image.PointData[
                 difference_field])
+        
+        # Repeat Add confidence interval if requested
+        if confidence_interval:
+            arr = vtk.vtkFloatArray()
+            arr.SetNumberOfValues(self.project_dict[project_name_0].image.
+                              GetNumberOfPoints())
+            arr.SetName('diff_ci')
+            im.GetPointData().AddArray(arr)
+            self.difference_dsa_dict[(project_name_0, project_name_1)
+                                     ].PointData['diff_ci'][:] = 4*np.sqrt(
+            np.square(self.project_dict[project_name_1]
+                      .dsa_image.PointData['z_ci']/4)
+            + np.square(self.project_dict[project_name_0]
+                       .dsa_image.PointData['z_ci']/4))
         
         # np.ravel(
         #     self.project_dict[project_name_1].get_np_nan_image() -
