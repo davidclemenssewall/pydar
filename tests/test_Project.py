@@ -34,4 +34,10 @@ project.apply_transforms(['sop', 'z_offset'])
 z_min = 0
 z_max = 2
 
-project.display_project(z_min, z_max)
+#project.display_project(z_min, z_max)
+
+# %% Display with scanners
+z_min = 0
+z_max = 2
+
+project.display_project(z_min, z_max, show_scanners=True)

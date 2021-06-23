@@ -1946,6 +1946,10 @@ class SingleScan:
             
         self.transformFilter.Update()
         self.currentFilter.Update()
+
+        # If scannerActor exists update it's transform
+        #if hasattr(self, 'scannerActor'):
+        #    self.scannerActor.SetUserTransform(self.transform)
     
     def random_voxel_downsample_filter(self, wx, wy, wz=None, seed=1234):
         """
@@ -3267,7 +3271,77 @@ class SingleScan:
         os.remove(temp_file)
         if create_dem:
             os.remove(temp_file_tif)
+    
+    def create_scanner_actor(self, color='Gray', length=150):
+        """
+        Create an actor for visualizing the scanner and its orientation.
         
+        Parameters:
+        -----------
+        color : str, optional
+            Name of the color to display as. The default is 'Gray'
+        length : float, optional
+            Length of the ray indicating the scanner's start orientation in m.
+            The default is 150
+
+        Returns:
+        --------
+        None.
+
+        """
+
+        # Named colors object
+        nc = vtk.vtkNamedColors()
+
+        # Create a cylinder to represent the scanner
+        cylinderSource = vtk.vtkCylinderSource()
+        cylinderSource.SetCenter(0, 0, 0)
+        cylinderSource.SetRadius(0.25)
+        cylinderSource.SetHeight(0.6)
+        cylinderSource.SetResolution(12)
+        cylinderSource.CappingOn()
+        cylinderSource.Update()
+        pdata = cylinderSource.GetOutput()
+
+        # Add line along Scanner's x-axis
+        ctr_id = pdata.GetPoints().InsertNextPoint(0, 0, 0)
+        ray_id = pdata.GetPoints().InsertNextPoint(150, 0, 0)
+        lines = vtk.vtkCellArray()
+        lines.InsertNextCell(2)
+        lines.InsertCellPoint(ctr_id)
+        lines.InsertCellPoint(ray_id)
+        pdata.SetLines(lines)
+        pdata.Modified()
+
+        # Mapper and Actor
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(pdata)
+        mapper.SetScalarVisibility(0)
+        if hasattr(self, 'scannerActor'):
+            del self.scannerActor
+            del self.scannerText
+        self.scannerActor = vtk.vtkActor()
+        self.scannerActor.SetMapper(mapper)
+        self.scannerActor.GetProperty().SetLineWidth(3)
+        self.scannerActor.GetProperty().RenderLinesAsTubesOn()
+        self.scannerActor.GetProperty().SetColor(nc.GetColor3d(color))
+        self.scannerActor.RotateX(90) # because cylinder is along y axis
+        self.scannerActor.SetUserTransform(self.transform)
+
+        # Create Text with the scan position name
+        text = vtk.vtkVectorText()
+        text.SetText(self.scan_name)
+        text.Update()
+        textMapper = vtk.vtkPolyDataMapper()
+        textMapper.SetInputData(text.GetOutput())
+        self.scannerText = vtk.vtkFollower()
+        self.scannerText.SetMapper(textMapper)
+        self.scannerText.SetScale(1, 1, 1)
+        self.scannerText.SetPosition(self.transform.GetPosition())
+        self.scannerText.AddPosition(0, 0, 0.5)
+        self.scannerText.GetProperty().SetColor(nc.GetColor3d(color))
+
+
     def create_filter_pipeline(self,colors={0 : (153/255, 153/255, 153/255, 1),
                                             1 : (153/255, 153/255, 153/255, 1),
                                             2 : (55/255, 126/255, 184/255, 1),
@@ -4802,7 +4876,8 @@ class Project:
             
     def display_project(self, z_min, z_max, lower_threshold=-1000, 
                         upper_threshold=1000, colorbar=True, field='Elevation',
-                        mapview=False, profile_list=[]):
+                        mapview=False, profile_list=[], show_scanners=False,
+                        scanner_color='Gray', scanner_length=150):
         """
         Display all scans in a vtk interactive window.
         
@@ -4836,6 +4911,13 @@ class Project:
             in pixels (optional) Elements 2, 3, 4, are color
             channels (optional) and element 5 is opacity (optional). The default
             is [].
+        show_scanners : bool, optional
+            Whether or not to show the scanners. The default is False.
+        scanner_color : str, optional
+            Name of the color to display as. The default is 'Gray'
+        scanner_length : float, optional
+            Length of the ray indicating the scanner's start orientation in m.
+            The default is 150
 
         Returns
         -------
@@ -4874,6 +4956,15 @@ class Project:
                                                                       field=
                                                                       field)
             renderer.AddActor(self.scan_dict[scan_name].actor)
+
+        # Add scanners if requested
+        if show_scanners:
+            for scan_name in self.scan_dict:
+                self.scan_dict[scan_name].create_scanner_actor(
+                    color=scanner_color, length=scanner_length)
+                renderer.AddActor(self.scan_dict[scan_name].scannerActor)
+                renderer.AddActor(self.scan_dict[scan_name].scannerText)
+                
         
         # Add requested profiles
         for profile_tup in profile_list:
@@ -4931,6 +5022,13 @@ class Project:
             
         iren.Initialize()
         renderWindow.Render()
+
+        # Set camera for followers
+        if show_scanners:
+            for scan_name in self.scan_dict:
+                self.scan_dict[scan_name].scannerText.SetCamera(
+                    renderer.GetActiveCamera())
+
         iren.AddObserver('UserEvent', cameraCallback)
         iren.Start()
         
@@ -5538,7 +5636,9 @@ class Project:
     
     def display_image(self, z_min, z_max, field='Elevation',
                       warp_scalars=False, color_field=None,
-                      show_points=False, profile_list=[]):
+                      show_points=False, profile_list=[],
+                      show_scanners=False,
+                      scanner_color='Gray', scanner_length=150):
         """
         Display image in vtk interactive window.
 
@@ -5558,6 +5658,16 @@ class Project:
             is None.
         show_points : bool, optional
             Whether to also render the points. The default is False.
+        profile_list : list, optional
+            List of keys of profiles in the profiles dict to display. The 
+            default is [].
+        show_scanners : bool, optional
+            Whether or not to show the scanners. The default is False.
+        scanner_color : str, optional
+            Name of the color to display as. The default is 'Gray'
+        scanner_length : float, optional
+            Length of the ray indicating the scanner's start orientation in m.
+            The default is 150
 
         Returns
         -------
@@ -5612,6 +5722,23 @@ class Project:
                     self.imageTransform)
                 renderer.AddActor(self.scan_dict[scan_name].actor)
 
+        # Add scanners if requested
+        if show_scanners:
+            for scan_name in self.scan_dict:
+                self.scan_dict[scan_name].create_scanner_actor(
+                    color=scanner_color, length=scanner_length)
+                # copy the userTransform and concatenate the imageTransform
+                transform = vtk.vtkTransform()
+                transform.DeepCopy(self.scan_dict[scan_name].scannerActor
+                                   .GetUserTransform())
+                transform.Concatenate(self.imageTransform)
+                self.scan_dict[scan_name].scannerActor.SetUserTransform(
+                    transform)
+                self.scan_dict[scan_name].scannerText.AddPosition(
+                    self.imageTransform.GetPosition())
+                renderer.AddActor(self.scan_dict[scan_name].scannerActor)
+                renderer.AddActor(self.scan_dict[scan_name].scannerText)
+
         # Add requested profiles
         for profile_tup in profile_list:
             transformFilter = vtk.vtkTransformPolyDataFilter()
@@ -5659,6 +5786,13 @@ class Project:
         
         iren.Initialize()
         renderWindow.Render()
+
+        # Set camera for followers
+        if show_scanners:
+            for scan_name in self.scan_dict:
+                self.scan_dict[scan_name].scannerText.SetCamera(
+                    renderer.GetActiveCamera())
+
         iren.AddObserver('UserEvent', cameraCallback)
         iren.Start()
     
@@ -6090,7 +6224,70 @@ class Project:
         
         # Return once we are within tolerance
         return extractPoints.GetOutput(), d
-                    
+    
+    def image_transect(self, x0, y0, x1, y1, N, key):
+        """
+        Sample a transect through the current image and save in profiles.
+        
+        Parameters:
+        -----------
+        x0 : float
+            Coordinate in project reference frame.
+        y0 : float
+            Coordinate in project reference frame.
+        x1 : float
+            Coordinate in project reference frame.
+        y1 : float
+            Coordinate in project reference frame.
+        N : int
+            Number of points to put in transect.
+        key : const (str, tuple, etc)
+            Key to store this profile in profile_dict under.
+
+        Returns:
+        --------
+        None.
+
+        """
+
+        # Get start and end points in image reference frame
+        start = self.imageTransform.TransformPoint(x0, y0, 0)
+        end = self.imageTransform.TransformPoint(x1, y1, 0)
+        
+        # Create transect in image coordinates
+        pts_np = np.vstack((np.linspace(start[0], end[0], N), 
+                            np.linspace(start[1], end[1], N),
+                            np.zeros(N))).T
+        pts = vtk.vtkPoints()
+        pts.SetData(numpy_to_vtk(pts_np, deep=True, array_type=vtk.VTK_DOUBLE))
+        pts_pdata = vtk.vtkPolyData()
+        pts_pdata.SetPoints(pts)
+        
+        # Probe filter
+        probeFilter = vtk.vtkProbeFilter()
+        probeFilter.SetSourceData(self.image)
+        probeFilter.SetInputData(pts_pdata)
+        probeFilter.Update()
+
+        # Transform back into project coordinates
+        invTransform = vtk.vtkTransform()
+        invTransform.DeepCopy(self.imageTransform)
+        invTransform.Inverse()
+        tfilter = vtk.vtkTransformPolyDataFilter()
+        tfilter.SetTransform(invTransform)
+        tfilter.SetInputData(probeFilter.GetOutput())
+        tfilter.Update()
+
+        # Store profile and create lines
+        self.profile_dict[key] = tfilter.GetOutput()
+        lines = vtk.vtkCellArray()
+        lines.InsertNextCell(N)
+        for i in np.arange(N):
+            lines.InsertCellPoint(i)
+        self.profile_dict[key].SetLines(lines)
+        self.profile_dict[key].Modified()
+
+
     def merged_points_transect_gp(self, x0, y0, x1, y1, N, key, 
                                   mx=256, n_neighbors=256, eps=0,
                                   use_z_sigma=True, lengthscale=None, 
@@ -8817,7 +9014,9 @@ class ScanArea:
     
     def display_warp_difference(self, project_name_0, project_name_1, 
                                 diff_window, field='Elevation_mean_fill',
-                                cmap='rainbow', profile_list=[]):
+                                cmap='rainbow', profile_list=[], 
+                                show_scanners=False, scanner_color_0='Yellow', 
+                                scanner_color_1='Fuchsia', scanner_length=150):
         """
         Display the surface of the image from project_name_1 colored by diff.
 
@@ -8834,6 +9033,20 @@ class ScanArea:
             The default is 'Elevation_mean_fill'
         cmap : str, optional
             Name of matplotlib colormap to use. The default is 'rainbow'
+        profile_list : list, optional
+            List of keys of profiles in the profiles dict to display. The 
+            default is [].
+        show_scanners : bool, optional
+            Whether or not to show the scanners. The default is False.
+        scanner_color_0 : str, optional
+            Name of the color to display project 0 scanners.
+             The default is 'Yellow'
+        scanner_color_1 : str, optional
+            Name of the color to display project 0 scanners.
+             The default is 'Fuchsia'
+        scanner_length : float, optional
+            Length of the ray indicating the scanner's start orientation in m.
+            The default is 150
 
         Returns
         -------
@@ -8919,6 +9132,26 @@ class ScanArea:
         renderWindow = vtk.vtkRenderWindow()
         renderer.AddActor(actor)
 
+        # Add scanners if requested
+        if show_scanners:
+            for project_name, color in zip([project_name_0, project_name_1],
+                                           [scanner_color_0, scanner_color_1]):
+                project = self.project_dict[project_name]
+                for scan_name in project.scan_dict:
+                    project.scan_dict[scan_name].create_scanner_actor(
+                        color=color, length=scanner_length)
+                    # copy the userTransform and concatenate the imageTransform
+                    transform = vtk.vtkTransform()
+                    transform.DeepCopy(project.scan_dict[scan_name].scannerActor
+                                       .GetUserTransform())
+                    transform.Concatenate(project.imageTransform)
+                    project.scan_dict[scan_name].scannerActor.SetUserTransform(
+                        transform)
+                    project.scan_dict[scan_name].scannerText.AddPosition(
+                        project.imageTransform.GetPosition())
+                    renderer.AddActor(project.scan_dict[scan_name].scannerActor)
+                    renderer.AddActor(project.scan_dict[scan_name].scannerText)
+
         # Add requested profiles
         for profile_tup in profile_list:
             transformFilter = vtk.vtkTransformPolyDataFilter()
@@ -8959,6 +9192,15 @@ class ScanArea:
         iren.SetRenderWindow(renderWindow)
         iren.Initialize()
         renderWindow.Render()
+
+        # Set camera for followers
+        if show_scanners:
+            for project_name in [project_name_0, project_name_1]:
+                project = self.project_dict[project_name]
+                for scan_name in project.scan_dict:
+                    project.scan_dict[scan_name].scannerText.SetCamera(
+                        renderer.GetActiveCamera())
+
         iren.AddObserver('UserEvent', cameraCallback)
         iren.Start()
         
