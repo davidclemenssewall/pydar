@@ -5141,6 +5141,105 @@ class Project:
         renderWindow.Finalize()
         del renderWindow
         
+    def point_to_grid_average_image(self, nx, ny, dx, dy, x0, y0, yaw=0):
+        """
+        Convert a rectangular area of points to an image by gridded averaging
+
+        Requires cython_util
+
+        Parameters
+        ----------
+        nx : int
+            Number of gridcells in x direction.
+        ny : int
+            Number of gridcells in y direction.
+        dx : float
+            Width of gridcells in x direction.
+        dy : float
+            Width of gridcells in y direction.
+        x0 : float
+            x coordinate of the origin in m.
+        y0 : float
+            y coordinate of the origin in m.
+        yaw : float, optional
+            yaw angle in degrees of image to create, for generating 
+            non-axis aligned image. The default is 0.
+
+        Returns:
+        --------
+        None
+
+        """
+
+        # Get the points in this rectangular region
+        pdata, point_history_dict = self.get_merged_points(history_dict=True,
+            x0=x0, y0=y0, wx=nx*dx, wy=ny*dy, yaw=yaw)
+
+        # Transform points into image reference frame, needed because
+        # vtkImageData can only be axis-aligned. We'll save the transform 
+        # filter in case we need it for mapping flags, etc, into image
+        self.imageTransform = vtk.vtkTransform()
+        self.imageTransform.PostMultiply()
+        # Translate origin to be at (x0, y0)
+        self.imageTransform.Translate(-x0, -y0, 0)
+        # Rotate around this origin
+        self.imageTransform.RotateZ(-yaw)
+        
+        # Create transform filter and apply
+        imageTransformFilter = vtk.vtkTransformPolyDataFilter()
+        imageTransformFilter.SetTransform(self.imageTransform)
+        imageTransformFilter.SetInputData(pdata)
+        imageTransformFilter.Update()
+
+        # Get the points and the z_sigma as numpy arrays
+        pts_np = vtk_to_numpy(imageTransformFilter.GetOutput().GetPoints()
+                              .GetData())
+
+        # Create grid
+        edges = 2*[None]
+        nbin = np.empty(2, np.int_)
+        w = [dx, dy]
+        n = [nx, ny]
+        for i in range(2):
+            edges[i] = np.arange(n[i]+ 1, dtype=np.float32) * w[i]
+            # Adjust lower edge so we don't miss lower most point
+            edges[i][0] = edges[i][0] - 0.0001
+            # Adjust uppermost edge so the bin width is appropriate
+            edges[i][-1] += 0.0001
+            nbin[i] = len(edges[i]) + 1
+
+        # Use cython to iterate through grid
+        _, grid_mean = gridded_counts_means(pts_np, edges)
+
+        # Create image
+        self.image = vtk.vtkImageData()
+        self.image.SetDimensions(nx, ny, 1)
+        self.image.SetSpacing(dx, dy, 1)
+        self.image.SetOrigin(0, 0, 0)
+        warnings.warn('Still not sure if origin should be offset half grid cell')
+        # Store np arrays related to image
+        if not hasattr(self, 'np_dict'):
+            self.np_dict = {}
+        self.np_dict['image_z'] = np.ravel(grid_mean, order='F')
+        vtk_arr = numpy_to_vtk(self.np_dict['image_z'], deep=False, 
+                               array_type=vtk.VTK_FLOAT)
+        vtk_arr.SetName('Elevation')
+        self.image.GetPointData().AddArray(vtk_arr)
+        self.image.GetPointData().SetActiveScalars('Elevation')
+        self.image.Modified()
+
+        # Create history dict
+        self.image_history_dict = {
+            "type": "Image Generator",
+            "git_hash": get_git_hash(),
+            "method": "Project.point_to_grid_average_image",
+            "input_0": point_history_dict,
+            "params": {"x0": x0, "y0": y0, "yaw": yaw}
+            }
+
+        # Also wrap with a datasetadaptor for working with numpy
+        self.dsa_image = dsa.WrapDataObject(self.image)
+
     def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, lengthscale, 
                                outputscale, nu, yaw=0, n_neighbors=50, max_pts=
                                64000, min_pts=100, mx=32, my=32, eps=0, 
@@ -5438,7 +5537,7 @@ class Project:
         self.image.SetDimensions(nx, ny, 1)
         self.image.SetSpacing(dx, dy, 1)
         self.image.SetOrigin(0, 0, 0)
-        # Store np arrays related to mesh
+        # Store np arrays related to image
         if not hasattr(self, 'np_dict'):
             self.np_dict = {}
         self.np_dict['image_z'] = grid_mean
