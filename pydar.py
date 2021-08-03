@@ -2947,6 +2947,9 @@ class SingleScan:
             pdata = self.transformFilter.GetOutput()
         else:
             raise ValueError('mode must be currentFilter or transformFilter')
+        # If this pdata has no points in it, we can just return
+        if pdata.GetNumberOfPoints()==0:
+            return
         minx, miny, _ = corner_coords.min(axis=0)
         maxx, maxy, _ = corner_coords.max(axis=0)
         pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
@@ -5012,7 +5015,7 @@ class Project:
             
         # Create RenderWindow and interactor, set style to trackball camera
         renderWindow = vtk.vtkRenderWindow()
-        renderWindow.SetSize(2000, 1500)
+        renderWindow.SetSize(2000, 1000)
         renderWindow.AddRenderer(renderer)
         iren = vtk.vtkRenderWindowInteractor()
         iren.SetRenderWindow(renderWindow)
@@ -5041,6 +5044,7 @@ class Project:
     def project_to_image(self, z_min, z_max, focal_point, camera_position,
                          roll=0, image_scale=500, lower_threshold=-1000, 
                          upper_threshold=1000, mode=None, colorbar=True,
+                         field='Elevation',
                          name='', window_size=(2000, 1000)):
         """
         Write an image of the project to the snapshots folder.
@@ -5087,10 +5091,18 @@ class Project:
         
         # Run create elevation pipeline for each scan and add each actor
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].create_elevation_pipeline(z_min, z_max, 
-                                                            lower_threshold, 
-                                                            upper_threshold,
-                                                            LOD=False)
+            if field=='Elevation':
+                self.scan_dict[scan_name].create_elevation_pipeline(z_min, 
+                                                                    z_max, 
+                                                                lower_threshold, 
+                                                                upper_threshold)
+            elif field=='Classification':
+                self.scan_dict[scan_name].create_filter_pipeline()
+            else:
+                self.scan_dict[scan_name].create_reflectance_pipeline(z_min,
+                                                                      z_max,
+                                                                      field=
+                                                                      field)
             renderer.AddActor(self.scan_dict[scan_name].actor)
             
         if colorbar:
@@ -6498,7 +6510,8 @@ class Project:
             
             # Run our GP on this chunk and estimate values at grid points
             # use indices from above to place output in the right places
-            grid_mean[ind], grid_lower[ind], grid_upper[ind] = run_gp(
+            # !!!TODO, use last 3 returns from run_gp
+            grid_mean[ind], grid_lower[ind], grid_upper[ind],_,_,_ = run_gp(
                 pts_np[pt_ind,:], pts_np[pt_ind,2], m_grid,
                 z_sigma=None if z_sigma_np is None else z_sigma_np[pt_ind], 
                 lengthscale=lengthscale, outputscale=outputscale, mean=mean,
