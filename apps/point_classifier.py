@@ -101,6 +101,8 @@ class MainWindow(Qt.QMainWindow):
         self.sel_scan_area_button = Qt.QPushButton("Select Scan Area")
         # Create the file dialog that we'll use
         self.proj_dialog = Qt.QFileDialog(self)
+        if os.path.isdir('/media/thayer/Data/mosaic_lidar/'):
+            self.proj_dialog.setDirectory('/media/thayer/Data/mosaic_lidar/')
         self.proj_dialog.setFileMode(4) # set file mode to pick directories
         opt_layout.addWidget(self.sel_scan_area_button)
         
@@ -120,6 +122,20 @@ class MainWindow(Qt.QMainWindow):
                                      'Read PolyData'])
         self.read_scan_box.setCurrentIndex(0)
         opt_layout.addWidget(self.read_scan_box)
+        
+        # Options for which data version and transform to use
+        temp_layout = Qt.QHBoxLayout()
+        temp_layout.addWidget(Qt.QLabel("Points Suffix:"))
+        self.proj_suffix_0 = Qt.QLineEdit('')
+        temp_layout.addWidget(self.proj_suffix_0)
+        opt_layout.addLayout(temp_layout)
+        trans_checkbox = Qt.QCheckBox('Use PRCS')
+        opt_layout.addWidget(trans_checkbox)
+        temp_layout = Qt.QHBoxLayout()
+        temp_layout.addWidget(Qt.QLabel("Trans Suffix:"))
+        self.proj_t_suffix_0 = Qt.QLineEdit('')
+        temp_layout.addWidget(self.proj_t_suffix_0)
+        opt_layout.addLayout(temp_layout)
         
         # Button to prompt us to select a project
         self.sel_proj_button = Qt.QPushButton("Select Project")
@@ -204,6 +220,9 @@ class MainWindow(Qt.QMainWindow):
             self.on_sel_scan_area_button_click)
         self.sel_proj_button.clicked.connect(self.on_sel_proj_button_click)
         self.proj_dialog.fileSelected.connect(self.on_scan_area_selected)
+        self.read_scan_box.currentTextChanged.connect(
+            self.on_read_scan_box_changed)
+        trans_checkbox.toggled.connect(self.on_trans_checkbox_toggled)
         self.scan_button_group.buttonToggled.connect(
             self.on_scan_checkbox_changed)
         clear_button.clicked.connect(self.on_clear_button_click)
@@ -309,7 +328,7 @@ class MainWindow(Qt.QMainWindow):
         # Parse project path
         dir_list = str(dir_str).split('/')
         scan_area_name = dir_list[-1]
-        project_path = dir_str
+        self.project_path = dir_str
         #project_path = dir_str + '/'
         #project_path = project_path.replace('/', '\\')
         
@@ -324,15 +343,6 @@ class MainWindow(Qt.QMainWindow):
         if scan_area_name=='Snow2':
             project_names = ['mosaic_02_110619.RiSCAN',
                              'mosaic_02_111319.RiSCAN']
-            
-            registration_list = [Registration('mosaic_02_111319.RiSCAN', 
-                                              'mosaic_02_111319.RiSCAN'),
-                                 Registration('mosaic_02_111319.RiSCAN',
-                                              'mosaic_02_110619.RiSCAN',
-                                              ['r17', 'r19', 'r20', 'r37', 
-                                               'r38'],
-                                              'LS')
-                                 ]
         elif scan_area_name=='Snow1':
             project_names = ['mosaic_01_101819.RiSCAN',
                              'mosaic_01_102019.RiSCAN',
@@ -354,96 +364,6 @@ class MainWindow(Qt.QMainWindow):
                              'mosaic_01_250420.RiSCAN.RiSCAN',
                              'mosaic_01_260420.RiSCAN',
                              'mosaic_01_030520.RiSCAN']
-            
-            registration_list = [Registration('mosaic_01_102019.RiSCAN', 
-                                              'mosaic_01_102019.RiSCAN'),
-                                 Registration('mosaic_01_102019.RiSCAN',
-                                              'mosaic_01_101819.RiSCAN',
-                                              ['r04', 'r05', 'r07', 'r09'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_102019.RiSCAN', 
-                                              'mosaic_01_102519.RiSCAN',
-                                              ['r01', 'r02', 'r03', 'r09', 
-                                               'r08'],
-                                              'LS'),
-                                 Registration('mosaic_01_102519.RiSCAN',
-                                              'mosaic_01_110119.RiSCAN',
-                                              ['r01', 'r03', 'r04', 'r05', 
-                                               'r06', 'r07'],
-                                              'LS'),
-                                 Registration('mosaic_01_110119.RiSCAN',
-                                              'mosaic_01_111519.RiSCAN',
-                                              ['r02', 'r03', 'r04'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_111519.RiSCAN',
-                                              'mosaic_01_110819.RiSCAN',
-                                              ['r02', 'r05', 'r06', 'r07', 
-                                               'r10'],
-                                              'LS'),
-                                 Registration('mosaic_01_111519.RiSCAN',
-                                              'mosaic_01b_061219.RiSCAN.'+
-                                              'RiSCAN.RiSCAN',
-                                              ['r01', 'r11'],
-                                              'Yaw'),
-                                 Registration('mosaic_01b_061219.RiSCAN.'+
-                                              'RiSCAN.RiSCAN',
-                                              'mosaic_01_122719.RiSCAN',
-                                              ['r02', 'r11'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_122719.RiSCAN',
-                                              'mosaic_01_040120.RiSCAN',
-                                              ['r01', 'r13', 'r14', 'r15'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_040120.RiSCAN',
-                                              'mosaic_01_180120.RiSCAN',
-                                              ['r03', 'r09', 'r10', 'r11', 
-                                               'r24'],
-                                              'LS'),
-                                 Registration('mosaic_01_180120.RiSCAN',
-                                              'mosaic_01_290120.RiSCAN',
-                                              ['r01', 'r02', 'r03', 'r09', 
-                                               'r10', 
-                                               'r12', 'r13', 'r14'],
-                                              'LS'),
-                                 Registration('mosaic_01_290120.RiSCAN',
-                                              'mosaic_01_060220.RiSCAN',
-                                              ['r01', 'r03', 'r09', 'r12', 
-                                               'r14', 'r23'],
-                                              'LS'),
-                                 Registration('mosaic_01_060220.RiSCAN',
-                                              'mosaic_01_150220.RiSCAN.RiSCAN',
-                                              ['r03', 'r09', 'r23'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_150220.RiSCAN.RiSCAN',
-                                              'mosaic_01_280220.RiSCAN',
-                                              ['r10', 'r11', 'r24', 'r12'],
-                                              'LS'),
-                                 Registration('mosaic_01_280220.RiSCAN',
-                                              'mosaic_01_220320.RiSCAN',
-                                              ['r10', 'r11', 'r24'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_220320.RiSCAN',
-                                              'mosaic_01_080420.RiSCAN',
-                                              ['r10', 'r11'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_080420.RiSCAN',
-                                              'mosaic_01_080420b.RiSCAN',
-                                              ['r24', 'r26'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_080420b.RiSCAN',
-                                              'mosaic_01_250420.RiSCAN.RiSCAN',
-                                              ['r24', 'r27'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_250420.RiSCAN.RiSCAN',
-                                              'mosaic_01_260420.RiSCAN',
-                                              ['r24', 'r27'],
-                                              'Yaw'),
-                                 Registration('mosaic_01_260420.RiSCAN',
-                                              'mosaic_01_030520.RiSCAN',
-                                              ['r25'],
-                                              'Trans',
-                                              math.pi*9/8)
-                                 ]
         elif scan_area_name=='ROV':
             project_names = ['mosaic_rov_040120.RiSCAN',
                              'mosaic_rov_110120.RiSCAN',
@@ -457,65 +377,9 @@ class MainWindow(Qt.QMainWindow):
                              'mosaic_rov_220420.RiSCAN',
                              'mosaic_rov_290420.RiSCAN',
                              'mosaic_rov_02_090520.RiSCAN']
-            
-            registration_list = [Registration('mosaic_rov_250120.RiSCAN', 
-                                    'mosaic_rov_250120.RiSCAN'),
-                        Registration('mosaic_rov_250120.RiSCAN',
-                                     'mosaic_rov_190120.RiSCAN',
-                                     ['r28', 'r29', 'r30', 'r32', 'r34', 'r35',
-                                      'r22'],
-                                     'LS'),
-                        Registration('mosaic_rov_190120.RiSCAN',
-                                     'mosaic_rov_110120.RiSCAN',
-                                     ['r05', 'r28', 'r29', 'r31', 'r32', 'r33',
-                                      'r34'],
-                                     'LS'),
-                         Registration('mosaic_rov_190120.RiSCAN',
-                                      'mosaic_rov_040120.RiSCAN',
-                                      ['r28', 'r29', 'r30', 'r31', 'r32', 'r33'],
-                                      'LS'),
-                        Registration('mosaic_rov_250120.RiSCAN',
-                                    'mosaic_rov_040220.RiSCAN',
-                                    ['r28', 'r29', 'r30', 'r31', 'r32', 'r34', 
-                                     'r35', 'r36'],
-                                    'LS'),
-                        Registration('mosaic_rov_040220.RiSCAN',
-                                      'mosaic_rov_220220.RiSCAN.RiSCAN',
-                                      ['r28', 'r31', 'r32', 'r34'],
-                                      'Yaw'),
-                        Registration('mosaic_rov_220220.RiSCAN.RiSCAN',
-                                      'mosaic_02_040420.RiSCAN',
-                                      ['r29', 'r30', 'r33', 'r36'],
-                                      'LS'),
-                         Registration('mosaic_02_040420.RiSCAN',
-                                      'mosaic_02_110420_rov.RiSCAN',
-                                      ['r29', 'r30', 'r33', 'r35', 'r37'],
-                                      'LS'),
-                         Registration('mosaic_02_040420.RiSCAN',
-                                      'mosaic_rov_170420.RiSCAN',
-                                      ['r29', 'r30', 'r35', 'r36', 'r37'],
-                                      'LS'),
-                         Registration('mosaic_rov_170420.RiSCAN',
-                                      'mosaic_rov_220420.RiSCAN',
-                                      ['r29', 'r30', 'r35', 'r36', 'r37'],
-                                      'LS'),
-                         Registration('mosaic_rov_220420.RiSCAN',
-                                      'mosaic_rov_290420.RiSCAN',
-                                      ['r30', 'r33', 'r35', 'r36'],
-                                      'LS'),
-                         Registration('mosaic_rov_290420.RiSCAN',
-                                      'mosaic_rov_02_090520.RiSCAN',
-                                      ['r30', 'r33', 'r35', 'r36'],
-                                      'LS')
-                       ]
         else:
             raise ValueError("You have selected a nonexistant scan area."
                              " please start again")
-        
-        # Init scan_area
-        self.scan_area = pydar.ScanArea(project_path, project_names,
-                                        registration_list, load_scans=False,
-                                        read_scans=False, import_las=False)
         
         # Update proj_combobox with available scans
         self.proj_combobox.addItems(project_names)
@@ -525,7 +389,46 @@ class MainWindow(Qt.QMainWindow):
         self.sel_proj_button.setEnabled(1)
         
         # Disable further scan area changes
-        self.sel_scan_area_button.setEnabled(0)
+        #self.sel_scan_area_button.setEnabled(0)
+        
+    def on_read_scan_box_changed(self, s):
+        """
+        If user selects option other than read saved, make suffix not enabled.
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if s=='Read Saved':
+            self.proj_suffix_0.setEnabled(1)
+        else:
+            self.proj_suffix_0.setEnabled(0)
+    
+    def on_trans_checkbox_toggled(self, s):
+        """
+        If the trans_checkbox is toggled disable loading a transform
+
+        Parameters
+        ----------
+        s : bool
+            Whether or not the button is checked
+
+        Returns
+        -------
+        None.
+
+        """
+        if s:
+            self.proj_t_suffix_0.setEnabled(0)
+        else:
+            self.proj_t_suffix_0.setEnabled(1)
     
     def on_sel_proj_button_click(self, s):
         
@@ -545,21 +448,26 @@ class MainWindow(Qt.QMainWindow):
         # memory
         # Get Scan loading parameters from read_scan_box
         if self.read_scan_box.currentIndex()==0:
-            read_scans=True
-            import_las=False
+            import_mode = 'read_scan'
         elif self.read_scan_box.currentIndex()==1:
-            read_scans=False
-            import_las=True
+            import_mode = 'import_las'
         else:
-            read_scans=False
-            import_las=False
+            import_mode = 'poly'
             
         # Parse project path and name and load project
         project_name = self.proj_combobox.currentText()
-        self.scan_area.add_project(project_name, read_scans=read_scans,
-                                   import_las=import_las)
-        self.scan_area.register_all()
-        self.project = self.scan_area.project_dict[project_name]
+        self.project = pydar.Project(self.project_path, project_name, 
+                                     import_mode=import_mode,
+                                     class_list='all', 
+                                     suffix=self.proj_suffix_0.text())
+        
+        # Set the transform appropriately
+        if self.proj_t_suffix_0.isEnabled():
+            # If the transform suffix is enabled use that
+            self.project.read_transforms(suffix=self.proj_t_suffix_0.text())
+            self.project.apply_transforms(['current_transform'])
+        else:
+            self.project.apply_transforms(['sop'])
         
         # Load the man_class table
         for scan_name in self.project.scan_dict:
@@ -581,10 +489,15 @@ class MainWindow(Qt.QMainWindow):
         
         for scan_name in self.project.scan_dict:
             # Create an elevation filter linked to transformFilter
-            self.elev_filt_dict[scan_name] = vtk.vtkSimpleElevationFilter()
-            self.elev_filt_dict[scan_name].SetInputConnection(
+            # Create vertices
+            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            vertexGlyphFilter.SetInputConnection(
                 self.project.scan_dict[scan_name].transformFilter.
                 GetOutputPort())
+            vertexGlyphFilter.Update()
+            self.elev_filt_dict[scan_name] = vtk.vtkSimpleElevationFilter()
+            self.elev_filt_dict[scan_name].SetInputConnection(
+                vertexGlyphFilter.GetOutputPort())
             # We vtkSimpleElevationFilter will overwrite the active scalars
             # so let's set active scalars to a dummy array
             (self.elev_filt_dict[scan_name].GetInput().GetPointData().
@@ -731,18 +644,18 @@ class MainWindow(Qt.QMainWindow):
             df = pd.concat(df_list, ignore_index=True)
         elif self.train_combobox.currentText()=='Scan Area':
             project_tuples = []
-            with os.scandir(self.scan_area.project_path) as it:
+            with os.scandir(self.project.project_path) as it:
                 for entry in it:
                     if entry.is_dir():
                         if re.search('.RiSCAN$', entry.name):
-                            project_tuples.append((self.scan_area.project_path
+                            project_tuples.append((self.project.project_path
                                                    , entry.name))
             df = pydar.get_man_class(project_tuples)
         elif self.train_combobox.currentText()=='All':
             project_tuples = []
             # Get the path to the scan area
-            scan_area_path = os.path.split(self.scan_area.project_path)[0]
-            #scan_area_path = (self.scan_area.project_path.rsplit(sep='\\',
+            scan_area_path = os.path.split(self.project.project_path)[0]
+            #scan_area_path = (self.project.project_path.rsplit(sep='\\',
             #                                                    maxsplit=2)[0]
             #                  + '\\')
             scan_areas = ['Snow1', 'Snow2', 'ROV']
