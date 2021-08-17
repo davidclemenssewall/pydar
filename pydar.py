@@ -125,10 +125,15 @@ class TiePointList:
         tiepoints into a pandas dataframe"""
         self.project_path = project_path
         self.project_name = project_name
-        self.tiepoints = pd.read_csv(os.path.join(project_path, project_name,
-                                     'tiepoints.csv'),
-                                     index_col=0, usecols=[0,1,2,3])
-        self.tiepoints.sort_index(inplace=True)
+        try:
+            self.tiepoints = pd.read_csv(os.path.join(project_path, project_name,
+                                         'tiepoints.csv'),
+                                         index_col=0, usecols=[0,1,2,3])
+            self.tiepoints.sort_index(inplace=True)
+        except FileNotFoundError:
+            self.tiepoints = pd.DataFrame()
+            warnings.warn('No tiepoints found for ' 
+                          + os.path.join(project_path, project_name))
         # Ignore any tiepoints that start with t
         for label in self.tiepoints.index:
             if label[0]=='t':
@@ -1039,9 +1044,23 @@ class SingleScan:
             self.polydata_raw = pdata#vertexGlyphFilter.GetOutput()
             
             # Load in history dict
-            f = open(os.path.join(npy_path, 'raw_history_dict.txt'))
-            self.raw_history_dict = json.load(f)
-            f.close()
+            try:
+                f = open(os.path.join(npy_path, 'raw_history_dict.txt'))
+                self.raw_history_dict = json.load(f)
+                f.close()
+            except FileNotFoundError:
+                self.raw_history_dict = {
+                        "type": "Pointset Source",
+                        "git_hash": git_hash,
+                        "method": "SingleScan.__init__",
+                        "filename": os.path.join(self.project_path, 
+                                                 self.project_name, 
+                                                 "npyfiles"+suffix),
+                        "params": {"import_mode": import_mode,
+                                   "las_fieldnames": las_fieldnames}
+                        }
+                warnings.warn("No history dict found for " + scan_name)
+
             
         elif import_mode=='poly':
             # Match poly with polys
@@ -2957,6 +2976,9 @@ class SingleScan:
         mask = ((pts_np[:,0]>=minx) & (pts_np[:,0]<=maxx) &
                 (pts_np[:,1]>=miny) & (pts_np[:,1]<=maxy))
         pts_np = pts_np[mask, :]
+        # set the z-coordinate of points to -1, for some reason the selection
+        # loop only selects negative points...
+        pts_np[:, 2] = -1
         PointIds_np = PointIds_np[mask]
         pts = vtk.vtkPoints()
         pts.SetData(numpy_to_vtk(pts_np, array_type=vtk.VTK_FLOAT))
@@ -3377,7 +3399,7 @@ class SingleScan:
         """
         
         # Set active scalars
-        self.transformFilter.GetOutput().GetPointData().SetActiveScalars(
+        self.currentFilter.GetOutput().GetPointData().SetActiveScalars(
             'Classification')
         
         # Create Lookuptable
@@ -3391,7 +3413,7 @@ class SingleScan:
         # Create vertices
         vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
         vertexGlyphFilter.SetInputConnection(
-            self.transformFilter.GetOutputPort())
+            self.currentFilter.GetOutputPort())
         vertexGlyphFilter.Update()
         
         # Create mapper
@@ -3507,6 +3529,8 @@ class SingleScan:
         self.transformFilter.Update()
         self.currentFilter.Update()
         elevFilter.SetInputConnection(vertexGlyphFilter.GetOutputPort())
+        # needed to prevent simpleelevationfilter from overwriting 
+        # Classification array
         elevFilter.Update()
         
         # Create Threshold filter
@@ -4268,7 +4292,12 @@ class Project:
         # Add SingleScans, including their SOPs, 
         # we will only add a singlescan if it has an SOP, or, if we are 
         # reading scans we will only add a scan if it exists
-        scan_names = os.listdir(os.path.join(project_path, project_name, 
+        if import_mode=='read_scan':
+            scan_names = os.listdir(os.path.join(self.project_path, 
+                                                 project_name,
+                                                'npyfiles'+suffix))
+        else:
+            scan_names = os.listdir(os.path.join(project_path, project_name, 
                                                  'SCANS'))
         for scan_name in scan_names:
             if import_mode=='read_scan':

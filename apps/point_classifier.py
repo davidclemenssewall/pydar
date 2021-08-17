@@ -16,7 +16,9 @@ import vtk
 import pandas as pd
 import math
 import numpy as np
-from vtk.util.numpy_support import vtk_to_numpy
+import warnings
+import json
+from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 from PyQt5 import QtCore, QtGui
 from PyQt5 import Qt
 from collections import namedtuple
@@ -24,8 +26,379 @@ import re
 import os
 sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
-
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+
+class AreaPointList():
+    
+    def __init__(self, vtkWidget):
+        """
+        
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.vtkWidget = vtkWidget
+        # List for containing AreaPoint objects
+        self.list = []
+        # Qt objects
+        self.scroll = Qt.QScrollArea()
+        self.scroll.setMinimumWidth(200)
+        self.scroll.setWidgetResizable(True)
+        self.inner = Qt.QFrame(self.scroll)
+        self.layout = Qt.QVBoxLayout()
+        self.inner.setLayout(self.layout)
+        self.scroll.setWidget(self.inner)
+        self.button_group = Qt.QButtonGroup()
+        
+        # Add first areapoint
+        self.add_areapoint()
+    
+    def get_scroll(self):
+        return self.scroll
+    
+    def add_areapoint(self):
+        self.list.append(AreaPoint(len(self.list), self))
+    
+    def update(self):
+        # Handle displaying polyline
+        renderer = (self.vtkWidget.GetRenderWindow().GetRenderers()
+                    .GetFirstRenderer())
+        if hasattr(self, 'actor'):
+            # If a polyline already exists, delete it
+            renderer.RemoveActor(self.actor)
+            del self.actor
+        if len(self.list)>=3:
+            # If we have at least two picked points create line and render
+            # Get the point coordinates for each area point
+            pts_np = np.empty((len(self.list)-1, 3), dtype=np.float32)
+            for i in np.arange(len(self.list)-1):
+                pts_np[i,:] = (self.list[i].actor.GetMapper().GetInput().
+                               GetPoint(0))
+            pts = vtk.vtkPoints()
+            pts.SetData(numpy_to_vtk(pts_np, deep=True, 
+                                     array_type=vtk.VTK_FLOAT))
+            pdata = vtk.vtkPolyData()
+            pdata.SetPoints(pts)
+            lines = vtk.vtkCellArray()
+            lines.InsertNextCell(len(self.list))
+            for i in np.arange(len(self.list)-1):
+                lines.InsertCellPoint(i)
+            lines.InsertCellPoint(0) # closing the loop
+            pdata.SetLines(lines)
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(pdata)
+            self.actor = vtk.vtkActor()
+            self.actor.SetMapper(mapper)
+            self.actor.GetProperty().SetLineWidth(5)
+            self.actor.GetProperty().SetColor(1.0, 1.0, 0.0)
+            self.actor.GetProperty().RenderLinesAsTubesOn()
+            renderer.AddActor(self.actor)
+        
+        
+        
+        self.vtkWidget.GetRenderWindow().Render()
+    
+    def move(self, areapoint, direction):
+        # Get the current position of the areapoint object
+        ind = self.list.index(areapoint)
+        # Handle cases where we're at the edge of the list
+        if (ind==0) and (direction=='up'):
+            return
+        if (ind==(len(self.list)-2)) and (direction=='down'):
+            return
+        # Pop the element out of the list
+        areapoint = self.list.pop(ind)
+        # Remove the layout from the scroll
+        self.layout.removeItem(areapoint.layout)
+        if direction=='up':
+            # If we want to move up subtract from ind
+            self.list.insert(ind-1, areapoint)
+            self.layout.insertLayout(ind-1, areapoint.layout)
+        elif direction=='down':
+            # If we want to move up subtract from ind
+            self.list.insert(ind+1, areapoint)
+            self.layout.insertLayout(ind+1, areapoint.layout)
+        
+        self.update()
+    
+    def insert_below(self, areapoint):
+        # Take the areapoint at the bottom of the list and move it below
+        # this areapoint
+        # Get the current position of the areapoint object
+        ind = self.list.index(areapoint)
+        # Handle case where we're at the edge of the list
+        if ind==(len(self.list)-2):
+            return
+        # Pop the bottom filled areapoint out of the list
+        b_areapoint = self.list.pop(-2)
+        # Remove the layout from the scroll
+        self.layout.removeItem(b_areapoint.layout)
+        # Insert areapoint and layout below this one
+        self.list.insert(ind+1, b_areapoint)
+        self.layout.insertLayout(ind+1, b_areapoint.layout)
+        
+        self.update()
+    
+    def delete(self, areapoint):
+        # Get the current position of the areapoint object
+        ind = self.list.index(areapoint)
+        # Pop the element out of the list
+        areapoint = self.list.pop(ind)
+        # Remove button from button group
+        self.button_group.removeButton(areapoint.radio)
+        # Delete each item in the layout
+        while areapoint.layout.count()>0:
+            widget = areapoint.layout.takeAt(0).widget()
+            widget.deleteLater()
+        # Remove the layout from the scroll
+        self.layout.removeItem(areapoint.layout)
+        del areapoint.layout
+        # Remove point from renderwindow
+        renderer = (self.vtkWidget.GetRenderWindow().GetRenderers()
+                    .GetFirstRenderer())
+        renderer.RemoveActor(areapoint.actor)
+        del areapoint.actor
+        # Delete areapoint object, there should be no more references
+        del areapoint
+        
+        self.update()
+    
+    def copy_areapoints(self, project_name):
+        # Create the list of lists of the areapointlist as a json string
+        
+        output = []
+        
+        for ap in self.list:
+            if ap.empty:
+                continue
+            output.append((ap.radio.text(), int(ap.PointId)))
+        
+        #print(output)
+        pyperclip.copy(json.dumps({project_name: output}, indent=4))
+    
+    def save_areapoints(self, project_name, path):
+        
+        # Write json formatted areapoints to file given by path
+        output = []
+        
+        for ap in self.list:
+            if ap.empty:
+                continue
+            output.append((ap.radio.text(), int(ap.PointId)))
+        
+        print(output)
+        f = open(path, 'w')
+        json.dump({project_name: output}, f, indent=4)
+        f.close()
+
+class AreaPoint():
+    
+    def __init__(self, position, areapointlist):
+        """
+        Create new AreaPoint
+
+        Parameters
+        ----------
+        position : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Our button starts empty
+        self.empty = True
+        self.position = position
+        self.areapointlist = areapointlist
+        self.PointId = None
+        
+        # Qt stuff
+        self.layout = Qt.QHBoxLayout()
+        self.radio = Qt.QRadioButton('empty')
+        self.layout.addWidget(self.radio)
+        self.areapointlist.button_group.addButton(self.radio)
+        self.radio.setChecked(True)
+        self.areapointlist.layout.addLayout(self.layout)
+    
+    def set_point(self, PointId, ss, renderer):
+        """
+        Set the point in the singlescan that we've picked
+
+        Parameters
+        ----------
+        PointId : int
+            PointId, see singlescan's pedigree ids.
+        ss : pydar.SingleScan
+            SingleScan object that the point belongs too.
+        renderer : vtk.vtkRenderer
+            Renderer object for the render window
+            
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.PointId = PointId
+        
+        if self.empty:
+            # If we were empty to begin with create buttons
+            up = Qt.QPushButton("up")
+            up.setMinimumWidth(40)
+            self.layout.addWidget(up)
+            up.clicked.connect(self.move_up)
+            down = Qt.QPushButton("down")
+            down.setMinimumWidth(40)
+            self.layout.addWidget(down)
+            down.clicked.connect(self.move_down)
+            delete = Qt.QPushButton("del")
+            delete.setMinimumWidth(40)
+            self.layout.addWidget(delete)
+            delete.clicked.connect(self.delete)
+            ins = Qt.QPushButton("ins")
+            ins.setMinimumWidth(40)
+            self.layout.addWidget(ins)
+            ins.clicked.connect(self.insert_below)
+            # Create a new empty area point
+            self.areapointlist.add_areapoint()
+            self.empty = False
+            # Connect with toggled slot
+            self.radio.toggled.connect(self.toggled)
+        else:
+            # remove the existing point from the renderer
+            renderer.RemoveActor(self.actor)
+            del self.actor
+        
+        # Set the button text to the single scan name
+        self.radio.setText(ss.scan_name)
+        # Create VTK Selection pipeline
+        selectionList = numpy_to_vtk(np.array([PointId], dtype=np.uint32),
+                                     deep=True, 
+                                     array_type=vtk.VTK_UNSIGNED_INT)
+        selectionNode = vtk.vtkSelectionNode()
+        selectionNode.SetFieldType(vtk.vtkSelectionNode.POINT)
+        selectionNode.SetContentType(vtk.vtkSelectionNode.PEDIGREEIDS)
+        selectionNode.SetSelectionList(selectionList)
+        selection = vtk.vtkSelection()
+        selection.AddNode(selectionNode)
+        extractSelection = vtk.vtkExtractSelection()
+        extractSelection.SetInputData(1, selection)
+        extractSelection.SetInputConnection(0, ss.currentFilter
+                                            .GetOutputPort())
+        extractSelection.Update()
+        geoFilter = vtk.vtkGeometryFilter()
+        geoFilter.SetInputConnection(extractSelection.GetOutputPort())
+        geoFilter.Update()
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(geoFilter.GetOutputPort())
+        mapper.SetScalarVisibility(0)
+        self.actor = vtk.vtkActor()
+        self.actor.SetMapper(mapper)
+        self.actor.GetProperty().RenderPointsAsSpheresOn()
+        self.actor.GetProperty().SetPointSize(20)
+        if self.radio.isChecked():
+            self.actor.GetProperty().SetColor(0.5, 0.5, 0.5)
+        else:
+            self.actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+        renderer.AddActor(self.actor)
+        
+        # Update polyline
+        self.areapointlist.update()
+    
+    def move_up(self, s):
+        """
+        Tell our areapointlist to move this item up
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.areapointlist.move(self, 'up')
+    
+    def move_down(self, s):
+        """
+        Tell our areapointlist to move this item down
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.areapointlist.move(self, 'down')
+    
+    def delete(self, s):
+        """
+        
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.areapointlist.delete(self)
+    
+    def insert_below(self, s):
+        """
+        
+
+        Parameters
+        ----------
+        s : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.areapointlist.insert_below(self)
+    
+    def toggled(self, checked):
+        """
+        Change the color when we toggle the radio button
+
+        Parameters
+        ----------
+        checked : bool
+            Whether radio button is now checked or unchecked.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if checked:
+            #print('toggled on')
+            self.actor.GetProperty().SetColor(0.5, 0.5, 0.5)
+        else:
+            #print('toggled off')
+            self.actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+        self.areapointlist.vtkWidget.GetRenderWindow().Render()
 
 class MainWindow(Qt.QMainWindow):
     
@@ -87,13 +460,20 @@ class MainWindow(Qt.QMainWindow):
         
         # Populate the vis_layout
         self.vtkWidget = QVTKRenderWindowInteractor(self.frame)
-        
+        self.vtkWidget.setSizePolicy(Qt.QSizePolicy.Expanding, 
+                                     Qt.QSizePolicy.Expanding)
         vis_layout.addWidget(self.vtkWidget)
         vis_layout.addLayout(vis_tools_layout)
         
         # Create the Options layout, which will contain tools to select files
         # classify points, etc
+        # Some additions here to make this scrollable
+        opt_scroll = Qt.QScrollArea()
+        opt_scroll.setWidgetResizable(True)
+        opt_inner = Qt.QFrame(opt_scroll)
         opt_layout = Qt.QVBoxLayout()
+        opt_inner.setLayout(opt_layout)
+        opt_scroll.setWidget(opt_inner)
         
         # Populate the opt_layout
         
@@ -189,33 +569,77 @@ class MainWindow(Qt.QMainWindow):
         opt_layout.addWidget(apply_button)
         
         # Add checkboxes for which classes to render
-        class_layout = Qt.QVBoxLayout()
-        self.class_group_box = Qt.QGroupBox()
-        self.class_button_group = Qt.QButtonGroup()
-        self.class_button_group.setExclusive(0)
+        opt_layout.addWidget(Qt.QLabel('Classes to Display:'))
+        self.class_layout = Qt.QVBoxLayout()
+        class_group_box = Qt.QGroupBox()
+        # Dictionary object containing checkboxes keyed on classes (or 'all')
         self.class_check_dict = {}
-        for category in self.class_dict:
-            self.class_check_dict[category] = Qt.QCheckBox(category)
-            self.class_check_dict[category].setChecked(0)
-            self.class_button_group.addButton(self.class_check_dict[category])
-            class_layout.addWidget(self.class_check_dict[category])
-        self.class_group_box.setLayout(class_layout)
-        self.class_group_box.setEnabled(0)
+        # Add 'all' class 
+        self.class_check_dict['all'] = Qt.QCheckBox('all')
+        self.class_check_dict['all'].setChecked(1)
+        self.class_layout.addWidget(self.class_check_dict['all'])
+        class_group_box.setLayout(self.class_layout)
+        opt_layout.addWidget(class_group_box)
+        update_class_button = Qt.QPushButton('Update Class Display')
+        opt_layout.addWidget(update_class_button)
         #opt_layout.addWidget(self.class_group_box)
         
         # Add write scans button
         write_button = Qt.QPushButton("Write Scans")
         opt_layout.addWidget(write_button)
+
+        # Create a second options layout with options for visualization
+        opt_layout_2 = Qt.QVBoxLayout()
+        # Add interface for creating enclosed areas
+        opt_layout_2.addWidget(Qt.QLabel('Pointwise Area Selection'))
+        self.edit_area_check = Qt.QCheckBox('Edit Area Points')
+        opt_layout_2.addWidget(self.edit_area_check)
+        self.area_point_list = AreaPointList(self.vtkWidget)
+        opt_layout_2.addWidget(self.area_point_list.get_scroll())
+        # Add buttons for copying selected points
+        copy_areapoints_button = Qt.QPushButton('Copy areapoints')
+        opt_layout_2.addWidget(copy_areapoints_button)
+        # copy_cornercoords_button = Qt.QPushButton('Copy cornercoords')
+        # opt_layout_2.addWidget(copy_cornercoords_button)
+        sel_area_dir_button = Qt.QPushButton("Select areapoint dir")
+        # Create the file dialog that we'll use
+        self.area_dialog = Qt.QFileDialog(self)
+        if os.path.isdir('/media/thayer/Data/mosaic_lidar/'):
+            self.area_dialog.setDirectory('/media/thayer/Data/mosaic_lidar/')
+        else:
+            self.area_dialog.setDirectory(os.getcwd())
+
+        self.area_dialog.setFileMode(4) # set file mode to pick directories
+        opt_layout_2.addWidget(sel_area_dir_button)
+        self.area_filename_lineedit = Qt.QLineEdit('areapoint filename')
+        opt_layout_2.addWidget(self.area_filename_lineedit)
+        save_areapoint_button = Qt.QPushButton('Save areapoints')
+        opt_layout_2.addWidget(save_areapoint_button)
+        delete_areapoints_button = Qt.QPushButton('Delete areapoints')
+        opt_layout_2.addWidget(delete_areapoints_button)
+        load_areapoint_button = Qt.QPushButton('Load areapoints')
+        opt_layout_2.addWidget(load_areapoint_button)
         
         # Populate the main layout
-        main_layout.addLayout(vis_layout)
-        main_layout.addLayout(opt_layout)
+        main_layout.addLayout(vis_layout, stretch=5)
+        main_layout.addWidget(opt_scroll)
+        main_layout.addLayout(opt_layout_2)
         
         # Set layout for the frame and set central widget
         self.frame.setLayout(main_layout)
         self.setCentralWidget(self.frame)
         
         # Signals and slots
+        # vis tools
+        self.field_selector.currentTextChanged.connect(
+            self.on_field_selector_changed)
+        self.v_min.editingFinished.connect(self.on_v_edit)
+        self.v_max.editingFinished.connect(self.on_v_edit)
+        self.near_label.editingFinished.connect(self.on_clip_changed)
+        self.far_label.editingFinished.connect(self.on_clip_changed)
+        look_down_button.clicked.connect(self.look_down)
+        self.show_class_checkbox.toggled.connect(self.on_show_class_toggled)
+        # options layout
         self.sel_scan_area_button.clicked.connect(
             self.on_sel_scan_area_button_click)
         self.sel_proj_button.clicked.connect(self.on_sel_proj_button_click)
@@ -229,25 +653,23 @@ class MainWindow(Qt.QMainWindow):
         self.class_button.clicked.connect(self.on_class_button_click)
         train_button.clicked.connect(self.on_train_button_click)
         apply_button.clicked.connect(self.on_apply_button_click)
+        update_class_button.clicked.connect(self.on_update_class_button_click)
         write_button.clicked.connect(self.on_write_button_click)
-        self.field_selector.currentTextChanged.connect(
-            self.on_field_selector_changed)
-        self.v_min.editingFinished.connect(self.on_v_edit)
-        self.v_max.editingFinished.connect(self.on_v_edit)
-        self.near_label.editingFinished.connect(self.on_clip_changed)
-        self.far_label.editingFinished.connect(self.on_clip_changed)
-        look_down_button.clicked.connect(self.look_down)
-        self.show_class_checkbox.toggled.connect(self.on_show_class_toggled)
+        # opt_layout_2
+        self.edit_area_check.toggled.connect(self.on_edit_area_check_toggled)
+        copy_areapoints_button.clicked.connect(
+            self.on_copy_areapoints_button_click)
+        sel_area_dir_button.clicked.connect(self.on_sel_area_dir_button_click)
+        self.area_dialog.fileSelected.connect(self.on_area_dir_selected)
+        save_areapoint_button.clicked.connect(
+            self.on_save_areapoint_button_click)
+        delete_areapoints_button.clicked.connect(
+            self.on_delete_areapoints_button)
+        load_areapoint_button.clicked.connect(self.on_load_areapoint_button)
         
         self.show()
         
         # VTK setup
-        # Dicts to hold visualization pipeline objects
-        self.elev_filt_dict = {}
-        self.class_filt_dict = {}
-        self.mapper_dict = {}
-        self.actor_dict = {}
-        
         # Selected dict, to hold points until we classify them
         self.selected_poly_dict = {}
         self.selected_append = vtk.vtkAppendPolyData()
@@ -285,10 +707,13 @@ class MainWindow(Qt.QMainWindow):
                                                      self.
                                                      on_modified_renderwindow)
         style = vtk.vtkInteractorStyleRubberBandPick()
-        areaPicker = vtk.vtkAreaPicker()
-        areaPicker.AddObserver("EndPickEvent", self.on_end_pick)
+        self.pointPicker = vtk.vtkPointPicker()
+        self.pointPicker.SetTolerance(0.01)
+        self.pointPicker.AddObserver("EndPickEvent", self.on_end_pick)
+        self.areaPicker = vtk.vtkAreaPicker()
+        self.areaPicker.AddObserver("EndPickEvent", self.on_area_pick)
         self.iren = self.vtkWidget.GetRenderWindow().GetInteractor()
-        self.iren.SetPicker(areaPicker)
+        self.iren.SetPicker(self.areaPicker)
         self.iren.Initialize()
         self.iren.SetInteractorStyle(style)
         self.iren.Start()
@@ -378,8 +803,7 @@ class MainWindow(Qt.QMainWindow):
                              'mosaic_rov_290420.RiSCAN',
                              'mosaic_rov_02_090520.RiSCAN']
         else:
-            raise ValueError("You have selected a nonexistant scan area."
-                             " please start again")
+            project_names = os.listdir(dir_str)
         
         # Update proj_combobox with available scans
         self.proj_combobox.addItems(project_names)
@@ -478,54 +902,21 @@ class MainWindow(Qt.QMainWindow):
         self.v_max.setEnabled(1)
         
         # Clear the elev_filters mappers and actors
-        for scan_name in self.actor_dict:
-            self.renderer.RemoveActor(self.actor_dict[scan_name])
-        self.vtkWidget.GetRenderWindow().Render()
-        self.elev_filt_dict.clear()
-        self.class_filt_dict.clear()
-        self.mapper_dict.clear()
-        self.actor_dict.clear()
-        self.selected_poly_dict.clear()
+        # !!! update to get all of the actors in the renderer...
+        #for scan_name in self.actor_dict:
+        #    self.renderer.RemoveActor(self.actor_dict[scan_name])
+        #self.vtkWidget.GetRenderWindow().Render()
+        # self.elev_filt_dict.clear()
+        # self.class_filt_dict.clear()
+        # self.mapper_dict.clear()
+        # self.actor_dict.clear()
+        # self.selected_poly_dict.clear()
         
         for scan_name in self.project.scan_dict:
-            # Create an elevation filter linked to transformFilter
-            # Create vertices
-            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-            vertexGlyphFilter.SetInputConnection(
-                self.project.scan_dict[scan_name].transformFilter.
-                GetOutputPort())
-            vertexGlyphFilter.Update()
-            self.elev_filt_dict[scan_name] = vtk.vtkSimpleElevationFilter()
-            self.elev_filt_dict[scan_name].SetInputConnection(
-                vertexGlyphFilter.GetOutputPort())
-            # We vtkSimpleElevationFilter will overwrite the active scalars
-            # so let's set active scalars to a dummy array
-            (self.elev_filt_dict[scan_name].GetInput().GetPointData().
-             SetActiveScalars("elev"))
-            self.elev_filt_dict[scan_name].GetInput().Modified()
-            self.elev_filt_dict[scan_name].Update()
-            
-            # Now create a threshold filters for each of our classes and 
-            # set the outputs of these to go to the mapper and actor. The
-            # keys for these dictionaries will be (scan_name, category)
-            
-            #for category in self.class_dict:
-                
-            
-            # Create mapper and set scalar range
-            self.mapper_dict[scan_name] = vtk.vtkPolyDataMapper()
-            self.mapper_dict[scan_name].SetInputConnection(
-                self.elev_filt_dict[scan_name].GetOutputPort())
-            self.mapper_dict[scan_name].ScalarVisibilityOn()
-            self.mapper_dict[scan_name].SetLookupTable(
-                pydar.mplcmap_to_vtkLUT(float(self.v_min.text()),
-                                        float(self.v_max.text())))
-            self.mapper_dict[scan_name].SetScalarRange(
+            # Create actor
+            self.project.scan_dict[scan_name].create_elevation_pipeline(
                 float(self.v_min.text()), float(self.v_max.text()))
-            
-            # Create actor and link to mapper
-            self.actor_dict[scan_name] = vtk.vtkActor()
-            self.actor_dict[scan_name].SetMapper(self.mapper_dict[scan_name])
+            self.renderer.AddActor(self.project.scan_dict[scan_name].actor)
             
             # Create appendPolyData, mappers and actors in selection dicts
             self.selected_poly_dict[scan_name] = vtk.vtkAppendPolyData()
@@ -568,10 +959,10 @@ class MainWindow(Qt.QMainWindow):
         """
         
         if checked:
-            self.renderer.AddActor(self.actor_dict[button.text()])
+            self.renderer.AddActor(self.project.scan_dict[button.text()].actor)
             self.vtkWidget.GetRenderWindow().Render()
         else:
-            self.renderer.RemoveActor(self.actor_dict[button.text()])
+            self.renderer.RemoveActor(self.project.scan_dict[button.text()].actor)
             self.vtkWidget.GetRenderWindow().Render()
     
     def on_clear_button_click(self, s):
@@ -607,18 +998,24 @@ class MainWindow(Qt.QMainWindow):
 
         """
         
+        c = self.class_dict[self.class_combobox.currentText()]
         # Send Picked Points to SingleScan to be added to classified points
         for scan_name in self.project.scan_dict:
             if (self.selected_poly_dict[scan_name].GetOutput()
                 .GetNumberOfPoints()>0):
                 self.project.scan_dict[scan_name].update_man_class(
-                    self.selected_poly_dict[scan_name].GetOutput(),
-                    self.class_dict[self.class_combobox.currentText()])
+                    self.selected_poly_dict[scan_name].GetOutput(), c)
         
         self.clear_selection()
         self.class_button.setEnabled(0)
         # Update man_class_dict
         self.update_man_class_dict()
+        
+        # add to class check dict
+        if not c in self.class_check_dict.keys():
+            self.class_check_dict[c] = Qt.QCheckBox(str(c))
+            self.class_check_dict[c].setChecked(0)
+            self.class_layout.addWidget(self.class_check_dict[c])
     
     def on_train_button_click(self, s):
         """
@@ -752,54 +1149,44 @@ class MainWindow(Qt.QMainWindow):
         """
         
         if text=='Classification':
-            #raise NotImplementedError('Cannot display classification yet')
-            # Create LookupTable
-            colors={0 : (153/255, 153/255, 153/255, 1),
-                    1 : (153/255, 153/255, 153/255, 1),
-                    2 : (55/255, 126/255, 184/255, 1),
-                    6 : (166/255, 86/255, 40/255, 1),
-                    7 : (255/255, 255/255, 51/255, 1),
-                    64: (255/255, 255/255, 51/255, 1),
-                    65: (255/255, 255/255, 51/255, 1),
-                    66: (255/255, 255/255, 51/255, 1),
-                    67: (228/255, 26/255, 28/255, 1),
-                    68: (77/255, 175/255, 74/255, 1),
-                    69: (247/255, 129/255, 191/255, 1),
-                    70: (152/255, 78/255, 163/255, 1),
-                    71: (255/255, 127/255, 0/255, 1),
-                    72: (253/255, 191/255, 111/255, 1)}
-            lut = vtk.vtkLookupTable()
-            lut.SetNumberOfTableValues(max(colors) + 1)
-            lut.SetTableRange(0, max(colors))
-            for key in colors:
-                lut.SetTableValue(key, colors[key])
-            lut.Build()
-            
             # Apply to each scan
-            for scan_name in self.elev_filt_dict:
-                (self.elev_filt_dict[scan_name].GetOutput().GetPointData().
-                  SetActiveScalars(text))
-                self.elev_filt_dict[scan_name].GetOutput().Modified()
-                self.mapper_dict[scan_name].SetLookupTable(lut)
-                self.mapper_dict[scan_name].SetScalarRange(min(colors), 
-                                                            max(colors))
-                self.mapper_dict[scan_name].SetScalarVisibility(1)
-                self.mapper_dict[scan_name].SetColorModeToMapScalars()
+            for scan_name in self.project.scan_dict:
+                ss = self.project.scan_dict[scan_name]
+                self.renderer.RemoveActor(ss.actor)
+                ss.create_filter_pipeline()
+                self.renderer.AddActor(ss.actor)
             
             # Disable v_min and v_max
             self.v_min.setEnabled(0)
             self.v_max.setEnabled(0)
         else:
-            for scan_name in self.elev_filt_dict:
-                (self.elev_filt_dict[scan_name].GetOutput().GetPointData().
-                 SetActiveScalars(text))
-                self.elev_filt_dict[scan_name].GetOutput().Modified()
-                self.mapper_dict[scan_name].ScalarVisibilityOn()
-                self.mapper_dict[scan_name].SetLookupTable(
-                    pydar.mplcmap_to_vtkLUT(float(self.v_min.text()),
-                                            float(self.v_max.text())))
-                self.mapper_dict[scan_name].SetScalarRange(
-                    float(self.v_min.text()), float(self.v_max.text()))
+            for scan_name in self.project.scan_dict:
+                ss = self.project.scan_dict[scan_name]
+                
+                if (ss.mapper.GetInput().GetPointData()
+                    .HasArray('Classification')):
+                    self.renderer.RemoveActor(ss.actor)
+                    ss.create_elevation_pipeline(float(self.v_min.text()),
+                                                 float(self.v_max.text()))
+                    self.renderer.AddActor(ss.actor)
+                else:
+                    ss.mapper.GetInput().GetPointData().SetActiveScalars(text)
+                    ss.mapper.GetInput().Modified()
+                    ss.mapper.ScalarVisibilityOn()
+                    ss.mapper.SetLookupTable(
+                        pydar.mplcmap_to_vtkLUT(float(self.v_min.text()),
+                                                float(self.v_max.text())))
+                    ss.mapper.SetScalarRange(
+                        float(self.v_min.text()), float(self.v_max.text()))
+                    ss.mapper_sub.GetInput().GetPointData().SetActiveScalars(
+                        text)
+                    ss.mapper_sub.GetInput().Modified()
+                    ss.mapper_sub.ScalarVisibilityOn()
+                    ss.mapper_sub.SetLookupTable(
+                        pydar.mplcmap_to_vtkLUT(float(self.v_min.text()),
+                                                float(self.v_max.text())))
+                    ss.mapper_sub.SetScalarRange(
+                        float(self.v_min.text()), float(self.v_max.text()))
             
             # Enable v_min and v_max
             self.v_min.setEnabled(1)
@@ -817,11 +1204,17 @@ class MainWindow(Qt.QMainWindow):
 
         """
         if float(self.v_min.text())<float(self.v_max.text()):
-            for scan_name in self.mapper_dict:
-                self.mapper_dict[scan_name].SetLookupTable(
+            for scan_name in self.project.scan_dict:
+                ss = self.project.scan_dict[scan_name]
+                ss.mapper.SetLookupTable(
                     pydar.mplcmap_to_vtkLUT(float(self.v_min.text()),
                                             float(self.v_max.text())))
-                self.mapper_dict[scan_name].SetScalarRange(
+                ss.mapper.SetScalarRange(
+                    float(self.v_min.text()), float(self.v_max.text()))
+                ss.mapper_sub.SetLookupTable(
+                    pydar.mplcmap_to_vtkLUT(float(self.v_min.text()),
+                                            float(self.v_max.text())))
+                ss.mapper_sub.SetScalarRange(
                     float(self.v_min.text()), float(self.v_max.text()))
             self.vtkWidget.GetRenderWindow().Render()
     
@@ -972,8 +1365,8 @@ class MainWindow(Qt.QMainWindow):
                 selection = vtk.vtkSelection()
                 selection.AddNode(selectionNode)
                 extractSelection = vtk.vtkExtractSelection()
-                extractSelection.SetInputData(0, self.mapper_dict[scan_name].
-                                              GetInput())
+                extractSelection.SetInputData(0, self.project.scan_dict
+                                              [scan_name].mapper.GetInput())
                 extractSelection.SetInputData(1, selection)
                 extractSelection.Update()
                 vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
@@ -993,9 +1386,249 @@ class MainWindow(Qt.QMainWindow):
         self.man_class_mapper.Update()
         if self.show_class_checkbox.isChecked():
             self.vtkWidget.GetRenderWindow().Render()
+    
+    def on_update_class_button_click(self, s):
+        """
+        Update the classes we are filtering in current filter
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # First check if the 'all' button is checked
+        if self.class_check_dict['all'].isChecked():
+            class_list = 'all'
+        # Otherwise get all checked classes
+        else:
+            class_list = []
+            for c in self.class_check_dict:
+                if self.class_check_dict[c].isChecked():
+                    class_list.append(c)
+        
+        # Update current filter
+        for scan_name in self.project.scan_dict:
+            self.project.scan_dict[scan_name].update_current_filter(
+                class_list)
+            self.renderer.RemoveActor(self.project.scan_dict[scan_name]
+                                      .actor)
+            # !!! Change to create correct pipeline
+            self.project.scan_dict[scan_name].create_solid_pipeline('Cyan')
+            self.renderer.AddActor(self.project.scan_dict[scan_name].actor)
+        
+        self.vtkWidget.GetRenderWindow().Render()
+
+    def on_edit_area_check_toggled(self, checked):
+        """
+        Switch what we want picking a point to do from transects to area and
+        vice versa.
+
+        Parameters
+        ----------
+        checked : bool
+            Check button state.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        if checked:
+            self.iren.SetPicker(self.pointPicker)
+            self.iren.SetInteractorStyle(
+                vtk.vtkInteractorStyleTrackballCamera())
+        else:
+            self.iren.SetPicker(self.areaPicker)
+            self.iren.SetInteractorStyle(vtk.vtkInteractorStyleRubberBandPick())
+        
+    def on_copy_areapoints_button_click(self, s):
+        """
+        copy areapointlist to clipboard in convenient format
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.area_point_list.copy_areapoints(self.ss.project_name)
+    
+    def on_sel_area_dir_button_click(self, s):
+        """
+        Open file dialog to select scan area directory
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.area_dialog.exec_()
+        
+    def on_area_dir_selected(self, dir_str):
+        """
+        Save the area directory path for when we want to save areapoints
+
+        Parameters
+        ----------
+        dir_str : str
+            filepath we just selected.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        self.areapoint_dir_str = dir_str
+    
+    def on_save_areapoint_button_click(self, s):
+        """
+        Write areapoints as a json formatted string to a file
+
+        Parameters
+        ----------
+        s : int
+            Button status not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        try:
+            path = os.path.join(self.areapoint_dir_str, 
+                                self.area_filename_lineedit.text())
+            self.area_point_list.save_areapoints(self.project.project_name, 
+                                                 path)
+        except:
+            warnings.warn('Save areapoints failed. Have you selected a '
+                          'directory?')
+    
+    def on_delete_areapoints_button(self, s):
+        """
+        Delete all areapoints
+
+        Parameters
+        ----------
+        s : int
+            Button status. Not used
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        while len(self.area_point_list.list)>1:
+            self.area_point_list.delete(self.area_point_list.list[0])
+
+    def on_load_areapoint_button(self, s):
+        """
+        Load areapoints from file. Most useful if we have emptied the list
+        first
+
+        Parameters
+        ----------
+        s : int
+            Button status not used.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Try loading the file
+        try:
+            path = os.path.join(self.areapoint_dir_str, 
+                                self.area_filename_lineedit.text())
+            f = open(path, 'r')
+            areapoint_dict = json.load(f)
+            f.close()
+        except:
+            warnings.warn('File not found. Aborting')
+            return
+        
+        # Check that the project matches our project_1
+        if not (self.project.project_name in areapoint_dict):
+            warnings.warn('areapoints project does not match project 1.'
+                          + ' Aborting.')
+            return
+        
+        # For each areapoint in the list add it to self.area_point_list
+        # the only tricky part here is that we need to get the singlescan
+        # associated with it.
+        for scan_name, PointId in areapoint_dict[self.project.project_name]:
+            ss = self.project.scan_dict[scan_name]
+            self.area_point_list.list[-1].set_point(PointId, ss, self.renderer)
+        self.vtkWidget.GetRenderWindow().Render()
                 
     ### VTK methods ###
     def on_end_pick(self, obj, event):
+        """
+        When a pick is made set it to be an endpoint of the transect
+
+        Parameters
+        ----------
+        obj: vtkPointPicker
+            vtkPointPicker object containing picked location
+        event: str
+            event name, not used.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        # Get the picked point
+        pt = np.array(obj.GetPickPosition())
+        
+        best_point = ['', 1, np.inf]
+        for scan_name in self.project.scan_dict:
+            # Find the pedigree id of the point in any active singlescan
+            # That's closest to the picked point (usually this will be picked)
+            # point
+            if self.scan_check_dict[scan_name].isChecked():
+                ss = self.project.scan_dict[scan_name]
+                ind = ss.currentFilter.GetOutput().FindPoint(pt)
+                PointId = vtk_to_numpy(ss.currentFilter.GetOutput()
+                                       .GetPointData().GetPedigreeIds())[ind]
+                dist = np.square(pt - 
+                                 np.array(ss.currentFilter.GetOutput()
+                                          .GetPoint(ind))
+                                 ).sum()
+                if dist < best_point[2]:
+                    best_point = [ss, PointId, dist]
+        
+
+        # Find the checked area point and set it
+        for ap in self.area_point_list.list:
+            if ap.radio.isChecked():
+                ap.set_point(best_point[1], best_point[0], self.renderer)
+                self.vtkWidget.GetRenderWindow().Render()
+                break
+
+    def on_area_pick(self, obj, event):
         """
         After a pick action concludes we want to select those points.
 
@@ -1015,7 +1648,7 @@ class MainWindow(Qt.QMainWindow):
         # Variable for checking if we successfully selected any points
         pts_selected = False
         
-        for scan_name in self.mapper_dict:
+        for scan_name in self.project.scan_dict:
             
             # Check if this scan is visible
             if self.scan_check_dict[scan_name].isChecked():
@@ -1035,8 +1668,8 @@ class MainWindow(Qt.QMainWindow):
                 selection = vtk.vtkSelection()
                 selection.AddNode(selectionNode)
                 extractSelection = vtk.vtkExtractSelection()
-                extractSelection.SetInputData(0, self.mapper_dict[scan_name].
-                                              GetInput())
+                extractSelection.SetInputData(0, self.project.scan_dict
+                                          [scan_name].mapper.GetInput())
                 extractSelection.SetInputData(1, selection)
                 extractSelection.Update()
                 vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
