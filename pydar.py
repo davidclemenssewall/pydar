@@ -785,7 +785,10 @@ class SingleScan:
     trans_history_dict : dict
         for each transformation in transform_dict gives the node to the 
         history tree, keyed off the same key.
-        
+    labels : pandas dataframe
+        dataframe containing category, subcategory, id, x, y, z for manually 
+        labelled points (e.g. stakes). x, y, z coordinates are in the Scanners 
+        Own Coordinate System.
     
     Methods
     -------
@@ -880,7 +883,8 @@ class SingleScan:
                  import_mode=None, poly='.1_.1_.01',
                  read_scan=False, import_las=False, create_id=True,
                  las_fieldnames=None, 
-                 class_list=[0, 1, 2, 70], read_dir=None, suffix=''):
+                 class_list=[0, 1, 2, 70], read_dir=None, suffix='',
+                 class_suffix=''):
         """
         Creates SingleScan object and transformation pipeline.
         
@@ -934,6 +938,9 @@ class SingleScan:
         suffix : str, optional
             Suffix for npyfiles directory if we are reading scans. The default
             is '' which corresponds to the regular npyfiles directory.
+        class_suffix : str, optional
+            Suffix for which Classification[class_suffix].npy file to load as
+            'Classification' array. The default is '' (load Classification.npy)
 
         Returns
         -------
@@ -945,6 +952,7 @@ class SingleScan:
         self.project_name = project_name
         self.scan_name = scan_name
         self.poly = poly
+        self.class_suffix = class_suffix
         # Get git_hash
         git_hash = get_git_hash()
         
@@ -983,6 +991,9 @@ class SingleScan:
             else:
                 las_fieldnames = copy.deepcopy(las_fieldnames)
                 for i in range(len(las_fieldnames)):
+                    # Adjust for different Classification arrays
+                    if las_fieldnames[i]=='Classification':
+                        las_fieldnames[i] = 'Classification' + class_suffix
                     las_fieldnames[i] = las_fieldnames[i] + '.npy'
             
             pdata = vtk.vtkPolyData()
@@ -990,6 +1001,9 @@ class SingleScan:
             for k in las_fieldnames:
                 try:
                     name = k.split('.')[0]
+                    # Adjust for class_suffix
+                    if k==('Classification' + class_suffix + '.npy'):
+                        name = 'Classification'
                     self.np_dict[name] = np.load(os.path.join(npy_path, k))
                     if name=='Points':
                         pts = vtk.vtkPoints()
@@ -1712,6 +1726,186 @@ class SingleScan:
                                                      dtype=np.uint8)})
             self.man_class.index.name = 'PointId'
         
+    def load_labels(self):
+        """
+        Load the man_class dataframe. Create if it does not exist.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        # Check if directory for manual classifications exists and create
+        # if it doesn't.
+        create_df = False
+        if os.path.isdir(os.path.join(self.project_path, self.project_name, 
+                         'manualclassification')):
+            # Check if file exists
+            if os.path.isfile(os.path.join(self.project_path, self.project_name, 
+                              'manualclassification', self.scan_name +
+                              '_labels.parquet')):
+                self.labels = pd.read_parquet(os.path.join(self.project_path, 
+                                                 self.project_name,
+                                                 'manualclassification', 
+                                                 self.scan_name 
+                                                 + '_labels.parquet'),
+                                                 engine="pyarrow")
+            # otherwise create dataframe
+            else:
+                create_df = True
+        else:
+            # Create directory and dataframe
+            create_df = True
+            os.mkdir(os.path.join(self.project_path, self.project_name, 
+                     'manualclassification'))
+        
+        if create_df:
+            self.labels = pd.DataFrame({
+                                        'category':
+                                        pd.Series([], dtype='string'),
+                                        'subcategory':
+                                        pd.Series([], dtype='string'),
+                                        'id':
+                                        pd.Series([], dtype='string'),
+                                        'x':
+                                        pd.Series([], 
+                                                 dtype=np.float32),
+                                        'y':
+                                        pd.Series([], 
+                                                  dtype=np.float32),
+                                        'z':
+                                        pd.Series([], 
+                                                  dtype=np.float32),
+                                        })
+            self.labels.set_index(['category', 'subcategory', 'id'], 
+                                  inplace=True)
+
+    def add_label(self, category, subcategory, id, x, y, z, 
+                  transform='current'):
+        """
+        Add a label to the labels dataframe.
+
+        Parameters
+        ----------
+        category : str
+            The category that the label belongs to e.g. 'stake'
+        subcategory : str
+            The subcategory that the label belongs to e.g. 'ridge_ranch'
+        id : str
+            id for the label e.g. '52'. Note, will be cast to string
+        x : float
+            x coordinate for label
+        y : float
+            y coordinate for label
+        z : float
+            z coordinate for label
+        transform : 'current' or 'raw'
+            The reference frame for the (x, y, z) coordinates. The labels
+            dataframe is in the scanner's own coordinate system. So if
+            transform=='current', the point will be inverse transformed into
+            the SOCS. Otherwise, if transform=='raw' add point as is. The
+            default is 'current'
+
+        Returns
+        -------
+        None.
+
+        """
+
+        if not hasattr(self, 'labels'):
+            raise RuntimeError('labels dataframe does not exist, load it first')
+        if transform=='current':
+            invTransform = self.transform.GetInverse()
+            x_socs, y_socs, z_socs = invTransform.TransformPoint(x, y, z)
+        elif transform=='raw':
+            x_socs = x
+            y_socs = y
+            z_socs = z
+        else:
+            raise ValueError('transform must be "current" or "raw"')
+
+        # Add to labels df
+        temp_df = pd.DataFrame(data={'category': category,
+                               'subcategory': subcategory,
+                               'id': str(id),
+                               'x': x_socs,
+                               'y': y_socs,
+                               'z': z_socs,
+                               }, index=[0])
+        temp_df.set_index(['category', 'subcategory', 'id'], inplace=True)
+        self.labels = temp_df.combine_first(self.labels)
+        #self.labels.drop_duplicates(inplace=True)
+
+        # Write to file to save
+        self.labels.to_parquet(os.path.join(self.project_path, 
+                                                 self.project_name, 
+                                                 'manualclassification', 
+                                                 self.scan_name 
+                                                 + '_labels.parquet'),
+                                                 engine="pyarrow", 
+                                                 compression=None)
+
+    def get_label_point(self, category, subcategory, id, transform='current'):
+        """
+        Get a label from the labels dataframe.
+
+        Parameters
+        ----------
+        category : str
+            The category that the label belongs to e.g. 'stake'
+        subcategory : str
+            The subcategory that the label belongs to e.g. 'ridge_ranch'
+        id : str
+            id for the label e.g. '52'. Note, will be cast to string
+        transform : 'current' or 'raw'
+            The reference frame for to return the point in. If 'current' apply
+            current transform to point. If 'raw' return point as is. The default
+            is 'current'
+
+        Returns
+        -------
+        (3,) ndarray
+
+        """
+
+        # Get point
+        point = self.labels.loc[category, subcategory, id].values
+
+        if transform=='current':
+            point = self.transform.TransformPoint(point)
+
+        return point
+
+    def get_labels(self):
+        """
+        Get the labels dataframe, includes columns for transformed coordinates
+
+        Returns
+        -------
+        pandas Dataframe
+
+        """
+
+        df = self.labels.copy(deep=True)
+
+        # Add columns for scan_name and project_name and add to index
+        df['scan_name'] = self.scan_name
+        df['project_name'] = self.project_name
+        df.set_index(['project_name', 'scan_name'], append=True, inplace=True)
+
+        # Transform points, we can do this in a for loop because we'll never
+        # have that many labels
+        df['x_trans'] = 0
+        df['y_trans'] = 0
+        df['z_trans'] = 0
+        for i in range(df.shape[0]):
+            df['x_trans'].iat[i], df['y_trans'].iat[i], df['z_trans'].iat[i] = (
+                self.transform.TransformPoint(df['x'].iat[i],
+                                              df['y'].iat[i],
+                                              df['z'].iat[i]))
+
+        return df
     
     def add_transform(self, key, matrix, history_dict=None):
         """
@@ -4211,7 +4405,7 @@ class Project:
                  import_mode=None, load_scans=True, read_scans=False, 
                  import_las=False, create_id=True, 
                  las_fieldnames=None, 
-                 class_list=[0, 1, 2, 70], suffix=''):
+                 class_list=[0, 1, 2, 70], suffix='', class_suffix=''):
         """
         Generates project, also inits singlescan objects
 
@@ -4258,6 +4452,9 @@ class Project:
         suffix : str, optional
             Suffix for npyfiles directory if we are reading scans. The default
             is '' which corresponds to the regular npyfiles directory.
+        class_suffix : str, optional
+            Suffix for which Classification[class_suffix].npy file to load as
+            'Classification' array. The default is '' (load Classification.npy)
 
         Returns
         -------
@@ -4308,7 +4505,8 @@ class Project:
                                       scan_name, import_mode=import_mode,
                                       poly=poly, create_id=create_id,
                                       las_fieldnames=las_fieldnames,
-                                      class_list=class_list, suffix=suffix)
+                                      class_list=class_list, suffix=suffix,
+                                      class_suffix=class_suffix)
                     scan.add_sop()
                     self.scan_dict[scan_name] = scan
             else:
@@ -7542,14 +7740,16 @@ class Project:
 
         """
         
-        cornercoords = np.empty((len(areapoints), 3), dtype=np.float32)
+        cornercoords = np.empty((len(areapoints[self.project_name]), 3)
+                                , dtype=np.float32)
         # Step through areapoints and get each point
-        for i in np.arange(len(areapoints)):
-            pdata = self.scan_dict[areapoints[i][0]
+        for i in np.arange(len(areapoints[self.project_name])):
+            pdata = self.scan_dict[areapoints[self.project_name][i][0]
                                    ].transformFilter.GetOutput()
             PointId = vtk_to_numpy(pdata.GetPointData().GetArray('PointId'))
             pts = vtk_to_numpy(pdata.GetPoints().GetData())
-            cornercoords[i,:] = pts[PointId==areapoints[i][1],:]
+            cornercoords[i,:] = pts[PointId==areapoints[
+                self.project_name][i][1],:]
         return cornercoords
             
 
@@ -10802,6 +11002,55 @@ def gridded_counts_means(points, edges):
     means = means/counts
 
     return counts, means
+
+def gridded_counts_means_vars(points, edges):
+    """
+    Grids a point could in x and y and returns the cellwise counts, means and
+    variances.
+
+    Parameters
+    ----------
+    points : float[:, :]
+        Pointcloud, Nx3 array of type np.float32
+    edges : list
+        2 item list containing edges for gridding
+
+    Returns:
+    --------
+    counts : long[:, :]
+        Gridded array with the counts for each bin
+    means : float[:, :]
+        Gridded array with the mean z value for each bin.
+    vars : float[:, :]
+        Gridded array with the variance in z values for each bin.
+
+    """
+
+    Ncount = tuple(np.searchsorted(edges[i], points[:,i], 
+                               side='right') for i in range(2))
+
+    nbin = np.empty(2, np.int_)
+    nbin[0] = len(edges[0]) + 1
+    nbin[1] = len(edges[1]) + 1
+
+    xy = np.ravel_multi_index(Ncount, nbin)
+
+    # Compute gridded mins and counts
+    counts, means, m2s = cython_util.create_counts_means_M2_cy(nbin[0], nbin[1],
+                                                     points,
+                                                     np.int_(xy))
+    counts = counts.reshape(nbin)
+    means = means.reshape(nbin)
+    m2s = m2s.reshape(nbin)
+    core = 2*(slice(1, -1),)
+    counts = counts[core]
+    means = means[core]
+    m2s = m2s[core]
+    means[counts==0] = np.nan
+    m2s[counts==0] = np.nan
+    var = m2s/counts
+
+    return counts, means, var
 
 def gridded_counts_modes(points, edges, dz_hist=0.01):
     """

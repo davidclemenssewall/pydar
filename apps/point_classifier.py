@@ -16,6 +16,7 @@ import vtk
 import pandas as pd
 import math
 import numpy as np
+import pyperclip
 import warnings
 import json
 from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
@@ -509,6 +510,12 @@ class MainWindow(Qt.QMainWindow):
         self.proj_suffix_0 = Qt.QLineEdit('')
         temp_layout.addWidget(self.proj_suffix_0)
         opt_layout.addLayout(temp_layout)
+        # Lineedit to enter the Classification suffix
+        temp_layout = Qt.QHBoxLayout()
+        temp_layout.addWidget(Qt.QLabel('Classification suffix:'))
+        self.class_lineedit = Qt.QLineEdit('')
+        temp_layout.addWidget(self.class_lineedit)
+        opt_layout.addLayout(temp_layout)
         trans_checkbox = Qt.QCheckBox('Use PRCS')
         opt_layout.addWidget(trans_checkbox)
         temp_layout = Qt.QHBoxLayout()
@@ -883,7 +890,8 @@ class MainWindow(Qt.QMainWindow):
         self.project = pydar.Project(self.project_path, project_name, 
                                      import_mode=import_mode,
                                      class_list='all', 
-                                     suffix=self.proj_suffix_0.text())
+                                     suffix=self.proj_suffix_0.text(),
+                                     class_suffix=self.class_lineedit.text())
         
         # Set the transform appropriately
         if self.proj_t_suffix_0.isEnabled():
@@ -1352,10 +1360,13 @@ class MainWindow(Qt.QMainWindow):
                     self.project.scan_dict[scan_name].man_class.shape[0])
                 np_pedigreeIds = vtk_to_numpy(pedigreeIds)
                 if np.max(self.project.scan_dict[scan_name].man_class
-                          .index.values)>np.iinfo(np.uint32).max:
+                          .index.get_level_values('PointId')
+                          )>np.iinfo(np.uint32).max:
                     raise RuntimeError('PointId exceeds size of uint32')
                 np_pedigreeIds[:] = (self.project.scan_dict[scan_name]
-                                     .man_class.index.values.astype(np.uint32))
+                                     .man_class.index
+                                     .get_level_values('PointId')
+                                     .astype(np.uint32))
                 pedigreeIds.Modified()
                 # Use PedigreeId selection to get points
                 selectionNode = vtk.vtkSelectionNode()
@@ -1463,7 +1474,7 @@ class MainWindow(Qt.QMainWindow):
 
         """
         
-        self.area_point_list.copy_areapoints(self.ss.project_name)
+        self.area_point_list.copy_areapoints(self.project.project_name)
     
     def on_sel_area_dir_button_click(self, s):
         """

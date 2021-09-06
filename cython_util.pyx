@@ -76,6 +76,57 @@ def create_counts_sums_cy(long nbin_0, long nbin_1, float[:, :] Points,
     
     return counts, sums
 
+def create_counts_means_M2_cy(long nbin_0, long nbin_1, float[:, :] Points, 
+                          long[:] xy):
+    """
+    Return the binwise number of points, mean, and M2 estimate of the sum of
+    squared deviations (using Welford's algorithm)
+    
+    Parameters
+    ----------
+    nbin_0 : long
+        Number of bins along the zeroth axis
+    nbin_1 : long
+        Number of bins along the first axis
+    Points : float[:, :]
+        Pointcloud, Nx3 array of type np.float32
+    xy : long[:]
+        Bin index for each point, must be same as numbe rof points.
+
+    Returns:
+    --------
+    counts : float[:]
+        Array with the counts for each bin. Length nbin_0*nbin_1
+    means : float[:]
+        Array with the mean of z values for each bin. Length nbin_0*nbin_1
+    m2s : float[:]
+        Array with the M2 estimate of the sum of squared deviations
+        Length nbin_0*nbin_1
+    """
+
+    # Chose to make this float for division purposes but could have unexpected
+    # results, check if so
+    counts = np.zeros(nbin_0 * nbin_1, dtype=np.float32)
+    cdef float[:] counts_view = counts
+    
+    means = np.zeros(nbin_0 * nbin_1, dtype=np.float32)
+    cdef float[:] means_view = means
+
+    m2s = np.zeros(nbin_0 * nbin_1, dtype=np.float32)
+    cdef float[:] m2s_view = m2s
+    
+    cdef float delta
+    cdef float delta2
+
+    for i in range(len(xy)):
+        counts_view[xy[i]] += 1
+        delta = Points[i, 2] - means_view[xy[i]]
+        means_view[xy[i]] += delta / counts_view[xy[i]]
+        delta2 = Points[i, 2] - means_view[xy[i]]
+        m2s += delta*delta2
+    
+    return counts, means, m2s
+
 def create_counts_hists_cy(long nbin_0, long nbin_1, long[:] h_ind, long[:] xy, 
                            long nbin_h):
     """
