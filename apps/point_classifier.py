@@ -937,7 +937,8 @@ class MainWindow(Qt.QMainWindow):
         # Update the fields available in field_selector
         self.field_selector.clear()
         self.field_selector.addItem('Elevation')
-        for name in self.project.scan_dict['ScanPos001'].dsa_raw.PointData.keys():
+        for name in list(self.project.scan_dict.values()
+                         )[0].dsa_raw.PointData.keys():
             self.field_selector.addItem(name)
         self.field_selector.setEnabled(1)
         self.field_selector.setCurrentText('Elevation')
@@ -1596,7 +1597,7 @@ class MainWindow(Qt.QMainWindow):
     ### VTK methods ###
     def on_end_pick(self, obj, event):
         """
-        When a pick is made set it to be an endpoint of the transect
+        When a pick is made set it as an areapoint or a label
 
         Parameters
         ----------

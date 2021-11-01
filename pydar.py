@@ -1896,9 +1896,9 @@ class SingleScan:
 
         # Transform points, we can do this in a for loop because we'll never
         # have that many labels
-        df['x_trans'] = 0
-        df['y_trans'] = 0
-        df['z_trans'] = 0
+        df['x_trans'] = 0.0
+        df['y_trans'] = 0.0
+        df['z_trans'] = 0.0
         for i in range(df.shape[0]):
             df['x_trans'].iat[i], df['y_trans'].iat[i], df['z_trans'].iat[i] = (
                 self.transform.TransformPoint(df['x'].iat[i],

@@ -998,6 +998,11 @@ class MainWindow(Qt.QMainWindow):
                              'mosaic_rov_220420.RiSCAN',
                              'mosaic_rov_290420.RiSCAN',
                              'mosaic_rov_02_090520.RiSCAN']
+
+        elif scan_area_name=='RS':
+            project_names = ['mosaic_rs_170420.RiSCAN',
+                             'mosaic_rs_220420.RiSCAN',
+                             ]
             
         else:
             raise ValueError("You have selected a nonexistant scan area."
