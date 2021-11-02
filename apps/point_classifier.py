@@ -597,10 +597,25 @@ class MainWindow(Qt.QMainWindow):
 
         # Create a second options layout with options for visualization
         opt_layout_2 = Qt.QVBoxLayout()
+        # Radio button group for picking what kind of selection we want
+        self.selection_buttongroup = Qt.QButtonGroup()
+        selection_groupbox = Qt.QGroupBox('Selection Type')
+        vbox = Qt.QVBoxLayout()
+        rect_radio = Qt.QRadioButton('Rectangular')
+        rect_radio.setChecked(True)
+        vbox.addWidget(rect_radio)
+        self.selection_buttongroup.addButton(rect_radio, id=0)
+        ap_radio = Qt.QRadioButton('Area Points')
+        vbox.addWidget(ap_radio)
+        self.selection_buttongroup.addButton(ap_radio, id=1)
+        
+        selection_groupbox.setLayout(vbox)
+        opt_layout_2.addWidget(selection_groupbox)
+
+        #self.edit_area_check = Qt.QCheckBox('Edit Area Points')
+        #opt_layout_2.addWidget(self.edit_area_check)
         # Add interface for creating enclosed areas
         opt_layout_2.addWidget(Qt.QLabel('Pointwise Area Selection'))
-        self.edit_area_check = Qt.QCheckBox('Edit Area Points')
-        opt_layout_2.addWidget(self.edit_area_check)
         self.area_point_list = AreaPointList(self.vtkWidget)
         opt_layout_2.addWidget(self.area_point_list.get_scroll())
         # Add buttons for copying selected points
@@ -663,7 +678,9 @@ class MainWindow(Qt.QMainWindow):
         update_class_button.clicked.connect(self.on_update_class_button_click)
         write_button.clicked.connect(self.on_write_button_click)
         # opt_layout_2
-        self.edit_area_check.toggled.connect(self.on_edit_area_check_toggled)
+        #self.edit_area_check.toggled.connect(self.on_edit_area_check_toggled)
+        self.selection_buttongroup.buttonClicked.connect(
+            self.on_selection_changed)
         copy_areapoints_button.clicked.connect(
             self.on_copy_areapoints_button_click)
         sel_area_dir_button.clicked.connect(self.on_sel_area_dir_button_click)
@@ -1459,6 +1476,31 @@ class MainWindow(Qt.QMainWindow):
         else:
             self.iren.SetPicker(self.areaPicker)
             self.iren.SetInteractorStyle(vtk.vtkInteractorStyleRubberBandPick())
+
+    def on_selection_changed(self, button):
+        """
+        Change the selection mode based on the user's request.
+
+        Parameters
+        ----------
+        button : QAbstractButton
+            Object of the button that was clicked.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        if button.text()=='Area Points':
+            self.iren.SetPicker(self.pointPicker)
+            self.iren.SetInteractorStyle(
+                vtk.vtkInteractorStyleTrackballCamera())
+        elif button.text()=='Rectangular':
+            self.iren.SetPicker(self.areaPicker)
+            self.iren.SetInteractorStyle(vtk.vtkInteractorStyleRubberBandPick())
+        else:
+            raise RuntimeError('Invalid id passed to on_selection_changed')
         
     def on_copy_areapoints_button_click(self, s):
         """
