@@ -608,12 +608,12 @@ class MainWindow(Qt.QMainWindow):
         ap_radio = Qt.QRadioButton('Area Points')
         vbox.addWidget(ap_radio)
         self.selection_buttongroup.addButton(ap_radio, id=1)
-        
+        labels_radio = Qt.QRadioButton('Labels')
+        vbox.addWidget(labels_radio)
+        self.selection_buttongroup.addButton(labels_radio, id=2)
         selection_groupbox.setLayout(vbox)
         opt_layout_2.addWidget(selection_groupbox)
 
-        #self.edit_area_check = Qt.QCheckBox('Edit Area Points')
-        #opt_layout_2.addWidget(self.edit_area_check)
         # Add interface for creating enclosed areas
         opt_layout_2.addWidget(Qt.QLabel('Pointwise Area Selection'))
         self.area_point_list = AreaPointList(self.vtkWidget)
@@ -630,7 +630,6 @@ class MainWindow(Qt.QMainWindow):
             self.area_dialog.setDirectory('/media/thayer/Data/mosaic_lidar/')
         else:
             self.area_dialog.setDirectory(os.getcwd())
-
         self.area_dialog.setFileMode(4) # set file mode to pick directories
         opt_layout_2.addWidget(sel_area_dir_button)
         self.area_filename_lineedit = Qt.QLineEdit('areapoint filename')
@@ -641,6 +640,34 @@ class MainWindow(Qt.QMainWindow):
         opt_layout_2.addWidget(delete_areapoints_button)
         load_areapoint_button = Qt.QPushButton('Load areapoints')
         opt_layout_2.addWidget(load_areapoint_button)
+
+        # Add interface for working with Labels
+        opt_layout_2.addWidget(Qt.QLabel('Labels'))
+        load_labels = Qt.QPushButton('Load Labels')
+        opt_layout_2.addWidget(load_labels)
+        self.labels_checkbox = Qt.QCheckBox('Show Labels')
+        self.labels_checkbox.setEnabled(0)
+        opt_layout_2.addWidget(self.labels_checkbox)
+        self.label_category_combo = Qt.QComboBox()
+        self.label_category_combo.setEnabled(0)
+        self.label_category_combo.setEditable(1)
+        self.label_category_combo.lineEdit().setPlaceholderText(
+            'label category')
+        opt_layout_2.addWidget(self.label_category_combo)
+        self.label_subcategory_combo = Qt.QComboBox()
+        self.label_subcategory_combo.setEnabled(0)
+        self.label_subcategory_combo.setEditable(1)
+        self.label_subcategory_combo.lineEdit().setPlaceholderText(
+            'label subcategory')
+        opt_layout_2.addWidget(self.label_subcategory_combo)
+        self.label_id_combo = Qt.QComboBox()
+        self.label_id_combo.setEnabled(0)
+        self.label_id_combo.setEditable(1)
+        self.label_id_combo.lineEdit().setPlaceholderText('label id')
+        opt_layout_2.addWidget(self.label_id_combo)
+        self.save_label_button = Qt.QPushButton('Save Label')
+        self.save_label_button.setEnabled(0)
+        opt_layout_2.addWidget(self.save_label_button)
         
         # Populate the main layout
         main_layout.addLayout(vis_layout, stretch=5)
@@ -690,10 +717,31 @@ class MainWindow(Qt.QMainWindow):
         delete_areapoints_button.clicked.connect(
             self.on_delete_areapoints_button)
         load_areapoint_button.clicked.connect(self.on_load_areapoint_button)
-        
+        load_labels.clicked.connect(self.on_load_labels_clicked)
+        self.labels_checkbox.toggled.connect(self.on_show_labels_toggled)
+        self.save_label_button.clicked.connect(self.on_save_label_button)
+
         self.show()
         
         # VTK setup
+
+        # Label point
+        pts0 = vtk.vtkPoints()
+        pts0.SetNumberOfPoints(1)
+        pts0.SetPoint(0, 0.0, 0.0, 0.0)
+        pt_0 = vtk.vtkPolyData()
+        pt_0.SetPoints(pts0)
+        self.vgf_pt_0 = vtk.vtkVertexGlyphFilter()
+        self.vgf_pt_0.SetInputData(pt_0)
+        self.vgf_pt_0.Update()
+        mapper_pt_0 = vtk.vtkPolyDataMapper()
+        mapper_pt_0.SetInputConnection(self.vgf_pt_0.GetOutputPort())
+        actor_pt_0 = vtk.vtkActor()
+        actor_pt_0.SetMapper(mapper_pt_0)
+        actor_pt_0.GetProperty().RenderPointsAsSpheresOn()
+        actor_pt_0.GetProperty().SetPointSize(20)
+        actor_pt_0.GetProperty().SetColor(1, 1, 0)
+
         # Selected dict, to hold points until we classify them
         self.selected_poly_dict = {}
         self.selected_append = vtk.vtkAppendPolyData()
@@ -726,13 +774,14 @@ class MainWindow(Qt.QMainWindow):
         # Renderer and interactor
         self.renderer = vtk.vtkRenderer()
         self.renderer.AddActor(self.selected_actor)
+        self.renderer.AddActor(actor_pt_0)
         self.vtkWidget.GetRenderWindow().AddRenderer(self.renderer)
         self.vtkWidget.GetRenderWindow().AddObserver("ModifiedEvent", 
                                                      self.
                                                      on_modified_renderwindow)
         style = vtk.vtkInteractorStyleRubberBandPick()
         self.pointPicker = vtk.vtkPointPicker()
-        self.pointPicker.SetTolerance(0.01)
+        self.pointPicker.SetTolerance(0.001)
         self.pointPicker.AddObserver("EndPickEvent", self.on_end_pick)
         self.areaPicker = vtk.vtkAreaPicker()
         self.areaPicker.AddObserver("EndPickEvent", self.on_area_pick)
@@ -941,8 +990,18 @@ class MainWindow(Qt.QMainWindow):
             # Create actor
             self.project.scan_dict[scan_name].create_elevation_pipeline(
                 float(self.v_min.text()), float(self.v_max.text()))
+            # Create Scanner Actors
+            self.project.scan_dict[scan_name].create_scanner_actor(
+                    color='Grey', length=150)
+
             self.renderer.AddActor(self.project.scan_dict[scan_name].actor)
-            
+            self.renderer.AddActor(self.project.scan_dict[scan_name]
+                                   .scannerActor)
+            self.renderer.AddActor(self.project.scan_dict[scan_name]
+                                   .scannerText)
+            self.project.scan_dict[scan_name].scannerText.SetCamera(
+                self.renderer.GetActiveCamera())
+
             # Create appendPolyData, mappers and actors in selection dicts
             self.selected_poly_dict[scan_name] = vtk.vtkAppendPolyData()
             pdata = vtk.vtkPolyData()
@@ -986,9 +1045,18 @@ class MainWindow(Qt.QMainWindow):
         
         if checked:
             self.renderer.AddActor(self.project.scan_dict[button.text()].actor)
+            self.renderer.AddActor(self.project.scan_dict[button.text()]
+                                   .scannerActor)
+            self.renderer.AddActor(self.project.scan_dict[button.text()]
+                                   .scannerText)
             self.vtkWidget.GetRenderWindow().Render()
         else:
-            self.renderer.RemoveActor(self.project.scan_dict[button.text()].actor)
+            self.renderer.RemoveActor(self.project.scan_dict[button.text()]
+                                      .actor)
+            self.renderer.RemoveActor(self.project.scan_dict[button.text()]
+                                   .scannerActor)
+            self.renderer.RemoveActor(self.project.scan_dict[button.text()]
+                                   .scannerText)
             self.vtkWidget.GetRenderWindow().Render()
     
     def on_clear_button_click(self, s):
@@ -1453,30 +1521,6 @@ class MainWindow(Qt.QMainWindow):
         
         self.vtkWidget.GetRenderWindow().Render()
 
-    def on_edit_area_check_toggled(self, checked):
-        """
-        Switch what we want picking a point to do from transects to area and
-        vice versa.
-
-        Parameters
-        ----------
-        checked : bool
-            Check button state.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        if checked:
-            self.iren.SetPicker(self.pointPicker)
-            self.iren.SetInteractorStyle(
-                vtk.vtkInteractorStyleTrackballCamera())
-        else:
-            self.iren.SetPicker(self.areaPicker)
-            self.iren.SetInteractorStyle(vtk.vtkInteractorStyleRubberBandPick())
-
     def on_selection_changed(self, button):
         """
         Change the selection mode based on the user's request.
@@ -1492,7 +1536,7 @@ class MainWindow(Qt.QMainWindow):
 
         """
 
-        if button.text()=='Area Points':
+        if button.text() in ['Area Points', 'Labels']:
             self.iren.SetPicker(self.pointPicker)
             self.iren.SetInteractorStyle(
                 vtk.vtkInteractorStyleTrackballCamera())
@@ -1635,7 +1679,150 @@ class MainWindow(Qt.QMainWindow):
             ss = self.project.scan_dict[scan_name]
             self.area_point_list.list[-1].set_point(PointId, ss, self.renderer)
         self.vtkWidget.GetRenderWindow().Render()
-                
+
+    def on_load_labels_clicked(self, s):
+        """
+        Load labels for the project
+
+        Parameters
+        ----------
+        s : int
+            Button status not used.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        self.project.load_labels()
+        self.labels_checkbox.setEnabled(1)
+
+        for scan_name in self.project.scan_dict:
+                self.project.scan_dict[scan_name].create_labels_actors()
+                for i in range(self.project.scan_dict[scan_name]
+                               .labels_actors.shape[0]):
+                    (self.project.scan_dict[scan_name].labels_actors
+                     ['text_actor'].iat[i].SetCamera(self.renderer
+                                                     .GetActiveCamera()))
+
+        # Enable labels comboboxes and fill with values.
+        labels = self.project.get_labels()
+        self.label_category_combo.addItems(list(labels.index.levels[0]))
+        self.label_category_combo.setEnabled(1)
+        self.label_subcategory_combo.addItems(list(labels.index.levels[1]))
+        self.label_subcategory_combo.setEnabled(1)
+        self.label_id_combo.addItems(list(labels.index.levels[2]))
+        self.label_id_combo.setEnabled(1)
+        self.save_label_button.setEnabled(1)
+
+    def on_save_label_button(self, s):
+        """
+        Save the label with the current values of the comboboxes chosen point.
+
+        Parameters
+        ----------
+        s : int
+            Button status not used.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        cat = self.label_category_combo.currentText()
+        subcat = self.label_subcategory_combo.currentText()
+        id_str = self.label_id_combo.currentText()
+
+        # Get current picked point
+        pt = self.vgf_pt_0.GetInput().GetPoint(0)
+
+        # First, if show labels is checked go through SingleScans and remove
+        # actors if we're overwriting a label
+        if self.labels_checkbox.isChecked():
+            for scan_name in self.project.scan_dict:
+                if (self.project.scan_dict[scan_name].labels_actors.index
+                    .isin([(cat, subcat, id_str)]).any()):
+                    self.renderer.RemoveActor(self.project.scan_dict[scan_name]
+                                           .labels_actors.loc[(cat, subcat, 
+                                                               id_str),
+                                           'text_actor'])
+                    self.renderer.RemoveActor(self.project.scan_dict[scan_name]
+                                           .labels_actors.loc[(cat, subcat, 
+                                                               id_str),
+                                           'point_actor'])
+
+        # Get whichever SingleScan this point is in.
+        best_point = ['', 1, np.inf]
+        for scan_name in self.project.scan_dict:
+            # Find the pedigree id of the point in any active singlescan
+            # That's closest to the picked point (usually this will be picked)
+            # point
+            if self.scan_check_dict[scan_name].isChecked():
+                ss = self.project.scan_dict[scan_name]
+                ind = ss.currentFilter.GetOutput().FindPoint(pt)
+                PointId = vtk_to_numpy(ss.currentFilter.GetOutput()
+                                       .GetPointData().GetPedigreeIds())[ind]
+                dist = np.square(pt - 
+                                 np.array(ss.currentFilter.GetOutput()
+                                          .GetPoint(ind))
+                                 ).sum()
+                if dist < best_point[2]:
+                    best_point = [ss, PointId, dist]
+
+        # Add this point to that SingleScan's labels dataframe
+        ss.add_label(cat, subcat, id_str, pt[0], pt[1], pt[2])
+        
+        # Create the actors for displaying
+        ss.create_labels_actors(row_index=(cat, subcat, id_str))
+        ss.labels_actors.loc[(cat, subcat, id_str),'text_actor'].SetCamera(
+            self.renderer.GetActiveCamera())
+
+        # If show labels is checked add the actors
+        if self.labels_checkbox.isChecked():
+            self.renderer.AddActor(ss.labels_actors.loc[(cat, subcat, id_str),
+                                           'text_actor'])
+            self.renderer.AddActor(ss.labels_actors.loc[(cat, subcat, id_str),
+                                           'point_actor'])
+
+        self.vtkWidget.GetRenderWindow().Render()
+
+
+    def on_show_labels_toggled(self, checked):
+        """
+        Add or remove labels glyphs from the renderwindow.
+
+        Parameters
+        ----------
+        checked : bool
+            Whether show labels is checked or not
+
+        Returns
+        -------
+        None.
+
+        """
+
+        if checked:
+            for scan_name in self.project.scan_dict:
+                for i in range(self.project.scan_dict[scan_name]
+                               .labels_actors.shape[0]):
+                    self.renderer.AddActor(self.project.scan_dict[scan_name]
+                                           .labels_actors['text_actor'].iat[i])
+                    self.renderer.AddActor(self.project.scan_dict[scan_name]
+                                           .labels_actors['point_actor'].iat[i])
+        else:
+            for scan_name in self.project.scan_dict:
+                for i in range(self.project.scan_dict[scan_name]
+                               .labels_actors.shape[0]):
+                    self.renderer.RemoveActor(self.project.scan_dict[scan_name]
+                                           .labels_actors['text_actor'].iat[i])
+                    self.renderer.RemoveActor(self.project.scan_dict[scan_name]
+                                           .labels_actors['point_actor'].iat[i])
+        self.vtkWidget.GetRenderWindow().Render()
+
+
     ### VTK methods ###
     def on_end_pick(self, obj, event):
         """
@@ -1657,30 +1844,43 @@ class MainWindow(Qt.QMainWindow):
         # Get the picked point
         pt = np.array(obj.GetPickPosition())
         
-        best_point = ['', 1, np.inf]
-        for scan_name in self.project.scan_dict:
-            # Find the pedigree id of the point in any active singlescan
-            # That's closest to the picked point (usually this will be picked)
-            # point
-            if self.scan_check_dict[scan_name].isChecked():
-                ss = self.project.scan_dict[scan_name]
-                ind = ss.currentFilter.GetOutput().FindPoint(pt)
-                PointId = vtk_to_numpy(ss.currentFilter.GetOutput()
-                                       .GetPointData().GetPedigreeIds())[ind]
-                dist = np.square(pt - 
-                                 np.array(ss.currentFilter.GetOutput()
-                                          .GetPoint(ind))
-                                 ).sum()
-                if dist < best_point[2]:
-                    best_point = [ss, PointId, dist]
-        
-
+        # If we're selecting an areapoint
         # Find the checked area point and set it
-        for ap in self.area_point_list.list:
-            if ap.radio.isChecked():
-                ap.set_point(best_point[1], best_point[0], self.renderer)
-                self.vtkWidget.GetRenderWindow().Render()
-                break
+        if self.selection_buttongroup.checkedButton().text()=='Area Points':
+            best_point = ['', 1, np.inf]
+            for scan_name in self.project.scan_dict:
+                # Find the pedigree id of the point in any active singlescan
+                # That's closest to the picked point (usually this will be picked)
+                # point
+                if self.scan_check_dict[scan_name].isChecked():
+                    ss = self.project.scan_dict[scan_name]
+                    ind = ss.currentFilter.GetOutput().FindPoint(pt)
+                    PointId = vtk_to_numpy(ss.currentFilter.GetOutput()
+                                           .GetPointData().GetPedigreeIds())[ind]
+                    dist = np.square(pt - 
+                                     np.array(ss.currentFilter.GetOutput()
+                                              .GetPoint(ind))
+                                     ).sum()
+                    if dist < best_point[2]:
+                        best_point = [ss, PointId, dist]
+
+            for ap in self.area_point_list.list:
+                if ap.radio.isChecked():
+                    ap.set_point(best_point[1], best_point[0], self.renderer)
+                    break
+
+        elif self.selection_buttongroup.checkedButton().text()=='Labels':
+            pts0 = vtk.vtkPoints()
+            pts0.SetNumberOfPoints(1)
+            pts0.SetPoint(0, pt[0], pt[1], pt[2])
+            pt_0 = vtk.vtkPolyData()
+            pt_0.SetPoints(pts0)
+            self.vgf_pt_0.SetInputData(pt_0)
+            self.vgf_pt_0.Update()
+        else:
+            raise RuntimeError('One of above conditions should be met')
+
+        self.vtkWidget.GetRenderWindow().Render()
 
     def on_area_pick(self, obj, event):
         """

@@ -3560,6 +3560,85 @@ class SingleScan:
         self.scannerText.AddPosition(0, 0, 0.5)
         self.scannerText.GetProperty().SetColor(nc.GetColor3d(color))
 
+    def create_labels_actors(self, color='Gray', row_index=None):
+        """
+        Create dataframe containing actors for each label
+        
+        Parameters:
+        -----------
+        color : str, optional
+            Name of the color to display as. The default is 'Gray'
+        length : float, optional
+            Length of the ray indicating the scanner's start orientation in m.
+            The default is 150
+        row_index : tuple, optional
+            Sometimes we want to create new actors for a single row, and not
+            redo everything else, if so, this is tne index for that row. The
+            default is None.
+
+        Returns:
+        --------
+        None.
+
+        """
+
+        # Named colors object
+        nc = vtk.vtkNamedColors()
+
+        # First, copy the labels DataFrame
+        if row_index is None:
+            self.labels_actors = self.labels.copy(deep=True)
+            # Now create columns for the point actor and text actor
+            self.labels_actors['point_actor'] = None
+            self.labels_actors['text_actor'] = None
+        else:
+            self.labels_actors.loc[row_index] = self.labels.loc[row_index]
+
+        for row in self.labels_actors.itertuples():
+            if (not row_index is None) and (not row.Index==row_index):
+                continue
+            
+            # Create point and transform into project coordinate system
+            pts = vtk.vtkPoints()
+            pts.InsertNextPoint(row.x, row.y, row.z)
+            pdata = vtk.vtkPolyData()
+            pdata.SetPoints(pts)
+            transformFilter = vtk.vtkTransformPolyDataFilter()
+            transformFilter.SetInputData(pdata)
+            transformFilter.SetTransform(self.transform)
+            transformFilter.Update()
+            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            vertexGlyphFilter.SetInputConnection(
+                transformFilter.GetOutputPort())
+            vertexGlyphFilter.Update()
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(vertexGlyphFilter.GetOutputPort())
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().RenderPointsAsSpheresOn()
+            actor.GetProperty().SetPointSize(20)
+            actor.GetProperty().SetColor(nc.GetColor3d(color))
+            # Add actor to the dataframe
+            self.labels_actors.at[row.Index, 'point_actor'] = actor
+
+            # Create Text
+            text = vtk.vtkVectorText()
+            text.SetText(row.Index[0] + ', ' + row.Index[1] + ', ' 
+                         + row.Index[2])
+            text.Update()
+            textMapper = vtk.vtkPolyDataMapper()
+            textMapper.SetInputConnection(text.GetOutputPort())
+            labelText = vtk.vtkFollower()
+            labelText.SetMapper(textMapper)
+            labelText.SetScale(0.1, 0.1, 1)
+            labelText.SetPosition(transformFilter.GetOutput().GetPoints()
+                                  .GetPoint(0))
+            labelText.AddPosition(0, 0, 0.2)
+            labelText.GetProperty().SetColor(nc.GetColor3d(color))
+            # add to dataframe
+            self.labels_actors.at[row.Index, 'text_actor'] = labelText
+
+
 
     def create_filter_pipeline(self,colors={0 : (153/255, 153/255, 153/255, 1),
                                             1 : (153/255, 153/255, 153/255, 1),
@@ -4341,6 +4420,10 @@ class Project:
     create_z_sigma()
         For the current value of the transformation, project the pointwise
         uncertainty spheroids onto the z-axis and save in PointData.
+    load_labels()
+        Load labels in each SingleScan
+    get_labels()
+        Get all labels as a DataFrame
     apply_manual_filter()
         Manually classify points within a selection loop.
     apply_snowflake_filter(shells)
@@ -4718,6 +4801,37 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].create_z_sigma(sigma_ro=sigma_ro,
                                                      sigma_bw=sigma_bw)
+
+    def load_labels(self):
+        """
+        Load the labels dataframes for each SingleScan
+
+        Returns
+        -------
+        None.
+
+        """
+
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].load_labels()
+
+    def get_labels(self):
+        """
+        Get the labels for all scans in this project
+
+        Returns
+        -------
+        Pandas DataFrame containing labels
+
+        """
+
+        labels_list = []
+
+        for scan_name in self.scan_dict:
+            labels_list.append(self.scan_dict[scan_name].get_labels())
+
+        return pd.concat(labels_list)
+
     def apply_manual_filter(self, corner_coords, normal=(0.0, 0.0, 1.0), 
                             category=73, mode='currentFilter'):
         """
@@ -5107,7 +5221,8 @@ class Project:
     def display_project(self, z_min, z_max, lower_threshold=-1000, 
                         upper_threshold=1000, colorbar=True, field='Elevation',
                         mapview=False, profile_list=[], show_scanners=False,
-                        scanner_color='Gray', scanner_length=150):
+                        scanner_color='Gray', scanner_length=150, 
+                        show_labels=False):
         """
         Display all scans in a vtk interactive window.
         
@@ -5148,6 +5263,9 @@ class Project:
         scanner_length : float, optional
             Length of the ray indicating the scanner's start orientation in m.
             The default is 150
+        show_labels : bool, optional
+            Whether to display the labels for each SingleScan. The default is
+            False.
 
         Returns
         -------
@@ -5194,6 +5312,17 @@ class Project:
                     color=scanner_color, length=scanner_length)
                 renderer.AddActor(self.scan_dict[scan_name].scannerActor)
                 renderer.AddActor(self.scan_dict[scan_name].scannerText)
+
+        # Add labels if requested
+        if show_labels:
+            for scan_name in self.scan_dict:
+                self.scan_dict[scan_name].create_labels_actors()
+                for i in range(self.scan_dict[scan_name]
+                               .labels_actors.shape[0]):
+                    renderer.AddActor(self.scan_dict[scan_name].labels_actors
+                                      ['point_actor'].iat[i])
+                    renderer.AddActor(self.scan_dict[scan_name].labels_actors
+                                      ['text_actor'].iat[i])
                 
         
         # Add requested profiles
@@ -5258,6 +5387,12 @@ class Project:
             for scan_name in self.scan_dict:
                 self.scan_dict[scan_name].scannerText.SetCamera(
                     renderer.GetActiveCamera())
+        if show_labels:
+            for scan_name in self.scan_dict:
+                for i in range(self.scan_dict[scan_name]
+                               .labels_actors.shape[0]):
+                    (self.scan_dict[scan_name].labels_actors['text_actor']
+                     .iat[i].SetCamera(renderer.GetActiveCamera()))
 
         iren.AddObserver('UserEvent', cameraCallback)
         iren.Start()
