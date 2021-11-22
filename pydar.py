@@ -5407,7 +5407,8 @@ class Project:
                          roll=0, image_scale=500, lower_threshold=-1000, 
                          upper_threshold=1000, mode=None, colorbar=True,
                          field='Elevation',
-                         name='', window_size=(2000, 1000)):
+                         name='', window_size=(2000, 1000), path=None,
+                         date=True, scale=True):
         """
         Write an image of the project to the snapshots folder.
         
@@ -5441,6 +5442,9 @@ class Project:
             Name to append to this snapshot. The default is ''.
         window_size : tuple, optional
             Window size in pixels. The default is (2000, 1000)
+        path : str, optional
+            If provided, this is the path to write the image to. The default
+            is None.
 
         Returns
         -------
@@ -5469,17 +5473,23 @@ class Project:
             
         if colorbar:
             scalarBar = vtk.vtkScalarBarActor()
-            scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
-            renderer.AddActor2D(scalarBar)
+            if field=='Elevation':
+                scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+                renderer.AddActor2D(scalarBar)
+            elif field in ['Reflectance', 'reflectance_radial']:
+                scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max,
+                                                           name='plasma'))
+                renderer.AddActor2D(scalarBar)
             
         # Add project date as text
-        textActor = vtk.vtkTextActor()
-        textActor.SetInput(self.project_date)
-        textActor.SetPosition2(10, 40)
-        textActor.SetTextScaleModeToNone()
-        textActor.GetTextProperty().SetFontSize(24)
-        textActor.GetTextProperty().SetColor(0.0, 1.0, 0.0)
-        renderer.AddActor2D(textActor)
+        if date:
+            textActor = vtk.vtkTextActor()
+            textActor.SetInput(self.project_date)
+            textActor.SetPosition2(10, 40)
+            textActor.SetTextScaleModeToNone()
+            textActor.GetTextProperty().SetFontSize(24)
+            textActor.GetTextProperty().SetColor(0.0, 1.0, 0.0)
+            renderer.AddActor2D(textActor)
         
         # Create RenderWindow
         renderWindow = vtk.vtkRenderWindow()
@@ -5493,22 +5503,33 @@ class Project:
             camera.ParallelProjectionOn()
             camera.SetParallelScale(image_scale)
             camera.SetViewUp(0, 1.0, 0)
-            legendScaleActor = vtk.vtkLegendScaleActor()
-            renderer.AddActor(legendScaleActor)
+            if scale:
+                legendScaleActor = vtk.vtkLegendScaleActor()
+                legendScaleActor.LegendVisibilityOff()
+                # sort out this stuff in needed...
+                #legendScaleActor.GetLeftAxis().SetFontFactor(5)
+                renderer.AddActor(legendScaleActor)
         else:
             camera.SetRoll(roll)
         renderer.SetActiveCamera(camera)
         
         renderWindow.Render()
+
+        # Sleep for a second to allow rendering to finish
+        time.sleep(1)
         
         # Screenshot image to save
         w2if = vtk.vtkWindowToImageFilter()
+        w2if.ShouldRerenderOff()
         w2if.SetInput(renderWindow)
         w2if.Update()
     
         writer = vtk.vtkPNGWriter()
-        writer.SetFileName(os.path.join(self.project_path, 'snapshots', 
-                           self.project_name + '_' + name + '.png'))
+        if path is None:
+            writer.SetFileName(os.path.join(self.project_path, 'snapshots', 
+                               self.project_name + '_' + name + '.png'))
+        else:
+            writer.SetFileName(path)
         writer.SetInputData(w2if.GetOutput())
         writer.Write()
     
@@ -5879,6 +5900,9 @@ class Project:
 
                         c_outputscale = outputscale * pts_np[np.array(var_ind), 
                                                             2].var()
+                else:
+                    # Otherwise just use the fixed outputscale from params.
+                    c_outputscale = outputscale
 
                 # Run our GP on this chunk and estimate values at grid points
                 # use indices from above to place output in the right places

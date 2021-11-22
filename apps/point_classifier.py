@@ -781,7 +781,7 @@ class MainWindow(Qt.QMainWindow):
                                                      on_modified_renderwindow)
         style = vtk.vtkInteractorStyleRubberBandPick()
         self.pointPicker = vtk.vtkPointPicker()
-        self.pointPicker.SetTolerance(0.001)
+        self.pointPicker.SetTolerance(0.005)
         self.pointPicker.AddObserver("EndPickEvent", self.on_end_pick)
         self.areaPicker = vtk.vtkAreaPicker()
         self.areaPicker.AddObserver("EndPickEvent", self.on_area_pick)
