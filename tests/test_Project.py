@@ -19,9 +19,9 @@ import pydar
 project_path = '/media/thayer/Data/mosaic_lidar/Snow1/'
 
 project_name = 'mosaic_01_040120.RiSCAN'
-#poly = 'all_within_16m'
+poly = 'all_within_16m'
 
-project = pydar.Project(project_path, project_name)#, poly=poly)
+project = pydar.Project(project_path, project_name, poly=poly)
 print(project.project_date)
 
 # %% Add z offset and apply transforms
@@ -34,10 +34,4 @@ project.apply_transforms(['sop', 'z_offset'])
 z_min = 0
 z_max = 2
 
-#project.display_project(z_min, z_max)
-
-# %% Display with scanners
-z_min = 0
-z_max = 2
-
-project.display_project(z_min, z_max, show_scanners=True)
+project.display_project(z_min, z_max)

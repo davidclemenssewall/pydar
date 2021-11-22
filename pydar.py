@@ -125,15 +125,10 @@ class TiePointList:
         tiepoints into a pandas dataframe"""
         self.project_path = project_path
         self.project_name = project_name
-        try:
-            self.tiepoints = pd.read_csv(os.path.join(project_path, project_name,
-                                         'tiepoints.csv'),
-                                         index_col=0, usecols=[0,1,2,3])
-            self.tiepoints.sort_index(inplace=True)
-        except FileNotFoundError:
-            self.tiepoints = pd.DataFrame()
-            warnings.warn('No tiepoints found for ' 
-                          + os.path.join(project_path, project_name))
+        self.tiepoints = pd.read_csv(os.path.join(project_path, project_name,
+                                     'tiepoints.csv'),
+                                     index_col=0, usecols=[0,1,2,3])
+        self.tiepoints.sort_index(inplace=True)
         # Ignore any tiepoints that start with t
         for label in self.tiepoints.index:
             if label[0]=='t':
@@ -785,10 +780,7 @@ class SingleScan:
     trans_history_dict : dict
         for each transformation in transform_dict gives the node to the 
         history tree, keyed off the same key.
-    labels : pandas dataframe
-        dataframe containing category, subcategory, id, x, y, z for manually 
-        labelled points (e.g. stakes). x, y, z coordinates are in the Scanners 
-        Own Coordinate System.
+        
     
     Methods
     -------
@@ -839,8 +831,6 @@ class SingleScan:
         Classify points by a selection loop.
     random_voxel_downsample_filter(wx, wy, wz, seed=1234)
         Subset the filtered pointcloud randomly by voxels. Replaces Polydata!!
-    apply_man_class()
-        For points that we have manually classified, set their classification.
     clear_classification
         Reset all Classification values to 0.
     update_man_class(pdata, classification)
@@ -883,8 +873,7 @@ class SingleScan:
                  import_mode=None, poly='.1_.1_.01',
                  read_scan=False, import_las=False, create_id=True,
                  las_fieldnames=None, 
-                 class_list=[0, 1, 2, 70], read_dir=None, suffix='',
-                 class_suffix=''):
+                 class_list=[0, 1, 2, 70], read_dir=None, suffix=''):
         """
         Creates SingleScan object and transformation pipeline.
         
@@ -938,9 +927,6 @@ class SingleScan:
         suffix : str, optional
             Suffix for npyfiles directory if we are reading scans. The default
             is '' which corresponds to the regular npyfiles directory.
-        class_suffix : str, optional
-            Suffix for which Classification[class_suffix].npy file to load as
-            'Classification' array. The default is '' (load Classification.npy)
 
         Returns
         -------
@@ -952,7 +938,6 @@ class SingleScan:
         self.project_name = project_name
         self.scan_name = scan_name
         self.poly = poly
-        self.class_suffix = class_suffix
         # Get git_hash
         git_hash = get_git_hash()
         
@@ -991,9 +976,6 @@ class SingleScan:
             else:
                 las_fieldnames = copy.deepcopy(las_fieldnames)
                 for i in range(len(las_fieldnames)):
-                    # Adjust for different Classification arrays
-                    if las_fieldnames[i]=='Classification':
-                        las_fieldnames[i] = 'Classification' + class_suffix
                     las_fieldnames[i] = las_fieldnames[i] + '.npy'
             
             pdata = vtk.vtkPolyData()
@@ -1001,9 +983,6 @@ class SingleScan:
             for k in las_fieldnames:
                 try:
                     name = k.split('.')[0]
-                    # Adjust for class_suffix
-                    if k==('Classification' + class_suffix + '.npy'):
-                        name = 'Classification'
                     self.np_dict[name] = np.load(os.path.join(npy_path, k))
                     if name=='Points':
                         pts = vtk.vtkPoints()
@@ -1051,30 +1030,15 @@ class SingleScan:
                 
             # Create VertexGlyphFilter so that we have vertices for
             # displaying
-            pdata.Modified()
-            #vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-            #vertexGlyphFilter.SetInputData(pdata)
-            #vertexGlyphFilter.Update()
-            self.polydata_raw = pdata#vertexGlyphFilter.GetOutput()
+            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            vertexGlyphFilter.SetInputData(pdata)
+            vertexGlyphFilter.Update()
+            self.polydata_raw = vertexGlyphFilter.GetOutput()
             
             # Load in history dict
-            try:
-                f = open(os.path.join(npy_path, 'raw_history_dict.txt'))
-                self.raw_history_dict = json.load(f)
-                f.close()
-            except FileNotFoundError:
-                self.raw_history_dict = {
-                        "type": "Pointset Source",
-                        "git_hash": git_hash,
-                        "method": "SingleScan.__init__",
-                        "filename": os.path.join(self.project_path, 
-                                                 self.project_name, 
-                                                 "npyfiles"+suffix),
-                        "params": {"import_mode": import_mode,
-                                   "las_fieldnames": las_fieldnames}
-                        }
-                warnings.warn("No history dict found for " + scan_name)
-
+            f = open(os.path.join(npy_path, 'raw_history_dict.txt'))
+            self.raw_history_dict = json.load(f)
+            f.close()
             
         elif import_mode=='poly':
             # Match poly with polys
@@ -1173,11 +1137,10 @@ class SingleScan:
                 
                 # Create VertexGlyphFilter so that we have vertices for
                 # displaying
-                pdata.Modified()
-                #vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-                #vertexGlyphFilter.SetInputData(pdata)
-                #vertexGlyphFilter.Update()
-                self.polydata_raw = pdata #vertexGlyphFilter.GetOutput()
+                vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+                vertexGlyphFilter.SetInputData(pdata)
+                vertexGlyphFilter.Update()
+                self.polydata_raw = vertexGlyphFilter.GetOutput()
                 # We're importing from LAS (RiSCAN output) so initialize
                 # raw_history_dict as a Pointset Source
                 self.raw_history_dict = {
@@ -1378,9 +1341,8 @@ class SingleScan:
             # Save Points
             np.save(os.path.join(write_dir, 'Points.npy'), self.dsa_raw.Points)
             # Save Normals
-            if not self.polydata_raw.GetPointData().GetNormals() is None:
-                np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
-                    self.polydata_raw.GetPointData().GetNormals()))
+            np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
+                self.polydata_raw.GetPointData().GetNormals()))
             # Save arrays
             for name in self.dsa_raw.PointData.keys():
                 np.save(os.path.join(write_dir, name), 
@@ -1395,10 +1357,9 @@ class SingleScan:
             # Save Points
             np.save(os.path.join(write_dir, 'Points.npy'), 
                     self.dsa_raw.Points[ind, :])
-            # Save Normals if we have them
-            if not self.polydata_raw.GetPointData().GetNormals() is None:
-                np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
-                    self.polydata_raw.GetPointData().GetNormals())[ind, :])
+            # Save Normals
+            np.save(os.path.join(write_dir, 'Normals.npy'), vtk_to_numpy(
+                self.polydata_raw.GetPointData().GetNormals())[ind, :])
             # Save arrays
             for name in self.dsa_raw.PointData.keys():
                 np.save(os.path.join(write_dir, name), 
@@ -1726,186 +1687,6 @@ class SingleScan:
                                                      dtype=np.uint8)})
             self.man_class.index.name = 'PointId'
         
-    def load_labels(self):
-        """
-        Load the man_class dataframe. Create if it does not exist.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        # Check if directory for manual classifications exists and create
-        # if it doesn't.
-        create_df = False
-        if os.path.isdir(os.path.join(self.project_path, self.project_name, 
-                         'manualclassification')):
-            # Check if file exists
-            if os.path.isfile(os.path.join(self.project_path, self.project_name, 
-                              'manualclassification', self.scan_name +
-                              '_labels.parquet')):
-                self.labels = pd.read_parquet(os.path.join(self.project_path, 
-                                                 self.project_name,
-                                                 'manualclassification', 
-                                                 self.scan_name 
-                                                 + '_labels.parquet'),
-                                                 engine="pyarrow")
-            # otherwise create dataframe
-            else:
-                create_df = True
-        else:
-            # Create directory and dataframe
-            create_df = True
-            os.mkdir(os.path.join(self.project_path, self.project_name, 
-                     'manualclassification'))
-        
-        if create_df:
-            self.labels = pd.DataFrame({
-                                        'category':
-                                        pd.Series([], dtype='string'),
-                                        'subcategory':
-                                        pd.Series([], dtype='string'),
-                                        'id':
-                                        pd.Series([], dtype='string'),
-                                        'x':
-                                        pd.Series([], 
-                                                 dtype=np.float32),
-                                        'y':
-                                        pd.Series([], 
-                                                  dtype=np.float32),
-                                        'z':
-                                        pd.Series([], 
-                                                  dtype=np.float32),
-                                        })
-            self.labels.set_index(['category', 'subcategory', 'id'], 
-                                  inplace=True)
-
-    def add_label(self, category, subcategory, id, x, y, z, 
-                  transform='current'):
-        """
-        Add a label to the labels dataframe.
-
-        Parameters
-        ----------
-        category : str
-            The category that the label belongs to e.g. 'stake'
-        subcategory : str
-            The subcategory that the label belongs to e.g. 'ridge_ranch'
-        id : str
-            id for the label e.g. '52'. Note, will be cast to string
-        x : float
-            x coordinate for label
-        y : float
-            y coordinate for label
-        z : float
-            z coordinate for label
-        transform : 'current' or 'raw'
-            The reference frame for the (x, y, z) coordinates. The labels
-            dataframe is in the scanner's own coordinate system. So if
-            transform=='current', the point will be inverse transformed into
-            the SOCS. Otherwise, if transform=='raw' add point as is. The
-            default is 'current'
-
-        Returns
-        -------
-        None.
-
-        """
-
-        if not hasattr(self, 'labels'):
-            raise RuntimeError('labels dataframe does not exist, load it first')
-        if transform=='current':
-            invTransform = self.transform.GetInverse()
-            x_socs, y_socs, z_socs = invTransform.TransformPoint(x, y, z)
-        elif transform=='raw':
-            x_socs = x
-            y_socs = y
-            z_socs = z
-        else:
-            raise ValueError('transform must be "current" or "raw"')
-
-        # Add to labels df
-        temp_df = pd.DataFrame(data={'category': category,
-                               'subcategory': subcategory,
-                               'id': str(id),
-                               'x': x_socs,
-                               'y': y_socs,
-                               'z': z_socs,
-                               }, index=[0])
-        temp_df.set_index(['category', 'subcategory', 'id'], inplace=True)
-        self.labels = temp_df.combine_first(self.labels)
-        #self.labels.drop_duplicates(inplace=True)
-
-        # Write to file to save
-        self.labels.to_parquet(os.path.join(self.project_path, 
-                                                 self.project_name, 
-                                                 'manualclassification', 
-                                                 self.scan_name 
-                                                 + '_labels.parquet'),
-                                                 engine="pyarrow", 
-                                                 compression=None)
-
-    def get_label_point(self, category, subcategory, id, transform='current'):
-        """
-        Get a label from the labels dataframe.
-
-        Parameters
-        ----------
-        category : str
-            The category that the label belongs to e.g. 'stake'
-        subcategory : str
-            The subcategory that the label belongs to e.g. 'ridge_ranch'
-        id : str
-            id for the label e.g. '52'. Note, will be cast to string
-        transform : 'current' or 'raw'
-            The reference frame for to return the point in. If 'current' apply
-            current transform to point. If 'raw' return point as is. The default
-            is 'current'
-
-        Returns
-        -------
-        (3,) ndarray
-
-        """
-
-        # Get point
-        point = self.labels.loc[category, subcategory, id].values
-
-        if transform=='current':
-            point = self.transform.TransformPoint(point)
-
-        return point
-
-    def get_labels(self):
-        """
-        Get the labels dataframe, includes columns for transformed coordinates
-
-        Returns
-        -------
-        pandas Dataframe
-
-        """
-
-        df = self.labels.copy(deep=True)
-
-        # Add columns for scan_name and project_name and add to index
-        df['scan_name'] = self.scan_name
-        df['project_name'] = self.project_name
-        df.set_index(['project_name', 'scan_name'], append=True, inplace=True)
-
-        # Transform points, we can do this in a for loop because we'll never
-        # have that many labels
-        df['x_trans'] = 0.0
-        df['y_trans'] = 0.0
-        df['z_trans'] = 0.0
-        for i in range(df.shape[0]):
-            df['x_trans'].iat[i], df['y_trans'].iat[i], df['z_trans'].iat[i] = (
-                self.transform.TransformPoint(df['x'].iat[i],
-                                              df['y'].iat[i],
-                                              df['z'].iat[i]))
-
-        return df
     
     def add_transform(self, key, matrix, history_dict=None):
         """
@@ -2159,10 +1940,6 @@ class SingleScan:
             
         self.transformFilter.Update()
         self.currentFilter.Update()
-
-        # If scannerActor exists update it's transform
-        #if hasattr(self, 'scannerActor'):
-        #    self.scannerActor.SetUserTransform(self.transform)
     
     def random_voxel_downsample_filter(self, wx, wy, wz=None, seed=1234):
         """
@@ -2261,13 +2038,10 @@ class SingleScan:
         extractSelection.SetInputData(0, self.polydata_raw)
         extractSelection.SetInputData(1, selection)
         extractSelection.Update()
-        #vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-        #vertexGlyphFilter.SetInputConnection(extractSelection.GetOutputPort())
-        #vertexGlyphFilter.Update()
-        geoFilter = vtk.vtkGeometryFilter()
-        geoFilter.SetInputConnection(extractSelection.GetOutputPort())
-        geoFilter.Update()
-        self.polydata_raw = geoFilter.GetOutput()
+        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+        vertexGlyphFilter.SetInputConnection(extractSelection.GetOutputPort())
+        vertexGlyphFilter.Update()
+        self.polydata_raw = vertexGlyphFilter.GetOutput()
         self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
         
         # Update filters
@@ -2310,36 +2084,6 @@ class SingleScan:
             "input_0": json.loads(json.dumps(self.raw_history_dict))
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
-    
-    def apply_man_class(self):
-        """
-        Set the classification of manually classified points in polydata_raw
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        # Get the unique classes in man_class table
-        unique_classes = np.unique(self.man_class['Classification'])
-        
-        # For each class, get the pointids from 
-        for uq in unique_classes:
-            # Get pointIds for points with given classification
-            PointIdsClass = np.uint32(self.man_class.index.values[
-                np.where(self.man_class['Classification']==uq)[0]])
-            # Set those points in polydata_raw to their classification
-            Classification = vtk_to_numpy(self.polydata_raw.GetPointData()
-                                          .GetArray('Classification'))
-            PointIds = vtk_to_numpy(self.polydata_raw.GetPointData()
-                                          .GetArray('PointId'))
-            Classification[np.isin(PointIds, PointIdsClass, assume_unique=True)
-                           ] = np.uint8(uq)
-        
-        self.polydata_raw.Modified()
-        self.transformFilter.Update()
-        self.currentFilter.Update()
     
     def update_man_class(self, pdata, classification):
         """
@@ -3148,45 +2892,18 @@ class SingleScan:
         
         # Create implicit selection loop
         selectionLoop = vtk.vtkImplicitSelectionLoop()
-        selectionLoop.AutomaticNormalGenerationOff()
         selectionLoop.SetNormal(normal[0], normal[1], normal[2])
         selectionLoop.SetLoop(pts)
         
-        # The extract points function is just too slow with the entire 
-        # dataset. Let's see if we can quickly subset the points first.
-        if mode=='currentFilter':
-            pdata = self.currentFilter.GetOutput()
-        elif mode=='transformFilter':
-            pdata = self.transformFilter.GetOutput()
-        else:
-            raise ValueError('mode must be currentFilter or transformFilter')
-        # If this pdata has no points in it, we can just return
-        if pdata.GetNumberOfPoints()==0:
-            return
-        minx, miny, _ = corner_coords.min(axis=0)
-        maxx, maxy, _ = corner_coords.max(axis=0)
-        pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
-        PointIds_np = vtk_to_numpy(pdata.GetPointData().GetArray('PointId'))
-        mask = ((pts_np[:,0]>=minx) & (pts_np[:,0]<=maxx) &
-                (pts_np[:,1]>=miny) & (pts_np[:,1]<=maxy))
-        pts_np = pts_np[mask, :]
-        # set the z-coordinate of points to -1, for some reason the selection
-        # loop only selects negative points...
-        pts_np[:, 2] = -1
-        PointIds_np = PointIds_np[mask]
-        pts = vtk.vtkPoints()
-        pts.SetData(numpy_to_vtk(pts_np, array_type=vtk.VTK_FLOAT))
-        pdata = vtk.vtkPolyData()
-        pdata.SetPoints(pts)
-        vtkarr = numpy_to_vtk(PointIds_np, array_type=vtk.VTK_UNSIGNED_INT)
-        vtkarr.SetName('PointId')
-        pdata.GetPointData().AddArray(vtkarr)
-        
         # Create Extract Points
         extractPoints = vtk.vtkExtractPoints()
-        extractPoints.GenerateVerticesOff()
         extractPoints.SetImplicitFunction(selectionLoop)
-        extractPoints.SetInputData(pdata)
+        if mode=='currentFilter':
+            extractPoints.SetInputData(self.currentFilter.GetOutput())
+        elif mode=='transformFilter':
+            extractPoints.SetInputData(self.transformFilter.GetOutput())
+        else:
+            raise ValueError('mode must be currentFilter or transformFilter')
         extractPoints.Update()
         
         # If extractPoints has zero points in it then we can just return
@@ -3351,10 +3068,10 @@ class SingleScan:
             pdata.Modified()
             
             # Update polydata_raw
-            #vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-            #vertexGlyphFilter.SetInputData(pdata)
-            #vertexGlyphFilter.Update()
-            self.polydata_raw = pdata #vertexGlyphFilter.GetOutput()
+            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
+            vertexGlyphFilter.SetInputData(pdata)
+            vertexGlyphFilter.Update()
+            self.polydata_raw = vertexGlyphFilter.GetOutput()
             self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
             
             # Update filters
@@ -3490,156 +3207,7 @@ class SingleScan:
         os.remove(temp_file)
         if create_dem:
             os.remove(temp_file_tif)
-    
-    def create_scanner_actor(self, color='Gray', length=150):
-        """
-        Create an actor for visualizing the scanner and its orientation.
         
-        Parameters:
-        -----------
-        color : str, optional
-            Name of the color to display as. The default is 'Gray'
-        length : float, optional
-            Length of the ray indicating the scanner's start orientation in m.
-            The default is 150
-
-        Returns:
-        --------
-        None.
-
-        """
-
-        # Named colors object
-        nc = vtk.vtkNamedColors()
-
-        # Create a cylinder to represent the scanner
-        cylinderSource = vtk.vtkCylinderSource()
-        cylinderSource.SetCenter(0, 0, 0)
-        cylinderSource.SetRadius(0.25)
-        cylinderSource.SetHeight(0.6)
-        cylinderSource.SetResolution(12)
-        cylinderSource.CappingOn()
-        cylinderSource.Update()
-        pdata = cylinderSource.GetOutput()
-
-        # Add line along Scanner's x-axis
-        ctr_id = pdata.GetPoints().InsertNextPoint(0, 0, 0)
-        ray_id = pdata.GetPoints().InsertNextPoint(150, 0, 0)
-        lines = vtk.vtkCellArray()
-        lines.InsertNextCell(2)
-        lines.InsertCellPoint(ctr_id)
-        lines.InsertCellPoint(ray_id)
-        pdata.SetLines(lines)
-        pdata.Modified()
-
-        # Mapper and Actor
-        mapper = vtk.vtkPolyDataMapper()
-        mapper.SetInputData(pdata)
-        mapper.SetScalarVisibility(0)
-        if hasattr(self, 'scannerActor'):
-            del self.scannerActor
-            del self.scannerText
-        self.scannerActor = vtk.vtkActor()
-        self.scannerActor.SetMapper(mapper)
-        self.scannerActor.GetProperty().SetLineWidth(3)
-        self.scannerActor.GetProperty().RenderLinesAsTubesOn()
-        self.scannerActor.GetProperty().SetColor(nc.GetColor3d(color))
-        self.scannerActor.RotateX(90) # because cylinder is along y axis
-        self.scannerActor.SetUserTransform(self.transform)
-
-        # Create Text with the scan position name
-        text = vtk.vtkVectorText()
-        text.SetText(self.scan_name)
-        text.Update()
-        textMapper = vtk.vtkPolyDataMapper()
-        textMapper.SetInputData(text.GetOutput())
-        self.scannerText = vtk.vtkFollower()
-        self.scannerText.SetMapper(textMapper)
-        self.scannerText.SetScale(1, 1, 1)
-        self.scannerText.SetPosition(self.transform.GetPosition())
-        self.scannerText.AddPosition(0, 0, 0.5)
-        self.scannerText.GetProperty().SetColor(nc.GetColor3d(color))
-
-    def create_labels_actors(self, color='Gray', row_index=None):
-        """
-        Create dataframe containing actors for each label
-        
-        Parameters:
-        -----------
-        color : str, optional
-            Name of the color to display as. The default is 'Gray'
-        length : float, optional
-            Length of the ray indicating the scanner's start orientation in m.
-            The default is 150
-        row_index : tuple, optional
-            Sometimes we want to create new actors for a single row, and not
-            redo everything else, if so, this is tne index for that row. The
-            default is None.
-
-        Returns:
-        --------
-        None.
-
-        """
-
-        # Named colors object
-        nc = vtk.vtkNamedColors()
-
-        # First, copy the labels DataFrame
-        if row_index is None:
-            self.labels_actors = self.labels.copy(deep=True)
-            # Now create columns for the point actor and text actor
-            self.labels_actors['point_actor'] = None
-            self.labels_actors['text_actor'] = None
-        else:
-            self.labels_actors.loc[row_index] = self.labels.loc[row_index]
-
-        for row in self.labels_actors.itertuples():
-            if (not row_index is None) and (not row.Index==row_index):
-                continue
-            
-            # Create point and transform into project coordinate system
-            pts = vtk.vtkPoints()
-            pts.InsertNextPoint(row.x, row.y, row.z)
-            pdata = vtk.vtkPolyData()
-            pdata.SetPoints(pts)
-            transformFilter = vtk.vtkTransformPolyDataFilter()
-            transformFilter.SetInputData(pdata)
-            transformFilter.SetTransform(self.transform)
-            transformFilter.Update()
-            vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-            vertexGlyphFilter.SetInputConnection(
-                transformFilter.GetOutputPort())
-            vertexGlyphFilter.Update()
-            mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputConnection(vertexGlyphFilter.GetOutputPort())
-            actor = vtk.vtkActor()
-            actor.SetMapper(mapper)
-            actor.GetProperty().RenderPointsAsSpheresOn()
-            actor.GetProperty().SetPointSize(20)
-            actor.GetProperty().SetColor(nc.GetColor3d(color))
-            # Add actor to the dataframe
-            self.labels_actors.at[row.Index, 'point_actor'] = actor
-
-            # Create Text
-            text = vtk.vtkVectorText()
-            text.SetText(row.Index[0] + ', ' + row.Index[1] + ', ' 
-                         + row.Index[2])
-            text.Update()
-            textMapper = vtk.vtkPolyDataMapper()
-            textMapper.SetInputConnection(text.GetOutputPort())
-            labelText = vtk.vtkFollower()
-            labelText.SetMapper(textMapper)
-            labelText.SetScale(0.1, 0.1, 1)
-            labelText.SetPosition(transformFilter.GetOutput().GetPoints()
-                                  .GetPoint(0))
-            labelText.AddPosition(0, 0, 0.2)
-            labelText.GetProperty().SetColor(nc.GetColor3d(color))
-            # add to dataframe
-            self.labels_actors.at[row.Index, 'text_actor'] = labelText
-
-
-
     def create_filter_pipeline(self,colors={0 : (153/255, 153/255, 153/255, 1),
                                             1 : (153/255, 153/255, 153/255, 1),
                                             2 : (55/255, 126/255, 184/255, 1),
@@ -3672,7 +3240,7 @@ class SingleScan:
         """
         
         # Set active scalars
-        self.currentFilter.GetOutput().GetPointData().SetActiveScalars(
+        self.transformFilter.GetOutput().GetPointData().SetActiveScalars(
             'Classification')
         
         # Create Lookuptable
@@ -3683,15 +3251,9 @@ class SingleScan:
             lut.SetTableValue(key, colors[key])
         lut.Build()
         
-        # Create vertices
-        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-        vertexGlyphFilter.SetInputConnection(
-            self.currentFilter.GetOutputPort())
-        vertexGlyphFilter.Update()
-        
         # Create mapper
         self.mapper = vtk.vtkPolyDataMapper()
-        self.mapper.SetInputConnection(vertexGlyphFilter.GetOutputPort())
+        self.mapper.SetInputConnection(self.transformFilter.GetOutputPort())
         self.mapper.SetLookupTable(lut)
         self.mapper.SetScalarRange(min(colors), max(colors))
         self.mapper.SetScalarVisibility(1)
@@ -3734,15 +3296,9 @@ class SingleScan:
         # Named colors object
         nc = vtk.vtkNamedColors()
         
-        # Create vertices
-        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-        vertexGlyphFilter.SetInputConnection(
-            self.currentFilter.GetOutputPort())
-        vertexGlyphFilter.Update()
-        
         # Create mapper
         self.mapper = vtk.vtkPolyDataMapper()
-        self.mapper.SetInputConnection(vertexGlyphFilter.GetOutputPort())
+        self.mapper.SetInputConnection(self.currentFilter.GetOutputPort())
         self.mapper.SetScalarVisibility(0)
         prop = vtk.vtkProperty()
         prop.SetColor(nc.GetColor3d(color))
@@ -3767,7 +3323,7 @@ class SingleScan:
         
     
     def create_elevation_pipeline(self, z_min, z_max, lower_threshold=-1000,
-                                  upper_threshold=1000, LOD=True):
+                                  upper_threshold=1000):
         """
         create mapper and actor displaying points colored by elevation.
 
@@ -3781,8 +3337,6 @@ class SingleScan:
             Minimum elevation of point to display. The default is -1000.
         upper_threshold : float, optional
             Maximum elevation of point to display. The default is 1000.
-        LOD : bool, optional
-            Whether to generate a level of detail actor. The default is True
 
         Returns
         -------
@@ -3790,20 +3344,12 @@ class SingleScan:
 
         """
         
-        # Create vertices
-        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-        vertexGlyphFilter.SetInputConnection(
-            self.currentFilter.GetOutputPort())
-        vertexGlyphFilter.Update()
-        
         # # Create elevation filter
         elevFilter = vtk.vtkSimpleElevationFilter()
         self.polydata_raw.Modified()
         self.transformFilter.Update()
         self.currentFilter.Update()
-        elevFilter.SetInputConnection(vertexGlyphFilter.GetOutputPort())
-        # needed to prevent simpleelevationfilter from overwriting 
-        # Classification array
+        elevFilter.SetInputConnection(self.currentFilter.GetOutputPort())
         elevFilter.Update()
         
         # Create Threshold filter
@@ -3819,27 +3365,24 @@ class SingleScan:
         self.mapper.SetScalarRange(z_min, z_max)
         self.mapper.SetScalarVisibility(1)
         
-        if LOD:
-            # Create subsampled for LOD rendering
-            maskPoints = vtk.vtkPMaskPoints()
-            maskPoints.ProportionalMaximumNumberOfPointsOn()
-            maskPoints.SetOnRatio(10)
-            maskPoints.GenerateVerticesOn()
-            maskPoints.SetInputConnection(thresholdFilter.GetOutputPort())
-            maskPoints.Update()
-            self.mapper_sub = vtk.vtkPolyDataMapper()
-            self.mapper_sub.SetInputConnection(maskPoints.GetOutputPort())
-            self.mapper_sub.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
-            self.mapper_sub.SetScalarRange(z_min, z_max)
-            self.mapper_sub.SetScalarVisibility(1)
-            
-            # Create actor
-            self.actor = vtk.vtkLODProp3D()
-            self.actor.AddLOD(self.mapper, 0.0)
-            self.actor.AddLOD(self.mapper_sub, 0.0)
-        else:
-            self.actor = vtk.vtkActor()
-            self.actor.SetMapper(self.mapper)
+        # Create subsampled for LOD rendering
+        maskPoints = vtk.vtkPMaskPoints()
+        maskPoints.ProportionalMaximumNumberOfPointsOn()
+        maskPoints.SetOnRatio(10)
+        maskPoints.GenerateVerticesOn()
+        maskPoints.SetInputConnection(thresholdFilter.GetOutputPort())
+        maskPoints.Update()
+        self.mapper_sub = vtk.vtkPolyDataMapper()
+        self.mapper_sub.SetInputConnection(maskPoints.GetOutputPort())
+        self.mapper_sub.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+        self.mapper_sub.SetScalarRange(z_min, z_max)
+        self.mapper_sub.SetScalarVisibility(1)
+        
+        
+        # Create actor
+        self.actor = vtk.vtkLODProp3D()
+        self.actor.AddLOD(self.mapper, 0.0)
+        self.actor.AddLOD(self.mapper_sub, 0.0)
     
     def create_normalized_heights(self, x, cdf):
         """
@@ -3979,16 +3522,9 @@ class SingleScan:
         None.
 
         """
-        
-        # Create vertices
-        vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-        vertexGlyphFilter.SetInputConnection(
-            self.currentFilter.GetOutputPort())
-        vertexGlyphFilter.Update()
-        
         # Create mapper, hardcode LUT for now
         self.mapper = vtk.vtkPolyDataMapper()
-        self.mapper.SetInputConnection(vertexGlyphFilter.GetOutputPort())
+        self.mapper.SetInputConnection(self.currentFilter.GetOutputPort())
         self.mapper.GetInput().GetPointData().SetActiveScalars(field)
         self.mapper.SetLookupTable(mplcmap_to_vtkLUT(v_min, v_max, 
                                                      name='plasma'))
@@ -4420,10 +3956,6 @@ class Project:
     create_z_sigma()
         For the current value of the transformation, project the pointwise
         uncertainty spheroids onto the z-axis and save in PointData.
-    load_labels()
-        Load labels in each SingleScan
-    get_labels()
-        Get all labels as a DataFrame
     apply_manual_filter()
         Manually classify points within a selection loop.
     apply_snowflake_filter(shells)
@@ -4479,16 +4011,13 @@ class Project:
         Create reflectance for each scan.
     correct_reflectance_radial()
         Attempt to correct for reflectance bias due to distance from scanner.
-    areapoints_to_cornercoords(areapoints)
-        Given a set of points, identified by their scan names and point ids,
-        return the coordinates of those points in the current reference frame.
     """
     
     def __init__(self, project_path, project_name, poly='.1_.1_.01', 
                  import_mode=None, load_scans=True, read_scans=False, 
                  import_las=False, create_id=True, 
                  las_fieldnames=None, 
-                 class_list=[0, 1, 2, 70], suffix='', class_suffix=''):
+                 class_list=[0, 1, 2, 70], suffix=''):
         """
         Generates project, also inits singlescan objects
 
@@ -4535,9 +4064,6 @@ class Project:
         suffix : str, optional
             Suffix for npyfiles directory if we are reading scans. The default
             is '' which corresponds to the regular npyfiles directory.
-        class_suffix : str, optional
-            Suffix for which Classification[class_suffix].npy file to load as
-            'Classification' array. The default is '' (load Classification.npy)
 
         Returns
         -------
@@ -4572,12 +4098,7 @@ class Project:
         # Add SingleScans, including their SOPs, 
         # we will only add a singlescan if it has an SOP, or, if we are 
         # reading scans we will only add a scan if it exists
-        if import_mode=='read_scan':
-            scan_names = os.listdir(os.path.join(self.project_path, 
-                                                 project_name,
-                                                'npyfiles'+suffix))
-        else:
-            scan_names = os.listdir(os.path.join(project_path, project_name, 
+        scan_names = os.listdir(os.path.join(project_path, project_name, 
                                                  'SCANS'))
         for scan_name in scan_names:
             if import_mode=='read_scan':
@@ -4588,8 +4109,7 @@ class Project:
                                       scan_name, import_mode=import_mode,
                                       poly=poly, create_id=create_id,
                                       las_fieldnames=las_fieldnames,
-                                      class_list=class_list, suffix=suffix,
-                                      class_suffix=class_suffix)
+                                      class_list=class_list, suffix=suffix)
                     scan.add_sop()
                     self.scan_dict[scan_name] = scan
             else:
@@ -4721,19 +4241,6 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].load_man_class()
     
-    def apply_man_class(self):
-        """
-        Update all point Classifications with their values in man_class
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].apply_man_class()
-    
     def create_normals(self, radius=2, max_nn=30):
         """
         Use Open3d to compute pointwise normals and store.
@@ -4801,37 +4308,6 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].create_z_sigma(sigma_ro=sigma_ro,
                                                      sigma_bw=sigma_bw)
-
-    def load_labels(self):
-        """
-        Load the labels dataframes for each SingleScan
-
-        Returns
-        -------
-        None.
-
-        """
-
-        for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].load_labels()
-
-    def get_labels(self):
-        """
-        Get the labels for all scans in this project
-
-        Returns
-        -------
-        Pandas DataFrame containing labels
-
-        """
-
-        labels_list = []
-
-        for scan_name in self.scan_dict:
-            labels_list.append(self.scan_dict[scan_name].get_labels())
-
-        return pd.concat(labels_list)
-
     def apply_manual_filter(self, corner_coords, normal=(0.0, 0.0, 1.0), 
                             category=73, mode='currentFilter'):
         """
@@ -5220,9 +4696,7 @@ class Project:
             
     def display_project(self, z_min, z_max, lower_threshold=-1000, 
                         upper_threshold=1000, colorbar=True, field='Elevation',
-                        mapview=False, profile_list=[], show_scanners=False,
-                        scanner_color='Gray', scanner_length=150, 
-                        show_labels=False):
+                        mapview=False, profile_list=[]):
         """
         Display all scans in a vtk interactive window.
         
@@ -5256,16 +4730,6 @@ class Project:
             in pixels (optional) Elements 2, 3, 4, are color
             channels (optional) and element 5 is opacity (optional). The default
             is [].
-        show_scanners : bool, optional
-            Whether or not to show the scanners. The default is False.
-        scanner_color : str, optional
-            Name of the color to display as. The default is 'Gray'
-        scanner_length : float, optional
-            Length of the ray indicating the scanner's start orientation in m.
-            The default is 150
-        show_labels : bool, optional
-            Whether to display the labels for each SingleScan. The default is
-            False.
 
         Returns
         -------
@@ -5304,26 +4768,6 @@ class Project:
                                                                       field=
                                                                       field)
             renderer.AddActor(self.scan_dict[scan_name].actor)
-
-        # Add scanners if requested
-        if show_scanners:
-            for scan_name in self.scan_dict:
-                self.scan_dict[scan_name].create_scanner_actor(
-                    color=scanner_color, length=scanner_length)
-                renderer.AddActor(self.scan_dict[scan_name].scannerActor)
-                renderer.AddActor(self.scan_dict[scan_name].scannerText)
-
-        # Add labels if requested
-        if show_labels:
-            for scan_name in self.scan_dict:
-                self.scan_dict[scan_name].create_labels_actors()
-                for i in range(self.scan_dict[scan_name]
-                               .labels_actors.shape[0]):
-                    renderer.AddActor(self.scan_dict[scan_name].labels_actors
-                                      ['point_actor'].iat[i])
-                    renderer.AddActor(self.scan_dict[scan_name].labels_actors
-                                      ['text_actor'].iat[i])
-                
         
         # Add requested profiles
         for profile_tup in profile_list:
@@ -5371,7 +4815,7 @@ class Project:
             
         # Create RenderWindow and interactor, set style to trackball camera
         renderWindow = vtk.vtkRenderWindow()
-        renderWindow.SetSize(2000, 1000)
+        renderWindow.SetSize(2000, 1500)
         renderWindow.AddRenderer(renderer)
         iren = vtk.vtkRenderWindowInteractor()
         iren.SetRenderWindow(renderWindow)
@@ -5381,19 +4825,6 @@ class Project:
             
         iren.Initialize()
         renderWindow.Render()
-
-        # Set camera for followers
-        if show_scanners:
-            for scan_name in self.scan_dict:
-                self.scan_dict[scan_name].scannerText.SetCamera(
-                    renderer.GetActiveCamera())
-        if show_labels:
-            for scan_name in self.scan_dict:
-                for i in range(self.scan_dict[scan_name]
-                               .labels_actors.shape[0]):
-                    (self.scan_dict[scan_name].labels_actors['text_actor']
-                     .iat[i].SetCamera(renderer.GetActiveCamera()))
-
         iren.AddObserver('UserEvent', cameraCallback)
         iren.Start()
         
@@ -5406,9 +4837,7 @@ class Project:
     def project_to_image(self, z_min, z_max, focal_point, camera_position,
                          roll=0, image_scale=500, lower_threshold=-1000, 
                          upper_threshold=1000, mode=None, colorbar=True,
-                         field='Elevation',
-                         name='', window_size=(2000, 1000), path=None,
-                         date=True, scale=True):
+                         name='', window_size=(2000, 1000)):
         """
         Write an image of the project to the snapshots folder.
         
@@ -5434,7 +4863,7 @@ class Project:
         upper_threshold : float, optional
             Value of z to clip above. The default is 1000.
         mode : str, optional
-            What kind of projection system to use. 'map' indicates parallel
+            What kind of projection system to use. 'Map' indicates parallel
             or orthorectified projection. The default is None.
         colorbar : bool, optional
             Whether to display a colorbar.
@@ -5442,9 +4871,6 @@ class Project:
             Name to append to this snapshot. The default is ''.
         window_size : tuple, optional
             Window size in pixels. The default is (2000, 1000)
-        path : str, optional
-            If provided, this is the path to write the image to. The default
-            is None.
 
         Returns
         -------
@@ -5457,39 +4883,24 @@ class Project:
         
         # Run create elevation pipeline for each scan and add each actor
         for scan_name in self.scan_dict:
-            if field=='Elevation':
-                self.scan_dict[scan_name].create_elevation_pipeline(z_min, 
-                                                                    z_max, 
-                                                                lower_threshold, 
-                                                                upper_threshold)
-            elif field=='Classification':
-                self.scan_dict[scan_name].create_filter_pipeline()
-            else:
-                self.scan_dict[scan_name].create_reflectance_pipeline(z_min,
-                                                                      z_max,
-                                                                      field=
-                                                                      field)
+            self.scan_dict[scan_name].create_elevation_pipeline(z_min, z_max, 
+                                                            lower_threshold, 
+                                                            upper_threshold)
             renderer.AddActor(self.scan_dict[scan_name].actor)
             
         if colorbar:
             scalarBar = vtk.vtkScalarBarActor()
-            if field=='Elevation':
-                scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
-                renderer.AddActor2D(scalarBar)
-            elif field in ['Reflectance', 'reflectance_radial']:
-                scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max,
-                                                           name='plasma'))
-                renderer.AddActor2D(scalarBar)
+            scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+            renderer.AddActor2D(scalarBar)
             
         # Add project date as text
-        if date:
-            textActor = vtk.vtkTextActor()
-            textActor.SetInput(self.project_date)
-            textActor.SetPosition2(10, 40)
-            textActor.SetTextScaleModeToNone()
-            textActor.GetTextProperty().SetFontSize(24)
-            textActor.GetTextProperty().SetColor(0.0, 1.0, 0.0)
-            renderer.AddActor2D(textActor)
+        textActor = vtk.vtkTextActor()
+        textActor.SetInput(self.project_date)
+        textActor.SetPosition2(10, 40)
+        textActor.SetTextScaleModeToNone()
+        textActor.GetTextProperty().SetFontSize(24)
+        textActor.GetTextProperty().SetColor(0.0, 1.0, 0.0)
+        renderer.AddActor2D(textActor)
         
         # Create RenderWindow
         renderWindow = vtk.vtkRenderWindow()
@@ -5503,159 +4914,43 @@ class Project:
             camera.ParallelProjectionOn()
             camera.SetParallelScale(image_scale)
             camera.SetViewUp(0, 1.0, 0)
-            if scale:
-                legendScaleActor = vtk.vtkLegendScaleActor()
-                legendScaleActor.LegendVisibilityOff()
-                # sort out this stuff in needed...
-                #legendScaleActor.GetLeftAxis().SetFontFactor(5)
-                renderer.AddActor(legendScaleActor)
+            legendScaleActor = vtk.vtkLegendScaleActor()
+            renderer.AddActor(legendScaleActor)
         else:
             camera.SetRoll(roll)
         renderer.SetActiveCamera(camera)
         
         renderWindow.Render()
-
-        # Sleep for a second to allow rendering to finish
-        time.sleep(1)
         
         # Screenshot image to save
         w2if = vtk.vtkWindowToImageFilter()
-        w2if.ShouldRerenderOff()
         w2if.SetInput(renderWindow)
         w2if.Update()
     
         writer = vtk.vtkPNGWriter()
-        if path is None:
-            writer.SetFileName(os.path.join(self.project_path, 'snapshots', 
-                               self.project_name + '_' + name + '.png'))
-        else:
-            writer.SetFileName(path)
+        writer.SetFileName(os.path.join(self.project_path, 'snapshots', 
+                           self.project_name + '_' + name + '.png'))
         writer.SetInputData(w2if.GetOutput())
         writer.Write()
     
         renderWindow.Finalize()
         del renderWindow
         
-    def point_to_grid_average_image(self, nx, ny, dx, dy, x0, y0, yaw=0):
-        """
-        Convert a rectangular area of points to an image by gridded averaging
-
-        Requires cython_util
-
-        Parameters
-        ----------
-        nx : int
-            Number of gridcells in x direction.
-        ny : int
-            Number of gridcells in y direction.
-        dx : float
-            Width of gridcells in x direction.
-        dy : float
-            Width of gridcells in y direction.
-        x0 : float
-            x coordinate of the origin in m.
-        y0 : float
-            y coordinate of the origin in m.
-        yaw : float, optional
-            yaw angle in degrees of image to create, for generating 
-            non-axis aligned image. The default is 0.
-
-        Returns:
-        --------
-        None
-
-        """
-
-        # Get the points in this rectangular region
-        pdata, point_history_dict = self.get_merged_points(history_dict=True,
-            x0=x0, y0=y0, wx=nx*dx, wy=ny*dy, yaw=yaw)
-
-        # Transform points into image reference frame, needed because
-        # vtkImageData can only be axis-aligned. We'll save the transform 
-        # filter in case we need it for mapping flags, etc, into image
-        self.imageTransform = vtk.vtkTransform()
-        self.imageTransform.PostMultiply()
-        # Translate origin to be at (x0, y0)
-        self.imageTransform.Translate(-x0, -y0, 0)
-        # Rotate around this origin
-        self.imageTransform.RotateZ(-yaw)
-        
-        # Create transform filter and apply
-        imageTransformFilter = vtk.vtkTransformPolyDataFilter()
-        imageTransformFilter.SetTransform(self.imageTransform)
-        imageTransformFilter.SetInputData(pdata)
-        imageTransformFilter.Update()
-
-        # Get the points and the z_sigma as numpy arrays
-        pts_np = vtk_to_numpy(imageTransformFilter.GetOutput().GetPoints()
-                              .GetData())
-
-        # Create grid
-        edges = 2*[None]
-        nbin = np.empty(2, np.int_)
-        w = [dx, dy]
-        n = [nx, ny]
-        for i in range(2):
-            edges[i] = np.arange(n[i]+ 1, dtype=np.float32) * w[i]
-            # Adjust lower edge so we don't miss lower most point
-            edges[i][0] = edges[i][0] - 0.0001
-            # Adjust uppermost edge so the bin width is appropriate
-            edges[i][-1] += 0.0001
-            nbin[i] = len(edges[i]) + 1
-
-        # Use cython to iterate through grid
-        _, grid_mean = gridded_counts_means(pts_np, edges)
-
-        # Create image
-        self.image = vtk.vtkImageData()
-        self.image.SetDimensions(nx, ny, 1)
-        self.image.SetSpacing(dx, dy, 1)
-        self.image.SetOrigin(0, 0, 0)
-        warnings.warn('Still not sure if origin should be offset half grid cell')
-        # Store np arrays related to image
-        if not hasattr(self, 'np_dict'):
-            self.np_dict = {}
-        self.np_dict['image_z'] = np.ravel(grid_mean, order='F')
-        vtk_arr = numpy_to_vtk(self.np_dict['image_z'], deep=False, 
-                               array_type=vtk.VTK_FLOAT)
-        vtk_arr.SetName('Elevation')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.image.GetPointData().SetActiveScalars('Elevation')
-        self.image.Modified()
-
-        # Create history dict
-        self.image_history_dict = {
-            "type": "Image Generator",
-            "git_hash": get_git_hash(),
-            "method": "Project.point_to_grid_average_image",
-            "input_0": point_history_dict,
-            "params": {"x0": x0, "y0": y0, "yaw": yaw}
-            }
-
-        # Also wrap with a datasetadaptor for working with numpy
-        self.dsa_image = dsa.WrapDataObject(self.image)
-
-    def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, lengthscale, 
-                               outputscale, nu, yaw=0, n_neighbors=50, max_pts=
-                               64000, min_pts=100, mx=32, my=32, eps=0, 
-                               corner_coords=None,
-                               max_dist=None, optimize=False, learning_rate=0.1,
-                               n_iter=5, max_time=0.5, optim_param=None,
-                               multiply_outputscale=False, var_radius=None):
+    def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, leafsize, 
+                               lengthscale, outputscale, yaw=0,
+                               corner_coords=None):
         """
         Convert a rectangular area of points to an image using gpytorch.
         
-        Take a rectangular area, create an array of gridded coordinates where
-        we want to evaluate surface (grid_points). For each grid_point, find
-        the n_neighbors nearest neighbors in the lidar point cloud. Group
-        grid_points into squarish groups of mx x my grid_points. For each of
-        these M groups pool the nearest neighbors. Now we have groups of
-        at most mx x my x n_neighbors lidar points with which to estimate the
-        surface height and mx x my grid_points. For each M group, run 
-        gaussian process regression to estimate the surface height at the grid
-        points. Combine all grid points together into one image and save the
-        result in the self.image attribute.
-        
+        Take a rectangular area, use a kd decomposition to break it up into
+        buckets of at most leafsize points. Then for each of these buckets
+        fit the points with a gaussian process using a matern (nu=1/2) kernel
+        aka exponential with lengthscale given by lengthscale, scaled by
+        outputscale and with a constant mean set to the mean of all of the
+        points in the bucket. The z uncertainties come from the z_sigma field
+        in the polydata. Evaluate this gaussian process on a regular grid and
+        get the uncertainty for each grid point. Save the result as an image.
+
         Parameters
         ----------
         nx : int
@@ -5673,57 +4968,14 @@ class Project:
         yaw : float, optional
             yaw angle in degrees of image to create, for generating 
             non-axis aligned image. The default is 0.
+        leafsize : int
+            Maximum number of points for each leaf of the kdtree
         lengthscale : float
-            Length scale for the matern kernel in m. 2 seems reasonable.
+            Length scale for the matern kernel in m. 10 seems reasonable.
         outputscale : float
-            Outputscale for the scale kernel. Around 0.01 seems reasonable.
-        nu : float
-            Nu for the Matern kernel, must be one of 0.5, 1.5, or 2.5
-        n_neighbors : int, optional
-            Number of neighbors around each grid point. The default is 50.
-        max_pts : int, optional
-            If a chunk has more points than max_pts, then reduce n_neighbors by
-            10% until we're within max_pts.
-        min_pts : int, optional
-            If a chunk has fewer points than min_pts, increase n_neighbors by
-            10% until we're greater than min_pts.
-
-        mx : int, optional
-            Number of grid points in the x direction to group together in M
-            groups. The default is 32.
-        my : int, optional
-            Number of grid points in the y direction to group together in M
-            groups. The default is 32.
-        eps : float, optional
-            Eps for nearest neighbors search (see scipy.spatial.cKDTree) for
-            more details. The default is 0 (exact nearest neighbors)
+            Outputscale for the scale kernel. Around 0.15 seems reasonable.
         corner_coords : Nx3 array, optional
             Corner coordinates of selection if we want to limit output
-        optimize : bool, optional
-            Whether or not to search for optimal hyperparameters for the GP. The
-            default is False.
-        learning_rate : float, optional
-            The learning rate if we are optimizing (currently just using ADAM). 
-            The default is 0.1.
-        n_iter : int, optional
-            The number of iterations to run optimizer for. Note that we will 
-            only ever run optimizer for max_time. The default is None.
-        max_time : float, optional
-            The maximum amount of time (in seconds) to run an optimization for. 
-            The default is 60.
-        optim_param : list, optional
-            The parameters to optimize, as a list of dicts. If None, we will
-            optimize across all parameters. The default is None.
-        multiply_outputscale : bool, optional
-            If True, set outputscale for each chunk to be outputscale times
-            the variance of the z-values of points in that chunk. The default 
-            is False.
-        var_radius : float, optional
-            If this is given and multiply_outputscale is True, instead of 
-            using the variance of the points in the chunk, we use the variance
-            of the z values of points within var_radius of the centroid of
-            the chunk. The default is None.
-
 
         Returns
         -------
@@ -5754,18 +5006,26 @@ class Project:
         # Get the points and the z_sigma as numpy arrays
         pts_np = vtk_to_numpy(imageTransformFilter.GetOutput().GetPoints()
                               .GetData())
-        z_sigma_np = vtk_to_numpy(imageTransformFilter.GetOutput()
-                                  .GetPointData().GetArray('z_sigma'))
+        norm_height_np = vtk_to_numpy(imageTransformFilter.GetOutput()
+                                  .GetPointData().GetArray('norm_height'))
+        norm_z_sigma_np = vtk_to_numpy(imageTransformFilter.GetOutput()
+                                  .GetPointData().GetArray('norm_z_sigma'))
+        # temporary fix for negative z_sigma values
+        ind = norm_z_sigma_np > 0
+        pts_np = pts_np[ind, :]
+        norm_height_np = norm_height_np[ind]
+        norm_z_sigma_np = norm_z_sigma_np[ind]
+        warnings.warn('Still has temporary fix for negative norm z sigma')
 
         # Create grid for image
         x_vals = np.arange(nx, dtype=np.float32) * dx
         y_vals = np.arange(ny, dtype=np.float32) * dy
         X, Y = np.meshgrid(x_vals, y_vals)
-        grid_points = np.hstack((X.ravel()[:,np.newaxis], 
-                                 Y.ravel()[:,np.newaxis]))
+        grid_points_all = np.hstack((X.ravel()[:,np.newaxis], 
+                                    Y.ravel()[:,np.newaxis]))
         # If we have corner_coords, limit grid points to just be within them
         if corner_coords is None:
-            grid_points_mask = np.ones(grid_points.shape[0], dtype=np.bool)
+            grid_points = grid_points_all
         else:
             # Transform each point in corner_coords into image space
             pts = vtk.vtkPoints()
@@ -5774,11 +5034,11 @@ class Project:
                     corner_coords[i,0], corner_coords[i,1], corner_coords[i,2]))
             grid_points_all_vtk = vtk.vtkPoints()
             grid_points_all_vtk.SetData(numpy_to_vtk(np.hstack(
-                (grid_points, np.zeros((grid_points.shape[0],1)))),
-                                        array_type=vtk.VTK_DOUBLE))
+                (grid_points_all, np.zeros((grid_points_all.shape[0],1)))),
+                                                    array_type=vtk.VTK_DOUBLE))
             grid_points_pdata = vtk.vtkPolyData()
             grid_points_pdata.SetPoints(grid_points_all_vtk)
-            vtkarr = numpy_to_vtk(np.arange(grid_points.shape[0], 
+            vtkarr = numpy_to_vtk(np.arange(grid_points_all.shape[0], 
                                             dtype='uint64'), deep=True, 
                                   array_type=vtk.VTK_UNSIGNED_LONG)
             vtkarr.SetName('PointId')
@@ -5797,137 +5057,83 @@ class Project:
             # These are the indices of points inside our corner_coords
             PointIds = vtk_to_numpy(extractPoints.GetOutput().GetPointData().
                                     GetArray('PointId'))
-            #grid_points = grid_points_all[PointIds,:]
-            # Get as a mask of true or falses (for logical indexing)
-            grid_points_mask = np.isin(vtk_to_numpy(vtkarr), PointIds,
-                                       assume_unique=True)
-        # If we have set max_dist, limit grid_points_mask to be within max_dist
-        if not (max_dist is None):
-            dist_mask = np.zeros(grid_points.shape[0], dtype=np.bool)
-            for scan_name in self.scan_dict:
-                # For each scan, get scanner position image coordinates
-                scan_pos = np.array(self.imageTransform.TransformPoint(
-                            self.scan_dict[scan_name].transform.GetPosition())
-                            )[np.newaxis,:2]
-                # set all points that are within max_dist of scanner to True
-                dist_mask = dist_mask | (
-                            np.square(grid_points - scan_pos).sum(axis=1)
-                                <=max_dist**2)
-            grid_points_mask = grid_points_mask & dist_mask
+            grid_points = grid_points_all[PointIds,:]
 
-        
-        # Build a cKDTree from the xy coordinates of pts_np
-        kdtree = cKDTree(pts_np[:,:2])
-        
-        # Indices for stepping through grid_points in mx x my chunks
-        i_mx = 0
-        j_my = 0
-        ctr = 0
-        # Output
-        grid_mean = np.empty(nx*ny, dtype=np.float32) * np.nan
-        grid_lower = np.empty(nx*ny, dtype=np.float32) * np.nan
-        grid_upper = np.empty(nx*ny, dtype=np.float32) * np.nan
-        gp_mean = np.empty(nx*ny, dtype=np.float32) * np.nan
-        gp_outputscale = np.empty(nx*ny, dtype=np.float32) * np.nan
-        gp_lengthscale = np.empty(nx*ny, dtype=np.float32) * np.nan
-        total_points = grid_points_mask.sum()
-        t0 = time.perf_counter()
-        true_ctr = 0
-        while ctr<(nx*ny):
-            if (ctr%10000)<=(mx*my):
-                print(str(true_ctr) + ' / ' + str(total_points) + ' ~time: ' 
-                      + str((total_points-true_ctr)*(time.perf_counter() - t0)
-                            /true_ctr))
+        # If All of the points would fit in one leaf, skip tree creation
+        if pts_np.shape[0]<=leafsize:
+            grid_mean, grid_lower, grid_upper = (
+                run_gp(pts_np, norm_height_np, grid_points, 
+                       norm_z_sigma=norm_z_sigma_np, lengthscale=lengthscale,
+                       outputscale=outputscale))
+        else:
+            # Create a kdtree from the points (xy only) and get python version
+            tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
+            ptree = tree.tree
 
-            # Get start and end indices for x and y values
-            x_s = mx*i_mx
-            x_e = nx if x_s+mx>nx else x_s+mx
-            y_s = my*j_my
-            y_e = ny if y_s+my>ny else y_s+my
-            step = (y_e-y_s)*(x_e-x_s)
-            
-            # Get the grid points in this chunk and use kdtree to pull point 
-            # indices
-            igridX, igridY = np.meshgrid(np.arange(x_s, x_e), 
-                                         np.arange(y_s, y_e))
-            ind = igridX + nx*igridY
-            ind = ind.ravel()
-            # Subset to just those indices that are within corner coords
-            # that is, indices where grid_points_mask is True
-            ind = ind[grid_points_mask[ind]]
-            true_ctr += ind.size
-            # If ind is empty that means all grid points in this chunk have been
-            # masked, skip this chunk and go to the next one
-            if ind.size>0:
-                m_grid = grid_points[ind, :]
-                # This while loop enforces that we're below max_pts
-                c_n_neighbors = n_neighbors
-                while True:
-                    _, pt_ind = kdtree.query(m_grid, c_n_neighbors, eps=eps, 
-                                             workers=-1)
-                    del _
-                    pt_ind = np.unique(pt_ind.ravel())
-                    if pt_ind.size<max_pts:
-                        break
-
-                    c_n_neighbors = (c_n_neighbors*9)//10
-                # This while loop enforces that we're greater than min_pts
-                while len(pt_ind)<min_pts:
-                    c_n_neighbors = (c_n_neighbors*11)//10
-                    _, pt_ind = kdtree.query(m_grid, c_n_neighbors, eps=eps, 
-                                             workers=-1)
-                    del _
-                    pt_ind = np.unique(pt_ind.ravel())
-                
-                # If we are using a non-constant outputscale
-                if multiply_outputscale:
-                    # if we have no var_radius, set to multiple of variance
-                    # of points in chunk
-                    if var_radius is None:
-                        c_outputscale = outputscale * pts_np[pt_ind,2].var()
-                    else:
-                        # query points around centroid of grid points and
-                        # and multiply their variance by outputscale
-                        # If there are few points within this radius increase it
-                        var_ind = []
-                        cntr = m_grid.mean(axis=0)
-                        c_var_radius = var_radius
-                        while len(var_ind)<1000:
-                            var_ind = kdtree.query_ball_point(cntr,
-                                                            r=c_var_radius,
-                                                            eps=0.2, workers=-1)
-                            c_var_radius = c_var_radius * 1.1
-
-                        c_outputscale = outputscale * pts_np[np.array(var_ind), 
-                                                            2].var()
+            # Define function for working with tree
+            def tree_gp(node, pts_np, norm_height_np, norm_z_sigma_np, 
+                        grid_points, lengthscale, outputscale, grid_mean, 
+                        grid_lower, grid_upper):
+                # If we are not at a leaf, call this function on each child
+                if not node.split_dim==-1:
+                    # Call this function on the lesser node
+                    tree_gp(node.lesser, pts_np, norm_height_np, 
+                            norm_z_sigma_np, grid_points, lengthscale, 
+                            outputscale, grid_mean, grid_lower, grid_upper)
+                    # Call this function on the greater node
+                    tree_gp(node.greater, pts_np, norm_height_np, 
+                            norm_z_sigma_np, grid_points, lengthscale, 
+                            outputscale, grid_mean, grid_lower, grid_upper)
                 else:
-                    # Otherwise just use the fixed outputscale from params.
-                    c_outputscale = outputscale
+                    # We are at a leaf. Apply GP
 
-                # Run our GP on this chunk and estimate values at grid points
-                # use indices from above to place output in the right places
-                grid_mean[ind], grid_lower[ind], grid_upper[ind], m, v, l = run_gp(
-                    pts_np[pt_ind,:], pts_np[pt_ind,2], m_grid,
-                    z_sigma=z_sigma_np[pt_ind], lengthscale=lengthscale, 
-                    outputscale=c_outputscale, nu=nu, optimize=optimize,
-                    learning_rate=learning_rate, iter=n_iter, max_time=max_time,
-                    optim_param=optim_param, multiply_outputscale=False)
-                gp_mean[ind] = np.float32(m)
-                gp_outputscale[ind] = np.float32(v)
-                gp_lengthscale[ind] = np.float32(l)
-            
-            # Move i_mx and j_my to the next grid_points group
-            if x_e==nx:
-                # If we are at the end of a row, return i_mx to 0 and 
-                # increment j_my
-                i_mx = 0
-                j_my += 1
-            else:
-                # Otherwise, just increment i_mx and leave j_my
-                i_mx += 1
-            # Increment counter
-            ctr += step
+                    ind = node.indices
+                    min_x = pts_np[ind,0].min()-dx
+                    max_x = pts_np[ind,0].max()+dx
+                    min_y = pts_np[ind,1].min()-dy
+                    max_y = pts_np[ind,1].max()+dy
+        
+                    # Get grid points within this node
+                    grid_ind = ((grid_points[:,0]>=min_x) 
+                                & (grid_points[:,0]<=max_x)
+                                & (grid_points[:,1]>=min_y) 
+                                & (grid_points[:,1]<=max_y))
+                    
+                    (grid_mean[grid_ind], grid_lower[grid_ind], 
+                     grid_upper[grid_ind]) = run_gp(pts_np[ind], 
+                        norm_height_np[ind], grid_points[grid_ind], 
+                        norm_z_sigma=norm_z_sigma_np[ind], 
+                        lengthscale=lengthscale, outputscale=outputscale)
+            # Apply function to kdtree
+            grid_mean = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            grid_upper = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            grid_lower = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            tree_gp(ptree, pts_np, norm_height_np, norm_z_sigma_np, grid_points, 
+                    lengthscale, outputscale, grid_mean, grid_lower, grid_upper)
 
+        # convert from normalized space back to real space
+        grid_mean = inormalize(grid_mean, self.empirical_cdf[1], 
+                               self.empirical_cdf[2])
+        grid_lower = inormalize(grid_lower, self.empirical_cdf[1], 
+                                self.empirical_cdf[2])
+        grid_upper = inormalize(grid_upper, self.empirical_cdf[1], 
+                                self.empirical_cdf[2])
+
+        # Now return to full domain
+        if corner_coords is None:
+            grid_mean_all = grid_mean
+            grid_lower_all = grid_lower
+            grid_upper_all = grid_upper
+        else:
+            grid_mean_all = np.ones(grid_points_all.shape[0], 
+                                    dtype=np.float32)*np.nan
+            grid_lower_all = np.ones(grid_points_all.shape[0], 
+                                     dtype=np.float32)*np.nan
+            grid_upper_all = np.ones(grid_points_all.shape[0], 
+                                     dtype=np.float32)*np.nan
+            grid_mean_all[PointIds] = grid_mean
+            grid_lower_all[PointIds] = grid_lower
+            grid_upper_all[PointIds] = grid_upper
 
 
         # Create image
@@ -5935,43 +5141,28 @@ class Project:
         self.image.SetDimensions(nx, ny, 1)
         self.image.SetSpacing(dx, dy, 1)
         self.image.SetOrigin(0, 0, 0)
-        # Store np arrays related to image
+        # Store np arrays related to mesh
         if not hasattr(self, 'np_dict'):
             self.np_dict = {}
-        self.np_dict['image_z'] = grid_mean
+        self.np_dict['image_z'] = grid_mean_all
         vtk_arr = numpy_to_vtk(self.np_dict['image_z'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('Elevation')
         self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_lower'] = grid_lower
+        self.np_dict['image_z_lower'] = grid_lower_all
         vtk_arr = numpy_to_vtk(self.np_dict['image_z_lower'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_lower')
         self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_upper'] = grid_upper
+        self.np_dict['image_z_upper'] = grid_upper_all
         vtk_arr = numpy_to_vtk(self.np_dict['image_z_upper'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_upper')
         self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_ci'] = grid_upper - grid_lower
+        self.np_dict['image_z_ci'] = grid_upper_all - grid_lower_all
         vtk_arr = numpy_to_vtk(self.np_dict['image_z_ci'], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_ci')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['gp_mean'] = gp_mean
-        vtk_arr = numpy_to_vtk(self.np_dict['gp_mean'], deep=False, 
-                               array_type=vtk.VTK_FLOAT)
-        vtk_arr.SetName('gp_mean')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['gp_outputscale'] = gp_outputscale
-        vtk_arr = numpy_to_vtk(self.np_dict['gp_outputscale'], deep=False, 
-                               array_type=vtk.VTK_FLOAT)
-        vtk_arr.SetName('gp_outputscale')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['gp_lengthscale'] = gp_lengthscale
-        vtk_arr = numpy_to_vtk(self.np_dict['gp_lengthscale'], deep=False, 
-                               array_type=vtk.VTK_FLOAT)
-        vtk_arr.SetName('gp_lengthscale')
         self.image.GetPointData().AddArray(vtk_arr)
         self.image.GetPointData().SetActiveScalars('Elevation')
         self.image.Modified()
@@ -5982,9 +5173,8 @@ class Project:
             "git_hash": get_git_hash(),
             "method": "Project.merged_points_to_image",
             "input_0": point_history_dict,
-            "params": {"x0": x0, "y0": y0, "yaw": yaw, "nu": nu,
-                       "n_neighbors": n_neighbors, "mx": mx, "my": my,
-                       "eps": eps, "corner_coords": np.float64(corner_coords)}
+            "params": {"x0": x0, "y0": y0, "yaw": yaw, "leafsize": leafsize,
+                        "lengthscale": lengthscale, "outputscale": outputscale}
             }
 
         # Also wrap with a datasetadaptor for working with numpy
@@ -6103,11 +5293,11 @@ class Project:
             if nan_value:
                 field_np[np.isnan(field_np)] = nan_value
             else:
-                field_np[np.isnan(field_np)] = v_min - 0.1
+                field_np[np.isnan(field_np)] = v_min
             im.Modified()
             geometry = vtk.vtkImageDataGeometryFilter()
             geometry.SetInputData(im)
-            geometry.SetThresholdValue(v_min - 0.05)
+            geometry.SetThresholdValue(v_min)
             geometry.ThresholdCellsOn()
             geometry.Update()
             tri = vtk.vtkTriangleFilter()
@@ -6133,9 +5323,7 @@ class Project:
     
     def display_image(self, z_min, z_max, field='Elevation',
                       warp_scalars=False, color_field=None,
-                      show_points=False, profile_list=[],
-                      show_scanners=False,
-                      scanner_color='Gray', scanner_length=150):
+                      show_points=False, profile_list=[]):
         """
         Display image in vtk interactive window.
 
@@ -6155,16 +5343,6 @@ class Project:
             is None.
         show_points : bool, optional
             Whether to also render the points. The default is False.
-        profile_list : list, optional
-            List of keys of profiles in the profiles dict to display. The 
-            default is [].
-        show_scanners : bool, optional
-            Whether or not to show the scanners. The default is False.
-        scanner_color : str, optional
-            Name of the color to display as. The default is 'Gray'
-        scanner_length : float, optional
-            Length of the ray indicating the scanner's start orientation in m.
-            The default is 150
 
         Returns
         -------
@@ -6187,10 +5365,8 @@ class Project:
         
         if warp_scalars:
             mapper = vtk.vtkPolyDataMapper()
-            min_scalar = np.nanmin(vtk_to_numpy(self.image.GetPointData().
-                                                GetArray(field)))
             mapper.SetInputData(self.get_image(field, warp_scalars, 
-                                               v_min=min_scalar))
+                                               v_min=z_min))
             if not color_field is None:
                 mapper.GetInput().GetPointData().SetActiveScalars(color_field)
             
@@ -6218,23 +5394,6 @@ class Project:
                 self.scan_dict[scan_name].actor.SetUserTransform(
                     self.imageTransform)
                 renderer.AddActor(self.scan_dict[scan_name].actor)
-
-        # Add scanners if requested
-        if show_scanners:
-            for scan_name in self.scan_dict:
-                self.scan_dict[scan_name].create_scanner_actor(
-                    color=scanner_color, length=scanner_length)
-                # copy the userTransform and concatenate the imageTransform
-                transform = vtk.vtkTransform()
-                transform.DeepCopy(self.scan_dict[scan_name].scannerActor
-                                   .GetUserTransform())
-                transform.Concatenate(self.imageTransform)
-                self.scan_dict[scan_name].scannerActor.SetUserTransform(
-                    transform)
-                self.scan_dict[scan_name].scannerText.AddPosition(
-                    self.imageTransform.GetPosition())
-                renderer.AddActor(self.scan_dict[scan_name].scannerActor)
-                renderer.AddActor(self.scan_dict[scan_name].scannerText)
 
         # Add requested profiles
         for profile_tup in profile_list:
@@ -6283,13 +5442,6 @@ class Project:
         
         iren.Initialize()
         renderWindow.Render()
-
-        # Set camera for followers
-        if show_scanners:
-            for scan_name in self.scan_dict:
-                self.scan_dict[scan_name].scannerText.SetCamera(
-                    renderer.GetActiveCamera())
-
         iren.AddObserver('UserEvent', cameraCallback)
         iren.Start()
     
@@ -6696,15 +5848,15 @@ class Project:
         while np.abs(extractPoints.GetOutput().GetNumberOfPoints()-n_pts)>tol:
             #print(d)
             #print(extractPoints.GetOutput().GetNumberOfPoints())
+            if d>dmax:
+                warnings.warn('we have exceed max search distance. increase'
+                              ' dmax if this is not a mistake.')
+                break
             if extractPoints.GetOutput().GetNumberOfPoints()<n_pts:
                 dmin = d # store current value of d in dmin, we won't search
                 # below this distance.
                 # if we are still ascending double d
                 if dloopmax is None:
-                    if (2*d)>dmax:
-                        warnings.warn('we have exceed max search distance. '
-                                      'increase dmax if this is not a mistake.')
-                        break
                     d = 2*d
                 else:
                     #otherwise go halfway between where we are and the highest
@@ -6721,72 +5873,9 @@ class Project:
         
         # Return once we are within tolerance
         return extractPoints.GetOutput(), d
-    
-    def image_transect(self, x0, y0, x1, y1, N, key):
-        """
-        Sample a transect through the current image and save in profiles.
-        
-        Parameters:
-        -----------
-        x0 : float
-            Coordinate in project reference frame.
-        y0 : float
-            Coordinate in project reference frame.
-        x1 : float
-            Coordinate in project reference frame.
-        y1 : float
-            Coordinate in project reference frame.
-        N : int
-            Number of points to put in transect.
-        key : const (str, tuple, etc)
-            Key to store this profile in profile_dict under.
-
-        Returns:
-        --------
-        None.
-
-        """
-
-        # Get start and end points in image reference frame
-        start = self.imageTransform.TransformPoint(x0, y0, 0)
-        end = self.imageTransform.TransformPoint(x1, y1, 0)
-        
-        # Create transect in image coordinates
-        pts_np = np.vstack((np.linspace(start[0], end[0], N), 
-                            np.linspace(start[1], end[1], N),
-                            np.zeros(N))).T
-        pts = vtk.vtkPoints()
-        pts.SetData(numpy_to_vtk(pts_np, deep=True, array_type=vtk.VTK_DOUBLE))
-        pts_pdata = vtk.vtkPolyData()
-        pts_pdata.SetPoints(pts)
-        
-        # Probe filter
-        probeFilter = vtk.vtkProbeFilter()
-        probeFilter.SetSourceData(self.image)
-        probeFilter.SetInputData(pts_pdata)
-        probeFilter.Update()
-
-        # Transform back into project coordinates
-        invTransform = vtk.vtkTransform()
-        invTransform.DeepCopy(self.imageTransform)
-        invTransform.Inverse()
-        tfilter = vtk.vtkTransformPolyDataFilter()
-        tfilter.SetTransform(invTransform)
-        tfilter.SetInputData(probeFilter.GetOutput())
-        tfilter.Update()
-
-        # Store profile and create lines
-        self.profile_dict[key] = tfilter.GetOutput()
-        lines = vtk.vtkCellArray()
-        lines.InsertNextCell(N)
-        for i in np.arange(N):
-            lines.InsertCellPoint(i)
-        self.profile_dict[key].SetLines(lines)
-        self.profile_dict[key].Modified()
-
-
-    def merged_points_transect_gp(self, x0, y0, x1, y1, N, key, 
-                                  mx=256, n_neighbors=256, eps=0,
+                    
+    def merged_points_transect_gp(self, x0, y0, x1, y1, N, leafsize, key, 
+                                  d=None, n_pts=None, tol=1000, d0=0.5, dmax=50, 
                                   use_z_sigma=True, lengthscale=None, 
                                   outputscale=None, mean=None, nu=0.5,
                                   optimize=False, learning_rate=0.1, 
@@ -6806,17 +5895,24 @@ class Project:
             Coordinate in project reference frame.
         N : int
             Number of points to put in transect.
+        leafsize : int
+            Maximum number of points for each leaf of the kdtree
         key : const (str, tuple, etc)
             Key to store this profile in profile_dict under.
-        mx : int, optional
-            Number of transect points to estimate in each chunk. The default
-            is 256.
-        n_neighbors : int, optional
-            Number of neighbors around each transect point to use. The default
-            is 256
-        eps : float, optional
-            Eps for nearest neighbors search (see scipy.spatial.cKDTree) for
-            more details. The default is 0 (exact nearest neighbors)
+        d : float, optional
+            Distance from transect to select points. Exactly one of d or n_pts
+            must be None. If this is None then we will search for the 
+            appropriate d. The default is None.
+        n_pts : int
+            Minimum number of points to acquire around transect. Exactly one of
+             d or n_pts must be None. The default is None.
+        tol : int, optional
+            Tolerance for number of points around transect to get. the default
+            is 1000.
+        d0 : float, optional
+            Starting distance. The default is 0.5.
+        dmax : float, optional
+            Max distance to look for points. the default is 50 m.
         use_z_sigma : bool, optional
             Whether to use the computed pointwise uncertainties or not.
             Generally you should have a reason for not using them. If False we
@@ -6852,16 +5948,33 @@ class Project:
 
         """
         
-        # Get the points in this rectangular region
-        pdata, point_history_dict = self.get_merged_points(history_dict=True)
-
+        
+        
+        # Get the points around the transect
+        if d and (n_pts is None):
+            pdata = self.transect_points(x0, y0, x1, y1, d)
+        elif n_pts and (d is None):
+            pdata, t_dist = self.transect_n_points(x0, y0, x1, y1, n_pts, 
+                                                   tol=tol, d0=d0, dmax=dmax)
+            #print(t_dist)
+        else:
+            raise ValueError('invalid combination of d and n_pts')
+        
         # Get the points and the z_sigma as numpy arrays
         pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
+        norm_height_np = vtk_to_numpy(pdata.GetPointData()
+                                      .GetArray('norm_height'))
         if use_z_sigma:
-            z_sigma_np = vtk_to_numpy(pdata.GetPointData()
-                                    .GetArray('z_sigma'))
+            norm_z_sigma_np = vtk_to_numpy(pdata.GetPointData()
+                                           .GetArray('norm_z_sigma'))
+            # temporary fix for negative z_sigma values
+            ind = norm_z_sigma_np > 0
+            pts_np = pts_np[ind, :]
+            norm_height_np = norm_height_np[ind]
+            norm_z_sigma_np = norm_z_sigma_np[ind]
+            warnings.warn('Still has temporary fix for negative norm z sigma')
         else:
-            z_sigma_np = None
+            norm_z_sigma_np = None
         
         # Create transect points
         grid_points=np.hstack((np.linspace(x0, x1, N, dtype=np.float32)
@@ -6869,45 +5982,80 @@ class Project:
                                np.linspace(y0, y1, N, dtype=np.float32)
                                [:, np.newaxis]))
         
-        # Indices for stepping through grid_points in mx x my chunks
-        i_mx = 0
-        ctr = 0
+        # If All of the points would fit in one leaf, skip tree creation
+        if pts_np.shape[0]<=leafsize:
+            grid_mean, grid_lower, grid_upper = (
+                run_gp(pts_np, norm_height_np, grid_points, 
+                       norm_z_sigma=norm_z_sigma_np, lengthscale=lengthscale,
+                       outputscale=outputscale, mean=mean, nu=nu, 
+                       optimize=optimize, learning_rate=learning_rate,
+                       iter=n_iter, max_time=max_time))
+        else:
+            # Create a kdtree from the points (xy only) and get python version
+            tree = cKDTree(pts_np[:,:2], leafsize=leafsize)
+            ptree = tree.tree
 
-        # Build a cKDTree from the xy coordinates of pts_np
-        kdtree = cKDTree(pts_np[:,:2])
+            # Define function for working with tree
+            def tree_gp(node, pts_np, norm_height_np, norm_z_sigma_np, 
+                        grid_points, lengthscale, outputscale, grid_mean, 
+                        grid_lower, grid_upper):
+                # If we are not at a leaf, call this function on each child
+                if not node.split_dim==-1:
+                    # Call this function on the lesser node
+                    tree_gp(node.lesser, pts_np, norm_height_np, 
+                            norm_z_sigma_np, grid_points, lengthscale, 
+                            outputscale, grid_mean, grid_lower, grid_upper)
+                    # Call this function on the greater node
+                    tree_gp(node.greater, pts_np, norm_height_np, 
+                            norm_z_sigma_np, grid_points, lengthscale, 
+                            outputscale, grid_mean, grid_lower, grid_upper)
+                else:
+                    # We are at a leaf. Apply GP
 
-        # Output
-        grid_mean = np.empty(N, dtype=np.float32) * np.nan
-        grid_lower = np.empty(N, dtype=np.float32) * np.nan
-        grid_upper = np.empty(N, dtype=np.float32) * np.nan
-        while ctr<N:
-            # Get start and end indices for x and y values
-            x_s = mx*i_mx
-            x_e = N if x_s+mx>N else x_s+mx
-            step = (x_e-x_s)
-            
-            # Get the grid points in this chunk and use kdtree to pull point 
-            # indices
-            ind = np.arange(x_s, x_e)
-            m_grid = grid_points[ind, :]
-            _, pt_ind = kdtree.query(m_grid, n_neighbors, eps=eps, workers=-1)
-            del _
-            pt_ind = np.unique(pt_ind.ravel())
-            
-            # Run our GP on this chunk and estimate values at grid points
-            # use indices from above to place output in the right places
-            # !!!TODO, use last 3 returns from run_gp
-            grid_mean[ind], grid_lower[ind], grid_upper[ind],_,_,_ = run_gp(
-                pts_np[pt_ind,:], pts_np[pt_ind,2], m_grid,
-                z_sigma=None if z_sigma_np is None else z_sigma_np[pt_ind], 
-                lengthscale=lengthscale, outputscale=outputscale, mean=mean,
-                nu=nu, optimize=optimize, learning_rate=learning_rate,
-                iter=n_iter, max_time=max_time)
-            
-            # Move i_mx 
-            i_mx += 1
-            # Increment counter
-            ctr += step
+                    ind = node.indices
+                    min_x = pts_np[ind,0].min()
+                    max_x = pts_np[ind,0].max()
+                    min_y = pts_np[ind,1].min()
+                    max_y = pts_np[ind,1].max()
+        
+                    # Get grid points within this node
+                    grid_ind = ((grid_points[:,0]>=min_x) 
+                                & (grid_points[:,0]<=max_x)
+                                & (grid_points[:,1]>=min_y) 
+                                & (grid_points[:,1]<=max_y))
+                    
+                    # Adapt for whether or not we're using z_sigma
+                    if use_z_sigma:
+                        nzs = norm_z_sigma_np[ind]
+                    else:
+                        nzs = None
+
+                    (grid_mean[grid_ind], grid_lower[grid_ind], 
+                     grid_upper[grid_ind]) = run_gp(pts_np[ind], 
+                                                   norm_height_np[ind],
+                                                   grid_points[grid_ind],
+                                                   norm_z_sigma=nzs, 
+                                                   lengthscale=lengthscale,
+                                                   outputscale=outputscale, 
+                                                   mean=mean, nu=nu, 
+                                                   optimize=optimize, 
+                                                   learning_rate=learning_rate, 
+                                                   iter=n_iter, 
+                                                   max_time=max_time)
+            # Apply function to kdtree
+            grid_mean = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            grid_upper = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            grid_lower = np.ones(grid_points.shape[0], dtype=np.float32)*np.nan
+            tree_gp(ptree, pts_np, norm_height_np, norm_z_sigma_np, grid_points, 
+                    lengthscale, outputscale, grid_mean, grid_lower, grid_upper)
+        
+        # convert from normalized space back to real space
+        grid_mean = inormalize(grid_mean, self.empirical_cdf[1], 
+                               self.empirical_cdf[2])
+        grid_lower = inormalize(grid_lower, self.empirical_cdf[1], 
+                                self.empirical_cdf[2])
+        grid_upper = inormalize(grid_upper, self.empirical_cdf[1], 
+                                self.empirical_cdf[2])
         
         # create profile pdata
         self.profile_dict[key] = vtk.vtkPolyData()
@@ -7674,12 +6822,9 @@ class Project:
         reader.Update()
         
         # Read in history dict
-        try:
-            f = open(image_path.rsplit('.', maxsplit=1)[0] + '.txt')
-            self.image_history_dict = json.load(f)
-            f.close()
-        except:
-            warnings.warn('History Dict not read properly!')
+        f = open(image_path.rsplit('.', maxsplit=1)[0] + '.txt')
+        self.image_history_dict = json.load(f)
+        f.close()
 
         # Read in the imageTransform
         transform_np = np.load(image_path.rsplit('.', maxsplit=1)[0] + '.npy')
@@ -7879,37 +7024,6 @@ class Project:
                                                                  r_max=r_max, 
                                                                  num=num, 
                                                                  base=base)
-    
-    def areapoints_to_cornercoords(self, areapoints):
-        """
-        Takes a set of areapoints given as scan_name, PointId pairs. Returns
-        the coordinates of these points in the current reference frame
-
-        Parameters
-        ----------
-        areapoints : List of lists or tuples
-            List of area points in the desired order. Each point is a tuple
-            in which the zeroth element is the scan_name and the first
-            element is the PointId
-
-        Returns
-        -------
-        ndarray.
-            Nx3 array where N is the number of points.
-
-        """
-        
-        cornercoords = np.empty((len(areapoints[self.project_name]), 3)
-                                , dtype=np.float32)
-        # Step through areapoints and get each point
-        for i in np.arange(len(areapoints[self.project_name])):
-            pdata = self.scan_dict[areapoints[self.project_name][i][0]
-                                   ].transformFilter.GetOutput()
-            PointId = vtk_to_numpy(pdata.GetPointData().GetArray('PointId'))
-            pts = vtk_to_numpy(pdata.GetPoints().GetData())
-            cornercoords[i,:] = pts[PointId==areapoints[
-                self.project_name][i][1],:]
-        return cornercoords
             
 
 class ScanArea:
@@ -8276,7 +7390,7 @@ class ScanArea:
                            frac_exceed_diff_cutoff=0.1, bin_reduc_op='min',
                            diff_mode='mean'):
         """
-        Align successive scans on the basis of their gridded values
+        Align successive scans on the basis of their gridded minima
 
         !This function does not modify the tiepoint locations so it should 
         only be run after all tiepoint registration steps are done. It also
@@ -8498,7 +7612,7 @@ class ScanArea:
     
     def z_alignment_ss(self, project_name_0, project_name_1, scan_name,
                               w0=10, w1=10, min_pt_dens=10, max_diff=0.15,
-                              bin_reduc_op='min', return_grid=False):
+                              bin_reduc_op='min'):
         """
         Align successive scans on the basis of their gridded minima
         
@@ -8535,13 +7649,13 @@ class ScanArea:
             Array containing gridded minima differences
 
         """
-        # if project_name_0==project_name_1:
-        #     self.project_dict[project_name_0].add_z_offset(0)
-        #     transform_list = copy.deepcopy(self.project_dict[project_name_0].
-        #                                    current_transform_list)
-        #     transform_list.append('z_offset')
-        #     self.project_dict[project_name_0].apply_transforms(transform_list)
-        #     return
+        if project_name_0==project_name_1:
+            self.project_dict[project_name_0].add_z_offset(0)
+            transform_list = copy.deepcopy(self.project_dict[project_name_0].
+                                           current_transform_list)
+            transform_list.append('z_offset')
+            self.project_dict[project_name_0].apply_transforms(transform_list)
+            return
         
         w = [w0, w1]
         min_counts = min_pt_dens * w[0] * w[1]
@@ -8554,16 +7668,8 @@ class ScanArea:
         pdata_merged_project_0 = project_0.get_merged_points()
         project_0_points_np = vtk_to_numpy(pdata_merged_project_0
                                            .GetPoints().GetData())
-        #bounds = pdata_merged_project_0.GetBounds()
-        
-        # Now get ss
-        ss = project_1.scan_dict[scan_name]        
+        bounds = pdata_merged_project_0.GetBounds()
 
-        # Get points as an array
-        ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
-                                    .GetData())
-        bounds = ss.currentFilter.GetOutput().GetBounds()
-        
         # Create grid
         edges = 2*[None]
         nbin = np.empty(2, np.int_)
@@ -8577,18 +7683,7 @@ class ScanArea:
             # Adjust uppermost edge so the bin width is appropriate
             edges[i][-1] = bounds[2*i + 1] + 0.0001
             nbin[i] = len(edges[i]) + 1
-        
-        # Get gridded counts and reduc op (using the same grid)
-        if bin_reduc_op=='min':
-            ss_counts, ss_arr = gridded_counts_mins(
-                ss_points_np, edges, np.float32(bounds[5] + 1))
-        elif bin_reduc_op=='mean':
-            ss_counts, ss_arr = gridded_counts_means(
-                ss_points_np, edges)
-        elif bin_reduc_op=='mode':
-            ss_counts, ss_arr = gridded_counts_modes(
-                ss_points_np, edges)
-        
+
         # Get gridded counts and bin reduc
         if bin_reduc_op=='min':
             project_0_counts, project_0_arr = gridded_counts_mins(
@@ -8602,6 +7697,22 @@ class ScanArea:
         else:
             raise ValueError('bin_reduc_op must be min, mean or mode')
         
+        # Now use the same grid to get on ss
+        ss = project_1.scan_dict[scan_name]
+
+        # Get points as an array
+        ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
+                                    .GetData())
+        # Get gridded counts and reduc op (using the same grid)
+        if bin_reduc_op=='min':
+            ss_counts, ss_arr = gridded_counts_mins(
+                ss_points_np, edges, np.float32(bounds[5] + 1))
+        elif bin_reduc_op=='mean':
+            ss_counts, ss_arr = gridded_counts_means(
+                ss_points_np, edges)
+        elif bin_reduc_op=='mode':
+            ss_counts, ss_arr = gridded_counts_modes(
+                ss_points_np, edges)
 
         # Compute differences of gridded minima
         diff = ss_arr - project_0_arr
@@ -8617,251 +7728,9 @@ class ScanArea:
             diff[np.abs(diff) > max_diff] = np.nan
             if np.isnan(diff).all():
                 warnings.warn("All diffs exceed max_diff")
-        
-        # If we want to return the grid as a pointcloud compute it here
-        if return_grid:
-            # Get the grid indices in the current reference frame
-            x_trans = (edges[0][:-1] + edges[0][1:])/2
-            y_trans = (edges[1][:-1] + edges[1][1:])/2
-            X_trans, Y_trans = np.meshgrid(x_trans, y_trans)
-            grid_trans = np.hstack((X_trans.ravel()[:,np.newaxis], 
-                                    Y_trans.ravel()[:,np.newaxis],
-                                    np.zeros((X_trans.size, 1)),
-                                    np.ones((X_trans.size, 1))))
-            grid_trans = np.hstack((X_trans.ravel()[:,np.newaxis], 
-                                    Y_trans.ravel()[:,np.newaxis],
-                                    np.zeros((X_trans.size, 1))))
-            pts = vtk.vtkPoints()
-            pts.SetData(numpy_to_vtk(grid_trans, array_type=vtk.VTK_DOUBLE))
-            pdata = vtk.vtkPolyData()
-            pdata.SetPoints(pts)
-            # Get the inverse of the singlescan's transform
-            invTransform = vtk.vtkTransform()
-            invTransform.DeepCopy(ss.transform)
-            invTransform.Inverse()
-            tfilter = vtk.vtkTransformPolyDataFilter()
-            tfilter.SetTransform(invTransform)
-            tfilter.SetInputData(pdata)
-            tfilter.Update()
-            grid_ss = vtk_to_numpy(tfilter.GetOutput().GetPoints().GetData())
-           
-            # Return
-            return frac_exceed_max_diff, diff.T, grid_ss.copy()
 
-        else:
-            # Return the diff
-            return frac_exceed_max_diff, diff
-        
-    def max_alignment_ss(self, project_name_0, project_name_1, scan_name,
-                         w0=5, w1=5, max_diff=0.1, return_count=False,
-                         use_closest=False, p_thresh=None, az_thresh=None,
-                         z_intcpt=None, z_slope=None):
-        """
-        Align singlescan with project 0 using local maxima as keypoints.
-        
-        This function breaks each pointcloud up into bins and finds the point
-        with the maximum z value in each bin, resulting in a pair of possible
-        keypoints for each bin. Then we select only those pairs whose
-        euclidean distance is less than max_diff and find the rigid
-        transformation which aligns the pairs of points in a least squares
-        sense.
-        
-        This function returns the rigid transform as a numpy 4x4 array and
-        the history dict corresponding to this transform.
-
-        Parameters
-        ----------
-        project_name_0 : str
-            The reference project we're aligning project_1 with.
-        project_name_1 : str
-            The project we are aligning.
-        scan_name : str
-            The scan we are aligning in the project we're aligning.
-        w0 : float, optional
-            Bin width in the zeroth dimension. The default is 5.
-        w1 : float, optional
-            Bin width in the first dimension. The default is 5.
-        max_diff : float, optional
-            The max distance (in m) between two gridded local maxima for us
-            to try to align them. The default is 0.1.
-        return_count : bool, optional
-            Whether or not to return the number of keypoint pairs as the 3rd
-            return. The default is False.
-        use_closest : bool, optional
-            If True, just align off of the closest singlescan in project_0
-            as opposed to all of project_0. The default is False.
-        p_thresh : float, optional
-            Radial difference threshold for keypoint pairs if using 
-            cylindrical divergence. Will only be used if max_diff is None.
-            The default is None.
-        az_thresh : float, optional
-            Azimuthal difference threshold for keypoint pairs if using 
-            cylindrical divergence. Will only be used if max_diff is None.
-            The default is None.
-        z_intcpt : float, optional
-            Z intercept difference threshold for keypoint pairs if using 
-            cylindrical divergence. Will only be used if max_diff is None.
-            The default is None.
-        z_slope : float, optional
-            Z slope difference threshold for keypoint pairs if using 
-            cylindrical divergence. Will only be used if max_diff is None.
-            The default is None.
-
-        Returns
-        -------
-        ndarray, dict, int (optional)
-            Returns the 4x4 array that transforms our singlescan's local
-            maxima to align with project_0's local maxima. Also returns
-            history_dict for the transform. Optionally returns the number of
-            keypoint pairs.
-
-        """
-        
-        # Get pointclouds and history_dicts
-        if use_closest:
-            # Get the position of the scan we're aligning in common ref frame
-            pos = np.array(self.project_dict[project_name_1]
-                           .scan_dict[scan_name].transform.GetPosition())
-            # find the closest scan in project 0
-            dist = 1000
-            for scan_name_0 in self.project_dict[project_name_0].scan_dict:
-                p0 = np.array(self.project_dict[project_name_0]
-                              .scan_dict[scan_name_0].transform.GetPosition())
-                d0 = np.sqrt(np.square(p0 - pos).sum())
-                if d0<dist:
-                    dist = d0
-                    closest_scan = scan_name_0
-            project_pdata, project_hist_dict = (
-                self.project_dict[project_name_0].scan_dict[closest_scan]
-                .get_polydata(history_dict=True))
-        else:
-            project_pdata, project_hist_dict = (self
-                                                .project_dict[project_name_0]
-                                                .get_merged_points(
-                                                    history_dict=True))
-        ss_pdata, ss_hist_dict = (self.project_dict[project_name_1]
-                                  .scan_dict[scan_name].get_polydata(
-                                      history_dict=True))
-        ss_pts = vtk_to_numpy(ss_pdata.GetPoints().GetData())
-        project_pts = vtk_to_numpy(project_pdata.GetPoints().GetData())
-        
-        # Create grid
-        w = [w0, w1]
-        bounds = ss_pdata.GetBounds()
-        edges = 2*[None]
-        nbin = np.empty(2, np.int_)
-        for i in range(2):
-            edges[i] = np.arange(int(np.ceil((bounds[2*i + 1] - 
-                                              bounds[2*i])/w[i]))
-                                 + 1, dtype=np.float32) * w[i] + bounds[2*i]
-            # Adjust lower edge so we don't miss lower most point
-            edges[i][0] = edges[i][0] - 0.0001
-            # Adjust uppermost edge so the bin width is appropriate
-            edges[i][-1] = bounds[2*i + 1] + 0.0001
-            nbin[i] = len(edges[i]) + 1
-        
-        # Get gridded local maxima
-        ss_inds = gridded_max_ind(ss_pts, edges)
-        project_inds = gridded_max_ind(project_pts, edges)
-        
-        # We need to mask out cells that don't have points in both pointclouds
-        ss_mask = (ss_inds==ss_pts.shape[0])
-        project_mask = (project_inds==project_pts.shape[0])
-        both_mask = ss_mask | project_mask
-        ss_maxs = ss_pts[ss_inds[np.logical_not(both_mask)], :]
-        project_maxs = project_pts[project_inds[np.logical_not(both_mask)], :]
-        
-        # Extract pairs of points that meet our max_diff criteria and name
-        # according to Arun et al. (who we'll follow for the rigid alignment)
-        # If we are just filtering point on the basis of max diff
-        if not (max_diff is None):
-            sq_pwdist = np.square(ss_maxs - project_maxs).sum(axis=1)
-            ind = sq_pwdist<=(max_diff**2)
-            if not (p_thresh is None):
-                warnings.warn('You have passed p_thresh without negating' +
-                              'max_diff, using max_diff')
-        # Otherwise, use the cylindrical divergence around ss
-        else:
-            pos = np.array(self.project_dict[project_name_1]
-                           .scan_dict[scan_name].transform.GetPosition()
-                           )[np.newaxis, :]
-            # Transform selected points to cylindrical reference frame
-            pos_pts0 = project_maxs[:,:2]-pos[:,:2]
-            cyl_pts0 = np.hstack((np.sqrt(np.square(pos_pts0).sum(axis=1))
-                                  [:, np.newaxis],
-                                  np.arctan2(pos_pts0[:,1], pos_pts0[:,0])
-                                  [:, np.newaxis],
-                                  (project_maxs[:,2] - pos[0,2])
-                                  [:, np.newaxis]))
-            pos_pts1 = ss_maxs[:,:2]-pos[:,:2]
-            cyl_pts1 = np.hstack((np.sqrt(np.square(pos_pts1).sum(axis=1))
-                                  [:, np.newaxis],
-                                  np.arctan2(pos_pts1[:,1], pos_pts1[:,0])
-                                  [:, np.newaxis],
-                                  (ss_maxs[:,2] - pos[0,2])[:, np.newaxis]))
-            # Get vectors between paired points in cylindrical coords
-            cyl_vec = cyl_pts1 - cyl_pts0
-            # handle case when azimuth's are on either side of pi
-            atol = 0.5
-            cyl_vec[np.isclose(cyl_vec[:,1], 2*np.pi, atol=atol)] -= 2*np.pi
-            cyl_vec[np.isclose(cyl_vec[:,1], -2*np.pi, atol=atol)] += 2*np.pi
-            # Subset to point pairs that meet radial, azimuthal, and z 
-            # tolerances
-            ind = ((cyl_vec[:,0]<p_thresh) & (cyl_vec[:,0]>-p_thresh)
-                    & (cyl_vec[:,1]<az_thresh) & (cyl_vec[:,1]>-az_thresh)
-                    & (cyl_vec[:,2]<(z_intcpt + z_slope*cyl_pts1[:,0])) 
-                    & (cyl_vec[:,2]>(-z_intcpt - z_slope*cyl_pts1[:,0])))
-        psubi_prime = project_maxs[ind, :].T
-        psubi = ss_maxs[ind, :].T
-        
-        # Compute centroids
-        p_prime = psubi_prime.mean(axis=1).reshape((3,1))
-        p = psubi.mean(axis=1).reshape((3,1))
-        
-        # Translate such that centroids are at zero
-        qsubi_prime = psubi_prime - p_prime
-        qsubi = psubi - p
-        
-        # Calculate the 3x3 matrix H (Using all 3 axes)
-        H = np.matmul(qsubi, qsubi_prime.T)
-        # Find it's singular value decomposition
-        U, S, Vh = svd(H)
-        # Calculate X, the candidate rotation matrix
-        X = np.matmul(Vh.T, U.T)
-        # Check if the determinant of X is near 1, this should basically 
-        # alsways be the case for our data
-        if np.isclose(1, np.linalg.det(X)):
-            R = X
-        elif np.isclose(-1, np.linalg.det(X)):
-            V_prime = np.array([Vh[0,:], Vh[1,:], -1*Vh[2,:]]).T
-            R = np.matmul(V_prime, U.T)
-            print(R)
-        else:
-            warnings.warn('Determinant of rotation matrix is not close +-1'
-                          + ' perhaps we do not have enough points?')
-        
-        # Now find translation vector to align centroids
-        T = p_prime - np.matmul(R, p)
-        
-        # Combine R and T into 4x4 matrix A, defining the rigid transform
-        A = np.eye(4)
-        A[:3, :3] = R
-        A[:3, 3] = T.squeeze()
-        
-        # Create history_dict
-        history_dict = {
-            "type": "Transform Computer",
-            "git_hash": get_git_hash(),
-            "method": "ScanArea.max_alignment_ss",
-            "input_0": project_hist_dict,
-            "input_1": ss_hist_dict,
-            "params": {"w0": w0, "w1": w1, "max_diff": max_diff}
-            }
-        
-        if return_count:
-            return A, history_dict, psubi.shape[1]
-        else:
-            return A, history_dict
+        # Return the diff
+        return frac_exceed_max_diff, diff
     
     def kernel_alignment(self, project_name_0, project_name_1, bin_width=0.15, 
                          max_points=800000, max_dist=250, blur=0.005,
@@ -9349,8 +8218,7 @@ class ScanArea:
                                                      yaw=yaw)
 
     def difference_projects(self, project_name_0, project_name_1, 
-                            difference_field='Elevation', 
-                            confidence_interval=False):
+                            difference_field='Elevation'):
         """
         Subtract project_0 from project_1 and store in difference_dict.
 
@@ -9362,9 +8230,6 @@ class ScanArea:
             Name of project to subtract from (usually younger).
         difference_field : str, optional
             Which field in ImageData to use. The default is 'Elevation'
-        confidence_interval : bool, optional
-            Whether to estimate a confidence interval as well. The default
-            is False.
 
         Returns
         -------
@@ -9396,20 +8261,6 @@ class ScanArea:
                 difference_field]
             - self.project_dict[project_name_0].dsa_image.PointData[
                 difference_field])
-        
-        # Repeat Add confidence interval if requested
-        if confidence_interval:
-            arr = vtk.vtkFloatArray()
-            arr.SetNumberOfValues(self.project_dict[project_name_0].image.
-                              GetNumberOfPoints())
-            arr.SetName('diff_ci')
-            im.GetPointData().AddArray(arr)
-            self.difference_dsa_dict[(project_name_0, project_name_1)
-                                     ].PointData['diff_ci'][:] = 4*np.sqrt(
-            np.square(self.project_dict[project_name_1]
-                      .dsa_image.PointData['z_ci']/4)
-            + np.square(self.project_dict[project_name_0]
-                       .dsa_image.PointData['z_ci']/4))
         
         # np.ravel(
         #     self.project_dict[project_name_1].get_np_nan_image() -
@@ -9514,9 +8365,8 @@ class ScanArea:
     
     def display_warp_difference(self, project_name_0, project_name_1, 
                                 diff_window, field='Elevation_mean_fill',
-                                cmap='rainbow', profile_list=[], 
-                                show_scanners=False, scanner_color_0='Yellow', 
-                                scanner_color_1='Fuchsia', scanner_length=150):
+                                cmap='rainbow', profile_list=[],
+                                scale=False):
         """
         Display the surface of the image from project_name_1 colored by diff.
 
@@ -9533,20 +8383,6 @@ class ScanArea:
             The default is 'Elevation_mean_fill'
         cmap : str, optional
             Name of matplotlib colormap to use. The default is 'rainbow'
-        profile_list : list, optional
-            List of keys of profiles in the profiles dict to display. The 
-            default is [].
-        show_scanners : bool, optional
-            Whether or not to show the scanners. The default is False.
-        scanner_color_0 : str, optional
-            Name of the color to display project 0 scanners.
-             The default is 'Yellow'
-        scanner_color_1 : str, optional
-            Name of the color to display project 0 scanners.
-             The default is 'Fuchsia'
-        scanner_length : float, optional
-            Length of the ray indicating the scanner's start orientation in m.
-            The default is 150
 
         Returns
         -------
@@ -9632,26 +8468,6 @@ class ScanArea:
         renderWindow = vtk.vtkRenderWindow()
         renderer.AddActor(actor)
 
-        # Add scanners if requested
-        if show_scanners:
-            for project_name, color in zip([project_name_0, project_name_1],
-                                           [scanner_color_0, scanner_color_1]):
-                project = self.project_dict[project_name]
-                for scan_name in project.scan_dict:
-                    project.scan_dict[scan_name].create_scanner_actor(
-                        color=color, length=scanner_length)
-                    # copy the userTransform and concatenate the imageTransform
-                    transform = vtk.vtkTransform()
-                    transform.DeepCopy(project.scan_dict[scan_name].scannerActor
-                                       .GetUserTransform())
-                    transform.Concatenate(project.imageTransform)
-                    project.scan_dict[scan_name].scannerActor.SetUserTransform(
-                        transform)
-                    project.scan_dict[scan_name].scannerText.AddPosition(
-                        project.imageTransform.GetPosition())
-                    renderer.AddActor(project.scan_dict[scan_name].scannerActor)
-                    renderer.AddActor(project.scan_dict[scan_name].scannerText)
-
         # Add requested profiles
         for profile_tup in profile_list:
             transformFilter = vtk.vtkTransformPolyDataFilter()
@@ -9679,6 +8495,16 @@ class ScanArea:
                 actor.GetProperty().SetOpacity(0.8)
             actor.GetProperty().RenderLinesAsTubesOn()
             renderer.AddActor(actor)
+
+        # If we want an interactive scale (vtkDistanceWidget)
+        if scale:
+            distanceWidget = vtk.vtkDistanceWidget()
+            handle = vtk.vtkPointHandleRepresentation3D()
+            rep = vtk.vtkDistanceRepresentation2D()
+            rep.SetHandleRepresentation(handle)
+            distanceWidget.SetRepresentation(rep)
+            distanceWidget.CreateDefaultRepresentation()
+
         
         scalarBar = vtk.vtkScalarBarActor()
         scalarBar.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
@@ -9690,17 +8516,10 @@ class ScanArea:
         # create a renderwindowinteractor
         iren = vtk.vtkRenderWindowInteractor()
         iren.SetRenderWindow(renderWindow)
+        if scale:
+            distanceWidget.SetInteractor(iren)
         iren.Initialize()
         renderWindow.Render()
-
-        # Set camera for followers
-        if show_scanners:
-            for project_name in [project_name_0, project_name_1]:
-                project = self.project_dict[project_name]
-                for scan_name in project.scan_dict:
-                    project.scan_dict[scan_name].scannerText.SetCamera(
-                        renderer.GetActiveCamera())
-
         iren.AddObserver('UserEvent', cameraCallback)
         iren.Start()
         
@@ -11044,34 +9863,6 @@ def radial_spacing(r, dtheta=0.025, dphi=0.025, scanner_height=2.5, slope=0):
     
     return spac
 
-def matern_semivariance(theta_1, theta_2, h, nu):
-    """
-    Computes the semivariance at lag h for C(0)=theta_1 and lengthscale theta_2
-    
-    From Gelfand et al. Handbook of Spatial Statistics pg. 37
-    
-    Parameters:
-    -----------
-    theta_1 : array
-        Array of variances, must be same size as theta_2.
-    theta_2 : array
-        Array of lengthscales, must be same size as theta_1.
-    h : float
-        Lag distance at which to compute semivariance.
-    nu : float
-        Matern nu.
-
-    Returns:
-    --------
-        Array of semivariances at lag distance h, for all theta_1, theta_2
-
-    """
-
-    if nu==0.5:
-        return theta_1 * (1 - np.exp(-h/theta_2))
-    else:
-        raise NotImplementedError()
-
 ##### Functions that require cython_util
 
 def gridded_counts_mins(points, edges, init_val=np.float32(1000)):
@@ -11162,55 +9953,6 @@ def gridded_counts_means(points, edges):
 
     return counts, means
 
-def gridded_counts_means_vars(points, edges):
-    """
-    Grids a point could in x and y and returns the cellwise counts, means and
-    variances.
-
-    Parameters
-    ----------
-    points : float[:, :]
-        Pointcloud, Nx3 array of type np.float32
-    edges : list
-        2 item list containing edges for gridding
-
-    Returns:
-    --------
-    counts : long[:, :]
-        Gridded array with the counts for each bin
-    means : float[:, :]
-        Gridded array with the mean z value for each bin.
-    vars : float[:, :]
-        Gridded array with the variance in z values for each bin.
-
-    """
-
-    Ncount = tuple(np.searchsorted(edges[i], points[:,i], 
-                               side='right') for i in range(2))
-
-    nbin = np.empty(2, np.int_)
-    nbin[0] = len(edges[0]) + 1
-    nbin[1] = len(edges[1]) + 1
-
-    xy = np.ravel_multi_index(Ncount, nbin)
-
-    # Compute gridded mins and counts
-    counts, means, m2s = cython_util.create_counts_means_M2_cy(nbin[0], nbin[1],
-                                                     points,
-                                                     np.int_(xy))
-    counts = counts.reshape(nbin)
-    means = means.reshape(nbin)
-    m2s = m2s.reshape(nbin)
-    core = 2*(slice(1, -1),)
-    counts = counts[core]
-    means = means[core]
-    m2s = m2s[core]
-    means[counts==0] = np.nan
-    m2s[counts==0] = np.nan
-    var = m2s/counts
-
-    return counts, means, var
-
 def gridded_counts_modes(points, edges, dz_hist=0.01):
     """
     Grids a point cloud in x and y and returns the cellwise counts and mode z
@@ -11266,181 +10008,6 @@ def gridded_counts_modes(points, edges, dz_hist=0.01):
     modes[counts==0] = np.nan
 
     return counts, modes
-
-def gridded_max_ind(points, edges):
-    """
-    Grids a point cloud in x and y and returns the cellwise index of the point
-    within that cell with the max z.
-
-    Parameters
-    ----------
-    points : float[:, :]
-        Pointcloud, Nx3 array of type np.float32
-    edges : list
-        2 item list containing edges for gridding
-
-    Returns:
-    --------
-    inds : intptr_t[:]
-        Array with the index of the maximum point for each bin. 
-        Length nbin_0*nbin_1. For bins with no points in them this array will
-        contain a value equal to the number of points.
-    """
-
-    Ncount = tuple(np.searchsorted(edges[i], points[:,i], 
-                               side='right') for i in range(2))
-
-    nbin = np.empty(2, np.int_)
-    nbin[0] = len(edges[0]) + 1
-    nbin[1] = len(edges[1]) + 1
-
-    xy = np.ravel_multi_index(Ncount, nbin)
-
-    # Compute gridded inds
-    inds = cython_util.binwise_max_cy(nbin[0], nbin[1], points, np.int_(xy),
-                                      init_val=points[:,2].min()-1)
-    return inds
-
-def z_alignment_ss(project_0, ss,
-                              w0=10, w1=10, min_pt_dens=10, max_diff=0.15,
-                              bin_reduc_op='min', return_grid=False):
-        """
-        Align successive scans on the basis of their gridded minima
-        
-        ss version is for looking at the change in just a singlescan.
-        This version is for running outside of the scan_area object.
-
-        !This function does not modify the tiepoint locations so it should 
-        only be run after all tiepoint registration steps are done. It also
-        requires that there hasn't been ice deformation and will try to not
-        run if the fraction that changed by more than the diff cutoff exceeds
-        frac_exceed_diff_cutoff.
-        Parameters
-        ----------
-        project_0 : pydar.Project
-            The project to align to.
-        ss : pydar.SingleScan
-            The singlescan to align
-        w0 : float, optional
-            Grid cell width in x dimension (m). The default is 10.
-        w1 : float, optional
-            Grid cell width in y dimension (m). The default is 10.
-        min_pt_dens : float, optional
-            minimum density of points/m^2 for us to compare grid cells from
-            projects 0 and 1. The default is 30.
-        max_diff : float, optional
-            Maximum difference in minima to consider (higher values must be
-            noise) in m. The default is 0.1.
-        bin_reduc_op : str, optional
-            What type of gridded reduction to apply. Options are 'min', 'mean'
-            and 'mode'. The default is 'min'
-
-        Returns
-        -------
-        diff : ndarray
-            Array containing gridded minima differences
-
-        """
-        w = [w0, w1]
-        min_counts = min_pt_dens * w[0] * w[1]
-
-        # Get the merged points polydata, by not using port we should prevent
-        # this memory allocation from persisting
-        pdata_merged_project_0 = project_0.get_merged_points()
-        project_0_points_np = vtk_to_numpy(pdata_merged_project_0
-                                           .GetPoints().GetData())
-        # Get points as an array
-        ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
-                                    .GetData())
-        bounds = ss.currentFilter.GetOutput().GetBounds()
-        
-        # Create grid
-        edges = 2*[None]
-        nbin = np.empty(2, np.int_)
-
-        for i in range(2):
-            edges[i] = np.arange(int(np.ceil((bounds[2*i + 1] - 
-                                              bounds[2*i])/w[i]))
-                                 + 1, dtype=np.float32) * w[i] + bounds[2*i]
-            # Adjust lower edge so we don't miss lower most point
-            edges[i][0] = edges[i][0] - 0.0001
-            # Adjust uppermost edge so the bin width is appropriate
-            edges[i][-1] = bounds[2*i + 1] + 0.0001
-            nbin[i] = len(edges[i]) + 1
-        
-        # Get gridded counts and reduc op (using the same grid)
-        if bin_reduc_op=='min':
-            ss_counts, ss_arr = gridded_counts_mins(
-                ss_points_np, edges, np.float32(bounds[5] + 1))
-        elif bin_reduc_op=='mean':
-            ss_counts, ss_arr = gridded_counts_means(
-                ss_points_np, edges)
-        elif bin_reduc_op=='mode':
-            ss_counts, ss_arr = gridded_counts_modes(
-                ss_points_np, edges)
-        
-        # Get gridded counts and bin reduc
-        if bin_reduc_op=='min':
-            project_0_counts, project_0_arr = gridded_counts_mins(
-                project_0_points_np, edges, np.float32(bounds[5] + 1))
-        elif bin_reduc_op=='mean':
-            project_0_counts, project_0_arr = gridded_counts_means(
-                project_0_points_np, edges)
-        elif bin_reduc_op=='mode':
-            project_0_counts, project_0_arr = gridded_counts_modes(
-                project_0_points_np, edges)
-        else:
-            raise ValueError('bin_reduc_op must be min, mean or mode')
-        
-
-        # Compute differences of gridded minima
-        diff = ss_arr - project_0_arr
-        diff[project_0_counts < min_counts] = np.nan
-        diff[ss_counts < min_counts] = np.nan
-        if np.isnan(diff).all():
-            frac_exceed_max_diff = np.nan
-            warnings.warn("No overlap for " + ss.scan_name +
-                          " set z_offset to 0", UserWarning)
-        else:
-            frac_exceed_max_diff = ((np.abs(diff) > max_diff).sum()
-                                    /np.logical_not(np.isnan(diff)).sum())
-            diff[np.abs(diff) > max_diff] = np.nan
-            if np.isnan(diff).all():
-                warnings.warn("All diffs exceed max_diff")
-        
-        # If we want to return the grid as a pointcloud compute it here
-        if return_grid:
-            # Get the grid indices in the current reference frame
-            x_trans = (edges[0][:-1] + edges[0][1:])/2
-            y_trans = (edges[1][:-1] + edges[1][1:])/2
-            X_trans, Y_trans = np.meshgrid(x_trans, y_trans)
-            grid_trans = np.hstack((X_trans.ravel()[:,np.newaxis], 
-                                    Y_trans.ravel()[:,np.newaxis],
-                                    np.zeros((X_trans.size, 1)),
-                                    np.ones((X_trans.size, 1))))
-            grid_trans = np.hstack((X_trans.ravel()[:,np.newaxis], 
-                                    Y_trans.ravel()[:,np.newaxis],
-                                    np.zeros((X_trans.size, 1))))
-            pts = vtk.vtkPoints()
-            pts.SetData(numpy_to_vtk(grid_trans, array_type=vtk.VTK_DOUBLE))
-            pdata = vtk.vtkPolyData()
-            pdata.SetPoints(pts)
-            # Get the inverse of the singlescan's transform
-            invTransform = vtk.vtkTransform()
-            invTransform.DeepCopy(ss.transform)
-            invTransform.Inverse()
-            tfilter = vtk.vtkTransformPolyDataFilter()
-            tfilter.SetTransform(invTransform)
-            tfilter.SetInputData(pdata)
-            tfilter.Update()
-            grid_ss = vtk_to_numpy(tfilter.GetOutput().GetPoints().GetData())
-           
-            # Return
-            return frac_exceed_max_diff, diff.T, grid_ss.copy()
-
-        else:
-            # Return the diff
-            return frac_exceed_max_diff, diff.T
 
 def get_git_hash():
     """
@@ -11500,10 +10067,9 @@ if 'gpytorch' in sys.modules:
             return gpytorch.distributions.MultivariateNormal(mean_x, 
                                                              covar_x)
 
-    def run_gp(pts, height, grid_points, z_sigma=None, 
-               lengthscale=None, mean=None, outputscale=None, nu=1.5, 
-               optimize=False, learning_rate=0.1, iter=None, max_time=60,
-               optim_param=None, multiply_outputscale=False):
+    def run_gp(pts, norm_height, grid_points, norm_z_sigma=None, 
+               lengthscale=None, mean=None, outputscale=None, nu=0.5, 
+               optimize=False, learning_rate=0.1, iter=None, max_time=60):
         """
         Run Gaussian Process to predict surface at grid_points.
 
@@ -11517,11 +10083,11 @@ if 'gpytorch' in sys.modules:
         pts : Nx2+ ndarray
             Location coordinates of the input data. Only the first two columns 
             will be used.
-        height : Nx0 ndarray
-            Height (or response variable).
+        norm_height : Nx0 ndarray
+            Height (or response variable) in normalized space.
         grid_points : Nx2 ndarray
             Location coordinates where we will predict the surface
-        z_sigma : Nx0 ndarray, optional
+        norm_z_sigma : Nx0 ndarray, optional
             Array with 1 st. dev. uncertainties for each point in the input. If 
             it is given we will use a FixedNoiseGaussianLikelihood with this 
             array as the fixed noise. If None, we will use a GaussianLikelihood.
@@ -11538,7 +10104,7 @@ if 'gpytorch' in sys.modules:
             the GPyTorch default. The default is None.
         nu : float, optional
             nu value of Matern kernel. It must be one of [0.5, 1.5, 2.5]. The
-            default is 1.5
+            default is 0.5 (exponential kernel)
         optimize : bool, optional
             Whether or not to search for optimal hyperparameters for the GP. The
             default is False.
@@ -11551,18 +10117,10 @@ if 'gpytorch' in sys.modules:
         max_time : float, optional
             The maximum amount of time (in seconds) to run an optimization for. 
             The default is 60.
-        optim_param : list, optional
-            The parameters to optimize, as a list of dicts. If None, we will
-            optimize across all parameters. The default is None.
-        multiply_outputscale : bool, optional
-            If True, set outputscale for each chunk to be outputscale times
-            the variance of the z-values of points in that chunk. The default 
-            is False.
-
 
         Returns:
         --------
-        grid_mean, grid_lower, grid_upper, mean, outputscale, lengthscale
+        grid_mean, grid_lower, grid_upper
             Tuple of 3 1D arrays with the predicted values and lower and upper
             confidence intervals at each of grid_points.
 
@@ -11571,21 +10129,17 @@ if 'gpytorch' in sys.modules:
         # Move arrays to gpu
         device = torch.device('cuda:0')
         t_x = torch.tensor(pts[:,:2], device=device)
-        t_y = torch.tensor(height, device=device)
+        t_y = torch.tensor(norm_height, device=device)
 
         # Initialize the likelihood
-        if z_sigma is None:
+        if norm_z_sigma is None:
             # If no norm_z_sigma then we use a GaussianLikelihood
             likelihood = gpytorch.likelihoods.GaussianLikelihood().cuda()
         else:
             # use a fixedNoiseGaussianLikelihood with our noise.
-            t_z_sigma = torch.tensor(z_sigma, device=device)
+            t_z_sigma = torch.tensor(norm_z_sigma, device=device)
             likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(
                 noise=t_z_sigma).cuda()
-
-        # If we have multiply outputscale True adjust accordingly
-        if multiply_outputscale:
-            outputscale = outputscale * torch.var(t_y)
 
         # Initialize Model, using our class defined above
         model = ExactGPModel(t_x, t_y, likelihood, lengthscale=lengthscale,
@@ -11598,23 +10152,8 @@ if 'gpytorch' in sys.modules:
             likelihood.train()
 
             # Create adam optimizer
-            if optim_param is None:
-                optimizer = torch.optim.Adam([{'params': model.parameters()},], 
-                                             lr=learning_rate)
-            else:
-                def param_parser(model, p):
-                    if p=='mean':
-                        return model.mean_module.constant
-                    elif p=='lengthscale':
-                        return model.covar_module.base_kernel.raw_lengthscale
-                    else:
-                        raise RuntimeError('Param ' + p + ' not implemented')
-                param_list = []
-                for param_dict in optim_param:
-                    param_list.append({'params': param_parser(model, 
-                                                              param_dict['p']),
-                                       'lr': param_dict['lr']})
-                optimizer = torch.optim.Adam(param_list, lr=learning_rate)
+            optimizer = torch.optim.Adam([{'params': model.parameters()},], 
+                                         lr=learning_rate)
 
             # 'Loss' for GP is the marginal log likelihood
             mll = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood, model)
@@ -11651,7 +10190,4 @@ if 'gpytorch' in sys.modules:
                 'cpu')).numpy()
 
         # The lower bound is 2 standard deviations below the mean
-        return (grid_mean, grid_lower, grid_upper, 
-                model.mean_module.constant.item(),
-                model.covar_module.outputscale.item(),
-                model.covar_module.base_kernel.lengthscale.item())
+        return grid_mean, grid_lower, grid_upper

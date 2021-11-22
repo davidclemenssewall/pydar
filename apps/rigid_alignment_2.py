@@ -144,35 +144,20 @@ class MainWindow(Qt.QMainWindow):
         self.proj_combobox_0.setSizeAdjustPolicy(0)
         opt_layout.addWidget(proj_label_0)
         opt_layout.addWidget(self.proj_combobox_0)
-        temp_layout = Qt.QHBoxLayout()
-        temp_layout.addWidget(Qt.QLabel("Points Suffix:"))
         self.proj_suffix_0 = Qt.QLineEdit('slfsnow')
-        temp_layout.addWidget(self.proj_suffix_0)
-        opt_layout.addLayout(temp_layout)
-        temp_layout = Qt.QHBoxLayout()
-        temp_layout.addWidget(Qt.QLabel("Trans Suffix:"))
-        self.proj_t_suffix_0 = Qt.QLineEdit('slfsnow')
-        temp_layout.addWidget(self.proj_t_suffix_0)
-        opt_layout.addLayout(temp_layout)
+        opt_layout.addWidget(self.proj_suffix_0)
         proj_label_1 = Qt.QLabel("Project 1: ")
         self.proj_combobox_1 = Qt.QComboBox()
         self.proj_combobox_1.setEnabled(0)
         self.proj_combobox_1.setSizeAdjustPolicy(0)
         opt_layout.addWidget(proj_label_1)
         opt_layout.addWidget(self.proj_combobox_1)
-        temp_layout = Qt.QHBoxLayout()
-        temp_layout.addWidget(Qt.QLabel("Points Suffix:"))
         self.proj_suffix_1 = Qt.QLineEdit('slfsnow')
-        temp_layout.addWidget(self.proj_suffix_1)
-        opt_layout.addLayout(temp_layout)
-        temp_layout = Qt.QHBoxLayout()
-        temp_layout.addWidget(Qt.QLabel("Trans Suffix:"))
-        self.proj_t_suffix_1 = Qt.QLineEdit('slfsnow')
-        temp_layout.addWidget(self.proj_t_suffix_1)
-        opt_layout.addLayout(temp_layout)
+        opt_layout.addWidget(self.proj_suffix_1)
+        
         
         # Button to prompt us to select a project
-        self.sel_proj_button = Qt.QPushButton("Select Project(s)")
+        self.sel_proj_button = Qt.QPushButton("Select Project")
         self.sel_proj_button.setEnabled(0)
         opt_layout.addWidget(self.sel_proj_button)
         
@@ -182,40 +167,7 @@ class MainWindow(Qt.QMainWindow):
         self.scan_combobox.setSizeAdjustPolicy(0)
         opt_layout.addWidget(self.scan_combobox)
         
-        # Create interface for maxima alignment
-        opt_layout.addWidget(Qt.QLabel('Max Alignment'))
-        temp_layout = Qt.QHBoxLayout()
-        temp_layout.addWidget(Qt.QLabel('cell_w: '))
-        self.max_align_w = Qt.QLineEdit('5.0')
-        self.max_align_w.setValidator(Qt.QDoubleValidator())
-        temp_layout.addWidget(self.max_align_w)
-        opt_layout.addLayout(temp_layout)
-        temp_layout = Qt.QHBoxLayout()
-        temp_layout.addWidget(Qt.QLabel('max_diff: '))
-        self.max_align_d = Qt.QLineEdit('0.1')
-        self.max_align_d.setValidator(Qt.QDoubleValidator())
-        temp_layout.addWidget(self.max_align_d)
-        opt_layout.addLayout(temp_layout)
-        max_align_button = Qt.QPushButton("Compute Max Align")
-        opt_layout.addWidget(max_align_button)
-        self.count_label = Qt.QLabel('Keypoint Pair Count: nan')
-        opt_layout.addWidget(self.count_label)
-        # Let's show the output as changes from current
-        max_align_list = ['ddx', 'ddy', 'ddz', 'droll', 'dpitch', 'dyaw']
-        self.max_align_dict = {}
-        for param in max_align_list:
-            temp_layout = Qt.QHBoxLayout()
-            temp_label = Qt.QLabel(param + ": ")
-            self.max_align_dict[param] = Qt.QLineEdit('0.0')
-            self.max_align_dict[param].setValidator(Qt.QDoubleValidator())
-            temp_layout.addWidget(temp_label)
-            temp_layout.addWidget(self.max_align_dict[param])
-            opt_layout.addLayout(temp_layout)
-        align_update_button = Qt.QPushButton("Apply Changes")
-        opt_layout.addWidget(align_update_button)
-        
-        # Create interface for Gridded alignment
-        opt_layout.addWidget(Qt.QLabel('Gridded z Alignment'))
+        # Create interface for Gridded minima alignment
         self.z_align_dict = {}
         z_align_list = ['cell_w', 'min_dens', 'max_diff']
         for param in z_align_list:
@@ -248,16 +200,6 @@ class MainWindow(Qt.QMainWindow):
             temp_layout.addWidget(temp_label)
             temp_layout.addWidget(self.diff_mode_dict[param])
             opt_layout.addLayout(temp_layout)
-        temp_layout = Qt.QHBoxLayout()
-        temp_layout.addWidget(Qt.QLabel('droll: '))
-        self.diff_roll = Qt.QPushButton('')
-        temp_layout.addWidget(self.diff_roll)
-        opt_layout.addLayout(temp_layout)
-        temp_layout = Qt.QHBoxLayout()
-        temp_layout.addWidget(Qt.QLabel('dpitch: '))
-        self.diff_pitch = Qt.QPushButton('')
-        temp_layout.addWidget(self.diff_pitch)
-        opt_layout.addLayout(temp_layout)
         self.z_change = Qt.QLineEdit('0.0')
         self.z_change.setValidator(Qt.QDoubleValidator())
         opt_layout.addWidget(self.z_change)
@@ -297,8 +239,6 @@ class MainWindow(Qt.QMainWindow):
         self.sel_proj_button.clicked.connect(self.on_sel_proj_button_click)
         self.proj_dialog.fileSelected.connect(self.on_scan_area_selected)
         self.scan_combobox.currentTextChanged.connect(self.on_scan_changed)
-        max_align_button.clicked.connect(self.on_max_align_button_clicked)
-        align_update_button.clicked.connect(self.on_align_update_button_clicked)
         z_align_button.clicked.connect(self.on_z_align_button_clicked)
         self.diff_mode_buttongroup.buttonPressed.connect(self.diff_mode_changed)
         z_update_button.clicked.connect(self.on_z_update_button_clicked)
@@ -516,7 +456,7 @@ class MainWindow(Qt.QMainWindow):
                                    class_list='all', 
                                    suffix=self.proj_suffix_0.text())
         self.scan_area.project_dict[project_name_0].read_transforms(
-            suffix=self.proj_t_suffix_0.text())
+            suffix=self.proj_suffix_0.text())
         self.scan_area.project_dict[project_name_0].apply_transforms(
             ['current_transform'])
         
@@ -527,7 +467,7 @@ class MainWindow(Qt.QMainWindow):
                                        suffix=self.proj_suffix_1.text())
             
             self.scan_area.project_dict[project_name_1].read_transforms(
-                suffix=self.proj_t_suffix_1.text())
+                suffix=self.proj_suffix_1.text())
             self.scan_area.project_dict[project_name_1].apply_transforms(
                 ['current_transform'])
         
@@ -619,86 +559,7 @@ class MainWindow(Qt.QMainWindow):
         self.transect_dict['y3'].setText(str(pt_3[1]))
         self.transect_dict['z3'].setText(str(pt_3[2]))
         self.update_trans_endpoints()
-    
-    def on_max_align_button_clicked(self, s):
-        """
-        Compute the adjustment to the current transform that would align
-        the singlescan with the other project on the basis of shared maxima.
 
-        Parameters
-        ----------
-        s : int
-            Button status. Not used.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        # Get hyperparameters
-        w0 = w1 = float(self.max_align_w.text())
-        max_diff = float(self.max_align_d.text())
-        
-        # Compute alignment
-        A, _, count = self.scan_area.max_alignment_ss(
-            self.project_0.project_name, self.project_1.project_name, 
-            self.ss.scan_name, w0=w0, w1=w1, max_diff=max_diff, 
-            return_count=True)
-        
-        # Update count label
-        self.count_label.setText('Keypoint Pair Count: ' + str(count))
-        
-        # Compute the difference between new transform and current
-        # Go from numpy 4x4 matrix to vtkTransform
-        # Create vtk transform object
-        vtk4x4 = vtk.vtkMatrix4x4()
-        for i in range(4):
-            for j in range(4):
-                vtk4x4.SetElement(i, j, A[i, j])
-        new_transform = vtk.vtkTransform()
-        new_transform.SetMatrix(vtk4x4)
-        # Full transform
-        full_transform = vtk.vtkTransform()
-        full_transform.PostMultiply()
-        full_transform.Concatenate(self.ss.transform)
-        full_transform.Concatenate(new_transform)
-        pos = full_transform.GetPosition()
-        ori = np.array(full_transform.GetOrientation()) * np.pi / 180
-        
-        # Update max_align_dict's deltas
-        param_list = ['dx', 'dy', 'dz', 'roll', 'pitch', 'yaw']
-        param_arr = np.concatenate((pos, ori))
-        for i in range(6):
-            self.max_align_dict['d'+param_list[i]].setText(str(round(
-                param_arr[i] - float(self.param_dict[param_list[i]].text()),
-                6)))
-        
-    def on_align_update_button_clicked(self, s):
-        """
-        Change dz by the amount in z_change
-
-        Parameters
-        ----------
-        s : int
-            Button status. Not used.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        # Update each parameter
-        param_list = ['dx', 'dy', 'dz', 'roll', 'pitch', 'yaw']
-        for param in param_list:
-            self.param_dict[param].setText(str(
-                float(self.param_dict[param].text()) +
-                float(self.max_align_dict['d'+param].text())))
-        
-        # Update transformation applied to scan
-        self.on_update_param_button_click(1)
-        
     def on_z_align_button_clicked(self, s):
         """
         Run align z between the ss and project by gridded minima
@@ -715,22 +576,16 @@ class MainWindow(Qt.QMainWindow):
         """
         
         # Get gridded difference
-        frac_exceed_max_diff, diff, grid = self.scan_area.z_alignment_ss(
+        frac_exceed_max_diff, diff = self.scan_area.z_alignment_ss(
             self.project_0.project_name, self.project_1.project_name, 
             self.ss.scan_name, float(self.z_align_dict['cell_w'].text()),
             float(self.z_align_dict['cell_w'].text()), 
             float(self.z_align_dict['min_dens'].text()), 
             float(self.z_align_dict['max_diff'].text()),
-            bin_reduc_op=self.z_align_mode.currentText(), return_grid=True)
+            bin_reduc_op=self.z_align_mode.currentText())
         # Update text output
         self.frac_exceed_label.setText('frac>max_diff: ' 
                                        + str(frac_exceed_max_diff))
-        # Compute the least squares fit
-        ind = np.logical_not(np.isnan(diff.ravel()))
-        A = np.hstack((np.ones((ind.sum(),1)), grid[ind,:2]))
-        b = diff.ravel()[ind, np.newaxis]
-        x, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
-        
         # Set the text for each of the diff_mode buttons
         diff_notnan = np.ravel(diff)[np.logical_not(np.isnan(
                         np.ravel(diff)))]
@@ -741,18 +596,10 @@ class MainWindow(Qt.QMainWindow):
         m, _ = mode(np.around(diff_notnan, 3))
         self.diff_mode_dict['mode'].setText(str(round(-1*m[0], 3)))
         
-        # Note that because of the righthand rule, the change we want is the
-        # negative slope with respect to y for droll but the positive slope
-        # with respect to x for dpitch
-        self.diff_roll.setText(str(round(-1*x[2,0], 6)))
-        self.diff_pitch.setText(str(round(x[1,0], 6)))
-        
         # Update plot
         # Clear plot canvas
         self.mpl_widget.axes.cla()
-        self.mpl_widget.axes.contourf(grid[:,0].reshape(diff.shape), 
-             grid[:,1].reshape(diff.shape), diff, vmin=-0.02, vmax=0.02, 
-             cmap='RdBu_r', antialiased=False)
+        self.mpl_widget.axes.imshow(diff)
         self.mpl_widget.axes.axis('equal')
         self.mpl_widget.draw()
     

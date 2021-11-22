@@ -17,7 +17,7 @@ import pydar
 # %% location
 
 project_path = "/media/thayer/Data/mosaic_lidar/ROV"
-project_name = "mosaic_rov_040120.RiSCAN"
+project_name = "mosaic_rov_190120.RiSCAN"
 
 # %% Old fashioned init
 
@@ -31,8 +31,6 @@ project = pydar.Project(project_path, project_name, import_mode=
                       'read_scan')
 
 # that seems to work
-# Before only creating cells when needed this goes 2.8 -> 25.7 GB
-# Creating cells only as needed drops this to be 2.9 -> 23.7 GB (2GB)
 
 # %% How about empty init
 
