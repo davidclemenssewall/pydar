@@ -4577,8 +4577,10 @@ class Project:
                                                  project_name,
                                                 'npyfiles'+suffix))
         else:
-            scan_names = os.listdir(os.path.join(project_path, project_name, 
-                                                 'SCANS'))
+            ls = os.listdir(os.path.join(project_path, project_name))
+            scan_names = [x.split(sep='.')[0] for x in ls 
+                if re.fullmatch('ScanPos0[0-9][0-9]\.DAT', x)]
+            
         for scan_name in scan_names:
             if import_mode=='read_scan':
                 if os.path.isdir(os.path.join(self.project_path, 
