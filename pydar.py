@@ -3560,7 +3560,7 @@ class SingleScan:
         self.scannerText.AddPosition(0, 0, 0.5)
         self.scannerText.GetProperty().SetColor(nc.GetColor3d(color))
 
-    def create_labels_actors(self, color='Gray', row_index=None):
+    def create_labels_actors(self, color='White', row_index=None):
         """
         Create dataframe containing actors for each label
         

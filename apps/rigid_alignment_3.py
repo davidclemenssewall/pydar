@@ -1003,6 +1003,7 @@ class MainWindow(Qt.QMainWindow):
         elif scan_area_name=='RS':
             project_names = ['mosaic_rs_170420.RiSCAN',
                              'mosaic_rs_220420.RiSCAN',
+                             'mosaic_rs_300420.RiSCAN',
                              ]
             
         else:
