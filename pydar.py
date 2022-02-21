@@ -4800,7 +4800,8 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].read_scan()
     
-    def write_current_transforms(self, suffix=''):
+    def write_current_transforms(self, suffix='', freeze=False, 
+                                 overwrite_frozen=False):
         """
         Have each SingleScan write its current transform to a file.
 
@@ -4808,6 +4809,16 @@ class Project:
             Suffix for transforms directory if we are reading scans. 
             The default is '' which corresponds to the regular transforms
             directory.
+        freeze: bool, optional
+            Indicate whether the written files should be 'frozen'. Frozen files
+            have the first element of their history dict set as 'frozen', and 
+            we will store the path to the file in subsequent history dicts
+            rather than the history dict itself to save space. The default 
+            is False.
+        overwrite_frozen : bool, optional
+            If the pre-existing files are frozen, overwrite (by default
+            attempting to delete a frozen file will raise an error)
+            The default is False.
             
         Returns
         -------
@@ -4816,7 +4827,10 @@ class Project:
         """
         
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].write_current_transform(suffix=suffix)
+            self.scan_dict[scan_name].write_current_transform(suffix=suffix,
+                                                              freeze=freeze,
+                                                              overwrite_frozen=
+                                                              overwrite_frozen)
     
     def read_transforms(self, suffix=''):
         """
