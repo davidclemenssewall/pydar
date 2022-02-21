@@ -30,22 +30,38 @@ print(original_tree)
 
 # %% Try writing the frozen scan
 
-suffix = '_archive'
+suffix = '_temp'
 
 ss.write_scan(suffix=suffix, freeze=True)
 
-# %% Check that we cannot write to that directory
-
-print(os.access(os.path.join(project_path, project_name, 'npyfiles'+suffix,
-                             scan_name), os.W_OK))
 
 # %% Now delete ss and load from the written scan
 
-#del ss
+del ss
 
-#ss = pydar.SingleScan(project_path, project_name, scan_name, import_mode=
-#                      'read_scan')
+ss = pydar.SingleScan(project_path, project_name, scan_name, import_mode=
+                      'read_scan', suffix=suffix)
 
 # %% Check that we loaded everything back in correctly
 
-#original_tree==json.dumps(ss.raw_history_dict, indent=4)
+print(json.dumps(ss.raw_history_dict, indent=4))
+
+# %% Try overwriting
+
+ss.write_scan(suffix=suffix, freeze=True)
+
+# that correctly raises an error that we are trying to overwrite a frozen scan
+
+# %% overwrite_frozen
+
+ss.write_scan(suffix=suffix, overwrite_frozen=True)
+
+# %% Delete directory
+
+dirname = os.path.join(project_path, project_name, 'npyfiles' + suffix, 
+                       scan_name)
+
+for f in os.listdir(dirname):
+    os.remove(os.path.join(dirname, f))
+os.rmdir(dirname)
+os.rmdir(os.path.join(project_path, project_name, 'npyfiles' + suffix))

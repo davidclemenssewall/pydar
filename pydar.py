@@ -4682,7 +4682,8 @@ class Project:
             self.scan_dict[scan_name].apply_transforms(transform_list)
         self.current_transform_list = transform_list
     
-    def write_scans(self, project_write_dir=None, suffix=''):
+    def write_scans(self, project_write_dir=None, suffix='',
+                    freeze=False, overwrite_frozen=False):
         """
         Write all single scans to files.
         
@@ -4694,6 +4695,16 @@ class Project:
         suffix : str, optional
             Suffix for npyfiles directory if we are reading scans. The default
             is '' which corresponds to the regular npyfiles directory.
+        freeze: bool, optional
+            Indicate whether the written files should be 'frozen'. Frozen files
+            have the first element of their history dict set as 'frozen', and 
+            we will store the path to the file in subsequent history dicts
+            rather than the history dict itself to save space. The default 
+            is False.
+        overwrite_frozen : bool, optional
+            If the pre-existing files are frozen, overwrite (by default
+            attempting to delete a frozen file will raise an error)
+            The default is False.
 
         Returns
         -------
@@ -4703,7 +4714,10 @@ class Project:
         
         if project_write_dir is None:
             for scan_name in self.scan_dict:
-                self.scan_dict[scan_name].write_scan(suffix=suffix)
+                self.scan_dict[scan_name].write_scan(suffix=suffix,
+                                                     freeze=freeze,
+                                                     overwrite_frozen=
+                                                     overwrite_frozen)
         else:
             # For each scan name create a directory under project_write_dir
             # if it does not already exist.
@@ -4712,7 +4726,10 @@ class Project:
                                                   scan_name)):
                     os.mkdir(os.path.join(project_write_dir, scan_name))
                 self.scan_dict[scan_name].write_scan(os.path.join(
-                    project_write_dir, scan_name), suffix=suffix)
+                    project_write_dir, scan_name), suffix=suffix,
+                                                     freeze=freeze,
+                                                     overwrite_frozen=
+                                                     overwrite_frozen)
     
     def read_scans(self):
         """
