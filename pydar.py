@@ -1503,7 +1503,8 @@ class SingleScan:
         self.currentFilter.Update()
     
     def write_current_transform(self, write_dir=None, name='current_transform'
-                                , mode='rigid', suffix=''):
+                                , mode='rigid', suffix='', freeze=False,
+                                overwrite_frozen=False):
         """
         Write the current tranform and its history_dict to files.
 
@@ -1523,6 +1524,16 @@ class SingleScan:
             Suffix for transforms directory if we are reading scans. 
             The default is '' which corresponds to the regular transforms
             directory.
+        freeze: bool, optional
+            Indicate whether the written files should be 'frozen'. Frozen files
+            have the first element of their history dict set as 'frozen', and 
+            we will store the path to the file in subsequent history dicts
+            rather than the history dict itself to save space. The default 
+            is False.
+        overwrite_frozen : bool, optional
+            If the pre-existing files are frozen, overwrite (by default
+            attempting to delete a frozen file will raise an error)
+            The default is False.
 
         Returns
         -------
@@ -1540,11 +1551,24 @@ class SingleScan:
                                           , 'transforms' + suffix))
         if not os.path.isdir(write_dir):
             os.mkdir(write_dir)
-        # If the files already exist remove them
-        filenames = os.listdir(write_dir)
-        for filename in filenames:
-            if filename in [name + '.txt', name + '.npy']:
-                os.remove(os.path.join(write_dir, filename))
+        
+        # If the files already exist remove them, check if preexisting frozen
+        try:
+            f = open(os.path.join(write_dir, name + '.txt'))
+            old_history_dict = json.load(f)
+            f.close()
+        except FileNotFoundError:
+            old_history_dict = [None, None]
+        if (type(old_history_dict) is list) and (
+            old_history_dict[0]=='frozen') and (overwrite_frozen==False):
+            raise RuntimeError('You are trying to overwrite file ' +
+                               name + '.txt which is frozen. If you want ' +
+                               'to do this set overwrite_frozen=True')
+        else:
+            filenames = os.listdir(write_dir)
+            for filename in filenames:
+                if filename in [name + '.txt', name + '.npy']:
+                    os.remove(os.path.join(write_dir, filename))
         
         if mode=='rigid':
             # Convert the current transform into position and orientation
@@ -1562,7 +1586,11 @@ class SingleScan:
         
         # Now write the history dict
         f = open(os.path.join(write_dir, name + '.txt'), 'w')
-        json.dump(self.transformed_history_dict["input_1"], f, indent=4)
+        if freeze:
+            json.dump(['frozen', self.transformed_history_dict["input_1"]], f, 
+                      indent=4)
+        else:
+            json.dump(self.transformed_history_dict["input_1"], f, indent=4)
         f.close()
     
     def read_transform(self, read_dir=None, name='current_transform', 
@@ -1592,8 +1620,45 @@ class SingleScan:
         if read_dir is None:
             read_dir = os.path.join(self.project_path, self.project_name,
                                     'transforms' + suffix, self.scan_name)
-        # Try loading the transform
+            default_dir = True
+        # Load the transform
         transform_np = np.load(os.path.join(read_dir, name + '.npy'))
+
+        # Load the history dict
+        try:
+            f = open(os.path.join(read_dir, name + '.txt'))
+            temp_hist_dict = json.load(f)
+            f.close()
+            if type(temp_hist_dict) is list:
+                if temp_hist_dict[0]=='frozen':
+                    if default_dir:
+                        # Get the scan area from the project path.
+                        temp = os.path.split(self.project_path)
+                        if temp[1]=='':
+                            scan_area_name = os.path.split(temp[0])[1]
+                        else:
+                            scan_area_name = temp[1]
+                        # Create name
+                        new_hist_dict = os.path.join(
+                            scan_area_name, self.project_name,
+                            'transforms' + suffix, self.scan_name,
+                            name + '.txt')
+                    else:
+                        new_hist_dict = read_dir
+                else:
+                    raise RuntimeError('history dict in ' + read_idr +
+                                       ' is a list, but first element is' +
+                                       ' not "frozen"')
+            else:
+                new_hist_dict = temp_hist_dict
+        except FileNotFoundError:
+            new_hist_dict = {
+                    "type": "Transform Source",
+                    "git_hash": git_hash,
+                    "method": "SingleScan.read_transform",
+                    "filename": os.path.join(read_dir, name + '.npy'),
+                    }
+            warnings.warn("No history dict found for " + name)
         
         # Check which kind of transformation it is
         if transform_np.dtype==[('x0', '<f8'), ('y0', '<f8'), ('z0', '<f8'),
@@ -1624,12 +1689,6 @@ class SingleScan:
             M[0, 3] = transform_np[0]['x0']
             M[1, 3] = transform_np[0]['y0']
             M[2, 3] = transform_np[0]['z0']
-    
-            # Add to transform dict, include history dict
-            f = open(os.path.join(read_dir, name + '.txt'))
-            self.add_transform(name, M, json.load(f))
-            f.close()
-        
         elif transform_np.dtype==[('x0', '<f4'), ('y0', '<f4'), ('z0', '<f4'),
                                 ('u0', '<f4'), ('v0', '<f4'), ('w0', '<f4')]:
             # Then we're dealing with a rigid transformation
@@ -1658,14 +1717,11 @@ class SingleScan:
             M[0, 3] = transform_np[0]['x0']
             M[1, 3] = transform_np[0]['y0']
             M[2, 3] = transform_np[0]['z0']
-    
-            # Add to transform dict, include history dict
-            f = open(os.path.join(read_dir, name + '.txt'))
-            self.add_transform(name, M, json.load(f))
-            f.close()
-        
         else:
             raise RuntimeError('transform does not match known format')
+
+        # Add to transform dict, include history dict
+        self.add_transform(name, M, new_hist_dict)
             
     
     def load_man_class(self):
