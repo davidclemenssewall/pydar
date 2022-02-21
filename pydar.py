@@ -29,6 +29,7 @@ import pandas as pd
 import vtk
 from vtk.numpy_interface import dataset_adapter as dsa
 import os
+import stat
 import sys
 import re
 import copy
@@ -1058,10 +1059,35 @@ class SingleScan:
             self.polydata_raw = pdata#vertexGlyphFilter.GetOutput()
             
             # Load in history dict
+            # If the directory is frozen, just set the raw history 
+            # dict to be a string with the location of the directory relative
+            # to the root of the mosaic_lidar directory. e.g.:
+            # "/ROV/[PROJECT_NAME]/npyfiles/[SCAN_NAME]/"
             try:
                 f = open(os.path.join(npy_path, 'raw_history_dict.txt'))
-                self.raw_history_dict = json.load(f)
+                temp_hist_dict = json.load(f)
                 f.close()
+                if type(temp_hist_dict) is list:
+                    if temp_hist_dict[0]=='frozen':
+                        if read_dir is None:
+                            # Get the scan area from the project path.
+                            temp = os.path.split(self.project_path)
+                            if temp[1]=='':
+                                scan_area_name = os.path.split(temp[0])[1]
+                            else:
+                                scan_area_name = temp[1]
+                            # Create name
+                            self.raw_history_dict = os.path.join(
+                                scan_area_name, self.project_name,
+                                'npyfiles' + suffix, self.scan_name)
+                        else:
+                            self.raw_history_dict = read_dir
+                    else:
+                        raise RuntimeError('history dict in ' + npy_path +
+                                           ' is a list, but first element is' +
+                                           ' not "frozen"')
+                else:
+                    self.raw_history_dict = temp_hist_dict
             except FileNotFoundError:
                 self.raw_history_dict = {
                         "type": "Pointset Source",
@@ -1074,8 +1100,6 @@ class SingleScan:
                                    "las_fieldnames": las_fieldnames}
                         }
                 warnings.warn("No history dict found for " + scan_name)
-
-            
         elif import_mode=='poly':
             # Match poly with polys
             reader = vtk.vtkXMLPolyDataReader()
@@ -1323,7 +1347,8 @@ class SingleScan:
             "input_0": self.transformed_history_dict,
             "params": {"class_list": class_list}}
         
-    def write_scan(self, write_dir=None, class_list=None, suffix=''):
+    def write_scan(self, write_dir=None, class_list=None, suffix='',
+                   freeze=False, overwrite_frozen=False):
         """
         Write the scan to a collection of numpy files.
         
@@ -1344,6 +1369,16 @@ class SingleScan:
         suffix: str, optional
             Suffix for writing to the correct npyfiles directory. The default
             is ''.
+        freeze: bool, optional
+            Indicate whether the written files should be 'frozen'. Frozen files
+            have the first element of their history dict set as 'frozen', and 
+            we will store the path to the file in subsequent history dicts
+            rather than the history dict itself to save space. The default 
+            is False.
+        overwrite_frozen : bool, optional
+            If the pre-existing files are frozen, overwrite (by default
+            attempting to delete a frozen file will raise an error)
+            The default is False.
 
         Returns
         -------
@@ -1370,8 +1405,21 @@ class SingleScan:
                                      npy_dir, self.scan_name)
         
         # Delete old saved SingleScan files in the directory
-        for f in os.listdir(write_dir):
-            os.remove(os.path.join(write_dir, f))
+        # If there is a history_dict file, check if it's frozen first
+        try:
+            f = open(os.path.join(write_dir, 'raw_history_dict.txt'))
+            old_history_dict = json.load(f)
+            f.close()
+        except FileNotFoundError:
+            old_history_dict = [None, None]
+        if (type(old_history_dict) is list) and (
+            old_history_dict[0]=='frozen') and (overwrite_frozen==False):
+            raise RuntimeError('You are trying to overwrite files in ' +
+                               write_dir + ' which is frozen. If you want ' +
+                               'to do this set overwrite_frozen=True')
+        else:
+            for f in os.listdir(write_dir):
+                os.remove(os.path.join(write_dir, f))
 
         # If class_list is None just write raw data
         if class_list is None:
@@ -1386,9 +1434,7 @@ class SingleScan:
                 np.save(os.path.join(write_dir, name), 
                         self.dsa_raw.PointData[name])
             # Save history_dict
-            f = open(os.path.join(write_dir, 'raw_history_dict.txt'), 'w')
-            json.dump(self.raw_history_dict, f, indent=4)
-            f.close()
+            new_hist_dict = self.raw_history_dict
         else:
             ind = np.isin(self.dsa_raw.PointData['Classification'], class_list)
 
@@ -1404,15 +1450,22 @@ class SingleScan:
                 np.save(os.path.join(write_dir, name), 
                         self.dsa_raw.PointData[name][ind])
             # Save history_dict
-            temp_hist_dict = {
+            new_hist_dict = {
                 "type": "Filter",
                 "git_hash": get_git_hash(),
                 "method": "SingleScan.write_scan",
                 "input_0": self.raw_history_dict,
                 "params": {"class_list": class_list}
                 }
+
+        # If freezing files, set to be 'read-only'
+        if freeze:
             f = open(os.path.join(write_dir, 'raw_history_dict.txt'), 'w')
-            json.dump(temp_hist_dict, f, indent=4)
+            json.dump(['frozen', new_hist_dict], f, indent=4)
+            f.close()
+        else:
+            f = open(os.path.join(write_dir, 'raw_history_dict.txt'), 'w')
+            json.dump(new_hist_dict, f, indent=4)
             f.close()
         
         
