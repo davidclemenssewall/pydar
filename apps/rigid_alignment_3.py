@@ -993,6 +993,8 @@ class MainWindow(Qt.QMainWindow):
                              'mosaic_rov_040220.RiSCAN',
                              'mosaic_rov_220220.RiSCAN.RiSCAN',
                              'mosaic_rov_110320.RiSCAN',
+                             'mosaic_rov_140320.RiSCAN.RiSCAN',
+                             'mosaic_rov_180320.RiSCAN',
                              'mosaic_02_040420.RiSCAN',
                              'mosaic_02_110420_rov.RiSCAN',
                              'mosaic_rov_170420.RiSCAN',

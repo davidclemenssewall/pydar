@@ -8640,7 +8640,8 @@ class ScanArea:
     
     def z_alignment_ss(self, project_name_0, project_name_1, scan_name,
                               w0=10, w1=10, min_pt_dens=10, max_diff=0.15,
-                              bin_reduc_op='min', return_grid=False):
+                              bin_reduc_op='min', return_grid=False,
+                              return_history_dict=False):
         """
         Align successive scans on the basis of their gridded minima
         
@@ -8670,6 +8671,9 @@ class ScanArea:
         bin_reduc_op : str, optional
             What type of gridded reduction to apply. Options are 'min', 'mean'
             and 'mode'. The default is 'min'
+        return_history_dict : bool, optional
+            Whether to return a history dict with the z offset. The default
+            is False.
 
         Returns
         -------
@@ -8691,16 +8695,20 @@ class ScanArea:
         project_0 = self.project_dict[project_name_0]
         project_1 = self.project_dict[project_name_1]
 
+        # Now get ss
+        if project_name_0==project_name_1:
+            ss = project_1.scan_dict.pop(scan_name)
+        else:
+            ss = project_1.scan_dict[scan_name]
+
         # Get the merged points polydata, by not using port we should prevent
         # this memory allocation from persisting
-        pdata_merged_project_0 = project_0.get_merged_points()
+        pdata_merged_project_0, history_dict_project_0 = (
+            project_0.get_merged_points(history_dict=True))
         project_0_points_np = vtk_to_numpy(pdata_merged_project_0
                                            .GetPoints().GetData())
         #bounds = pdata_merged_project_0.GetBounds()
         
-        # Now get ss
-        ss = project_1.scan_dict[scan_name]        
-
         # Get points as an array
         ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
                                     .GetData())
@@ -8759,6 +8767,24 @@ class ScanArea:
             diff[np.abs(diff) > max_diff] = np.nan
             if np.isnan(diff).all():
                 warnings.warn("All diffs exceed max_diff")
+
+        # return popped scan if the project names are the same
+        if project_name_0==project_name_1:
+            project_1.scan_dict[scan_name] = ss
+
+        # Create history dict to return if desired
+        if return_history_dict:
+            history_dict = {
+                "type": "Transform Computer",
+                "git_hash": get_git_hash(),
+                "method": "ScanArea.z_alignment_ss",
+                "input_0": history_dict_project_0,
+                "input_1": json.loads(json.dumps(
+                    ss.filt_history_dict)),
+                "params": {"w0": w0, "w1": w1,
+                   "min_pt_dens": min_pt_dens, "max_diff": max_diff,
+                   "bin_reduc_op": bin_reduc_op}
+                }
         
         # If we want to return the grid as a pointcloud compute it here
         if return_grid:
@@ -8788,12 +8814,116 @@ class ScanArea:
             grid_ss = vtk_to_numpy(tfilter.GetOutput().GetPoints().GetData())
            
             # Return
-            return frac_exceed_max_diff, diff.T, grid_ss.copy()
+            if return_history_dict:
+                return (frac_exceed_max_diff, diff.T, grid_ss.copy(), 
+                        history_dict)
+            else:
+                return frac_exceed_max_diff, diff.T, grid_ss.copy()
 
         else:
             # Return the diff
-            return frac_exceed_max_diff, diff
+            if return_history_dict:
+                return frac_exceed_max_diff, diff, history_dict
+            else:
+                return frac_exceed_max_diff, diff
+
+    def z_tilt_alignment_ss(self, project_name_0, project_name_1, scan_name,
+                              w0=10, w1=10, min_pt_dens=10, max_diff=0.15,
+                              bin_reduc_op='mean'):
+        """
+        Align a scan vertically and tilt based upon it's z offsets
         
+        ss version is for looking at the change in just a singlescan
+
+        !This function does not modify the tiepoint locations so it should 
+        only be run after all tiepoint registration steps are done. 
+
+        Parameters
+        ----------
+        project_name_0 : str
+            The reference project we're trying to align project_1 with
+        project_name_1 : str
+            The project we're aligning with project_0
+        scan_name : str
+            The scan in project_1 that we are aligning
+        w0 : float, optional
+            Grid cell width in x dimension (m). The default is 10.
+        w1 : float, optional
+            Grid cell width in y dimension (m). The default is 10.
+        min_pt_dens : float, optional
+            minimum density of points/m^2 for us to compare grid cells from
+            projects 0 and 1. The default is 30.
+        max_diff : float, optional
+            Maximum difference in minima to consider (higher values must be
+            noise) in m. The default is 0.1.
+        bin_reduc_op : str, optional
+            What type of gridded reduction to apply. Options are 'min', 'mean'
+            and 'mode'. The default is 'min'
+        
+        Returns
+        -------
+        A, history_dict :
+            A 4x4 matrix containing the resulting transform and history dict
+
+        """
+
+        _, diff, grid, history_dict = self.z_alignment_ss(project_name_0, 
+                                                          project_name_1,
+                                            scan_name, w0=w0, w1=w1,
+                                            min_pt_dens=min_pt_dens,
+                                            max_diff=max_diff, bin_reduc_op=
+                                            bin_reduc_op, return_grid=True,
+                                            return_history_dict=True)
+        # Compute the least squares fit 
+        ind = np.logical_not(np.isnan(diff.ravel()))
+        A = np.hstack((np.ones((ind.sum(),1)), grid[ind,:2]))
+        b = diff.ravel()[ind, np.newaxis]
+        x, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+
+        # Get the current transform applied to ss in translation and rotation
+        ss = self.project_dict[project_name_1].scan_dict[scan_name]
+        pos = np.float32(ss.transform.GetPosition())
+        ori = np.float32(ss.transform.GetOrientation())
+        ori = ori * math.pi / 180
+
+        # Add the deltas from the least squares fit (note we make small angle)
+        # approximation to go from slope to angles in radians
+        u = ori[0] - x[2,0] # negative slope w.r.t. y axis for droll
+        v = ori[1] + x[1,0] # positive slope w.r.t. x axis for dpitch
+        w = ori[2]
+        dx = pos[0]
+        dy = pos[1]
+        dz = pos[2] - x[0,0] # subtract by z-intercept in regression
+
+        # Create a 4x4 homologous transform from the new parameters
+        c = np.cos
+        s = np.sin
+        
+        Rx = np.array([[1, 0, 0, 0],
+                      [0, c(u), -s(u), 0],
+                      [0, s(u), c(u), 0],
+                      [0, 0, 0, 1]])
+        Ry = np.array([[c(v), 0, s(v), 0],
+                       [0, 1, 0, 0],
+                       [-s(v), 0, c(v), 0],
+                       [0, 0, 0, 1]])
+        Rz = np.array([[c(w), -s(w), 0, 0],
+                      [s(w), c(w), 0, 0],
+                      [0, 0, 1, 0],
+                      [0, 0, 0, 1]])
+        # Order of rotations in vtk is Pitch, then Roll, then Yaw
+        M = Rz @ Rx @ Ry
+        # Now add translation components
+        M[0, 3] = dx
+        M[1, 3] = dy
+        M[2, 3] = dz
+
+        # modify history dict
+        history_dict['method'] = "ScanArea.z_tilt_alignment_ss"
+
+        return M, history_dict
+
+
     def max_alignment_ss(self, project_name_0, project_name_1, scan_name,
                          w0=5, w1=5, max_diff=0.1, return_count=False,
                          use_closest=False, p_thresh=None, az_thresh=None,
@@ -8860,10 +8990,17 @@ class ScanArea:
         """
         
         # Get pointclouds and history_dicts
+        # if we are aligning within the same project need to pop ss
+        if project_name_0==project_name_1:
+            ss = self.project_dict[project_name_1].scan_dict.pop(scan_name)
+        else:
+            ss = self.project_dict[project_name_1].scan_dict[scan_name]
+        ss_pdata, ss_hist_dict = (ss.get_polydata(history_dict=True))
+
+
         if use_closest:
             # Get the position of the scan we're aligning in common ref frame
-            pos = np.array(self.project_dict[project_name_1]
-                           .scan_dict[scan_name].transform.GetPosition())
+            pos = np.array(ss.transform.GetPosition())
             # find the closest scan in project 0
             dist = 1000
             for scan_name_0 in self.project_dict[project_name_0].scan_dict:
@@ -8881,9 +9018,7 @@ class ScanArea:
                                                 .project_dict[project_name_0]
                                                 .get_merged_points(
                                                     history_dict=True))
-        ss_pdata, ss_hist_dict = (self.project_dict[project_name_1]
-                                  .scan_dict[scan_name].get_polydata(
-                                      history_dict=True))
+        
         ss_pts = vtk_to_numpy(ss_pdata.GetPoints().GetData())
         project_pts = vtk_to_numpy(project_pdata.GetPoints().GetData())
         
@@ -8924,9 +9059,7 @@ class ScanArea:
                               'max_diff, using max_diff')
         # Otherwise, use the cylindrical divergence around ss
         else:
-            pos = np.array(self.project_dict[project_name_1]
-                           .scan_dict[scan_name].transform.GetPosition()
-                           )[np.newaxis, :]
+            pos = np.array(ss.transform.GetPosition())[np.newaxis, :]
             # Transform selected points to cylindrical reference frame
             pos_pts0 = project_maxs[:,:2]-pos[:,:2]
             cyl_pts0 = np.hstack((np.sqrt(np.square(pos_pts0).sum(axis=1))
@@ -9000,6 +9133,10 @@ class ScanArea:
             "params": {"w0": w0, "w1": w1, "max_diff": max_diff}
             }
         
+        # return ss to scan_dict if we popped it
+        if project_name_0==project_name_1:
+            self.project_dict[project_name_1].scan_dict[scan_name] = ss
+
         if return_count:
             return A, history_dict, psubi.shape[1]
         else:
