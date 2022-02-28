@@ -359,7 +359,8 @@ class TiePointList:
             Mode of the transformation, in 'LS' transformation can rotate on 
             all 3 axes to find best fit (must have at least 3 reflectors). In
             'Yaw' the z axis is fixed and we are only rotating around it (it 
-            still translates in all 3 dimensions). The default is 'LS'.
+            still translates in all 3 dimensions). If 'trans', we only have 1
+            reflector and just translate. The default is 'LS'.
         use_tiepoints_transformed : bool, optional
             Whether to use the tiepoints_transformed from the other tiepoint
             list or the raw ones. The default is True.
@@ -1646,7 +1647,7 @@ class SingleScan:
                     else:
                         new_hist_dict = read_dir
                 else:
-                    raise RuntimeError('history dict in ' + read_idr +
+                    raise RuntimeError('history dict in ' + read_dir +
                                        ' is a list, but first element is' +
                                        ' not "frozen"')
             else:
@@ -2395,9 +2396,15 @@ class SingleScan:
         self.transformed_history_dict["input_0"] = self.raw_history_dict
         
     
-    def clear_classification(self):
+    def clear_classification(self, category=None):
         """
         Reset Classification for all points to 0
+
+        Parameters
+        ----------
+        category : int, optional
+            If given, will only reset classifications for the given category
+            The default is None (reset all).
 
         Returns
         -------
@@ -2405,7 +2412,11 @@ class SingleScan:
 
         """
         
-        self.dsa_raw.PointData['Classification'][:] = 0
+        if category is None:
+            self.dsa_raw.PointData['Classification'][:] = 0
+        else:
+            self.dsa_raw.PointData['Classification'][
+             self.dsa_raw.PointData['Classification']==category] = 0
         # Update currentTransform
         self.polydata_raw.Modified()
         self.transformFilter.Update()
@@ -2416,7 +2427,8 @@ class SingleScan:
             "git_hash": get_git_hash(),
             "method": "SingleScan.clear_classification",
             "name": "Reset Classification to zero",
-            "input_0": json.loads(json.dumps(self.raw_history_dict))
+            "input_0": json.loads(json.dumps(self.raw_history_dict)),
+            "params": {"category": category}
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
     

@@ -959,11 +959,11 @@ class MainWindow(Qt.QMainWindow):
         
         
         # Depending on the scan_area_name load and register project
-        if scan_area_name=='Snow2':
-            project_names = ['mosaic_02_110619.RiSCAN',
-                             'mosaic_02_111319.RiSCAN']
+        #if scan_area_name=='Snow2':
+        #    project_names = ['mosaic_02_110619.RiSCAN',
+        #                     'mosaic_02_111319.RiSCAN']
             
-        elif scan_area_name=='Snow1':
+        if scan_area_name=='Snow1':
             project_names = ['mosaic_01_101819.RiSCAN',
                              'mosaic_01_102019.RiSCAN',
                              'mosaic_01_102519.RiSCAN',
@@ -1000,7 +1000,16 @@ class MainWindow(Qt.QMainWindow):
                              'mosaic_rov_170420.RiSCAN',
                              'mosaic_rov_220420.RiSCAN',
                              'mosaic_rov_290420.RiSCAN',
-                             'mosaic_rov_02_090520.RiSCAN']
+                             'mosaic_rov_02_090520.RiSCAN',
+                             'mosaic_02_300420.RiSCAN',
+                             'mosaic_02_230420.RiSCAN',
+                             'mosaic_02_130420_2.RiSCAN',
+                             'mosaic_02_300320.RiSCAN.RiSCAN',
+                             'mosaic_02_260320.RiSCAN',
+                             'mosaic_01_060220.RiSCAN',
+                             'mosaic_01b_061219.RiSCAN.RiSCAN.RiSCAN',
+                             'mosaic_02_111319.RiSCAN',
+                             'mosaic_02_110619.RiSCAN',]
 
         elif scan_area_name=='RS':
             project_names = ['mosaic_rs_170420.RiSCAN',

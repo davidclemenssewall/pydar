@@ -887,7 +887,16 @@ class MainWindow(Qt.QMainWindow):
                              'mosaic_rov_170420.RiSCAN',
                              'mosaic_rov_220420.RiSCAN',
                              'mosaic_rov_290420.RiSCAN',
-                             'mosaic_rov_02_090520.RiSCAN']
+                             'mosaic_rov_02_090520.RiSCAN',
+                             'mosaic_02_300420.RiSCAN',
+                             'mosaic_02_230420.RiSCAN',
+                             'mosaic_02_130420_2.RiSCAN',
+                             'mosaic_02_300320.RiSCAN.RiSCAN',
+                             'mosaic_02_260320.RiSCAN',
+                             'mosaic_01_060220.RiSCAN',
+                             'mosaic_01b_061219.RiSCAN.RiSCAN.RiSCAN',
+                             'mosaic_02_111319.RiSCAN',
+                             'mosaic_02_110619.RiSCAN',]
         else:
             project_names = os.listdir(dir_str)
         
