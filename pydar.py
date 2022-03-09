@@ -839,6 +839,8 @@ class SingleScan:
         the border of the visible region.
     apply_manual_filter(corner_coords, normal=(0, 0, 1), category=73)
         Classify points by a selection loop.
+    apply_cylinder_filter(x, y, r, category=73)
+        Classify all points within a horizontal distance r of a given point.
     random_voxel_downsample_filter(wx, wy, wz, seed=1234)
         Subset the filtered pointcloud randomly by voxels. Replaces Polydata!!
     apply_man_class()
@@ -3339,6 +3341,67 @@ class SingleScan:
         self.transformed_history_dict["input_0"] = self.raw_history_dict
         
 
+    def apply_cylinder_filter(self, x, y, r, category=73):
+        """
+        Classify all points within distance r of (x,y)
+
+        Parameters:
+        -----------
+        x : float
+            x coordinate of the center point in transformed reference frame
+        y : float
+            y coordinate of the center point in transformed reference frame
+        r : float
+            Distance (in m) from center point to classify points as
+        category : int, optional
+            Category to classify points as. The defaults is 73
+
+
+        Returns:
+        --------
+        None
+
+        """
+
+        # Subset points to square around center point
+        pdata = self.currentFilter.GetOutput()
+        # If this pdata has no points in it, we can just return
+        if pdata.GetNumberOfPoints()==0:
+            return
+        pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
+        PointIds_np = vtk_to_numpy(pdata.GetPointData().GetArray('PointId'))
+        mask = ((pts_np[:,0]>=(x-r)) & (pts_np[:,0]<=(x+r)) &
+                (pts_np[:,1]>=(y-r)) & (pts_np[:,1]<=(y+r)))
+        pts_np = pts_np[mask, :]
+        PointIds_np = PointIds_np[mask]
+        # Get PointIds of points within r of center point
+        mask = (r**2 >= (np.square(pts_np[:,0]-x) + np.square(pts_np[:,1]-y)))
+        PointIds = PointIds_np[mask]
+
+        # Update classification
+        self.dsa_raw.PointData['Classification'][np.isin(self.dsa_raw.PointData
+            ['PointId'], PointIds, assume_unique=True)] = category
+        self.polydata_raw.Modified()
+        self.transformFilter.Update()
+        self.currentFilter.Update()
+        
+        # Update History Dict
+        self.raw_history_dict = {
+            "type": "Scalar Modifier",
+            "git_hash": get_git_hash(),
+            "method": "SingleScan.apply_cylinder_filter",
+            "name": "Manually classify points around center point",
+            "input_0": json.loads(json.dumps(self.filt_history_dict)) ,
+            "params": {"x": x,
+                       "y": y,
+                       "r": r,
+                       "category": category}
+            }
+        self.transformed_history_dict["input_0"] = self.raw_history_dict
+
+
+
+
     def create_dimensionality_pdal(self, temp_file="", from_current=True, 
                                    voxel=True, h_voxel=0.1, v_voxel=0.01, 
                                    threads=8):
@@ -5112,6 +5175,33 @@ class Project:
             self.scan_dict[scan_name].apply_snowflake_filter_returnindex(
                 cylinder_rad, radial_precision)
         self.filterName = "snowflake_returnindex"
+
+    def apply_cylinder_filter(self, x, y, r, category=73):
+        """
+        Classify all points within distance r of (x,y)
+
+        Parameters:
+        -----------
+        x : float
+            x coordinate of the center point in transformed reference frame
+        y : float
+            y coordinate of the center point in transformed reference frame
+        r : float
+            Distance (in m) from center point to classify points as
+        category : int, optional
+            Category to classify points as. The defaults is 73
+
+
+        Returns:
+        --------
+        None
+
+        """
+
+        for scan_name in self.scan_dict:
+            self.scan_dict[scan_name].apply_cylinder_filter(x, y, r, category=
+                                                            category)
+        self.filterName = "cylinder_filter"
     
     def create_scanwise_closest_point(self):
         """
@@ -6642,7 +6732,8 @@ class Project:
         
         # Use point mask to create array with NaN's where we have no data
         nan_image = copy.deepcopy(self.dsa_image.PointData['Elevation'])
-        nan_image[self.dsa_image.PointData['vtkValidPointMask']==0] = np.NaN
+        if 'vtkValidPointMask' in self.dsa_image.PointData:
+            nan_image[self.dsa_image.PointData['vtkValidPointMask']==0] = np.NaN
         dims = self.image.GetDimensions()
         nan_image = nan_image.reshape((dims[1], dims[0]))
         
