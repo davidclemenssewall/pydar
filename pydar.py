@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from matplotlib.colors import Normalize
 from scipy import ndimage
-from scipy.spatial import Delaunay, cKDTree
+from scipy.spatial import Delaunay, cKDTree, KDTree
 from scipy.special import erf, erfinv
 from scipy.signal import fftconvolve
 from scipy.stats import mode
@@ -38,6 +38,7 @@ import json
 import math
 import warnings
 import time
+import utils_find_1st as utf1st
 from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 from sklearn.experimental import enable_hist_gradient_boosting
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -881,6 +882,10 @@ class SingleScan:
         we'll just rasterize all points but we may eventually add csf filter.
     add_dist()
         Add distance from scanner to polydata_raw
+    get_local_max(z_threshold, rmax, return_dist=False, return_zs=False)
+        Returns the set of points that are locally maximal in the current
+        transformation and, optionally, their distance from the scanner
+        and z sigma.
     """
     
     def __init__(self, project_path, project_name, scan_name, 
@@ -4515,6 +4520,91 @@ class SingleScan:
                                 "input_0": json.loads(json.dumps(
                                     self.raw_history_dict))}
 
+    def get_local_max(self, z_threshold, rmax, return_dist=False, 
+                      return_zs=False):
+        """
+        Get set of locally maxima points above z_threshold
+
+        Parameters
+        ----------
+        z_threshold : float
+            Minimum z value (in current transformation) for all points to 
+            consider.
+        rmax : float
+            Horizontal distance (in m) on which points must be locally maximal
+        return_dist : bool, optional
+            Whether to return an array with the distance of each point from 
+            scanner.
+            The default is False.
+        return_zs : bool, optional
+            Whether to return the z-sigma of each point. The default is False.
+
+        Returns
+        -------
+        [local_max, dist, zs]
+            ndarrays, Nx3 of locally maximal points in current tranformation.
+            optionally distance and z sigma as well.
+            
+        """
+
+        # Add fields, if needed
+        if return_dist and not 'dist' in self.dsa_raw.PointData.keys():
+            self.add_dist()
+        if return_zs and not 'z_sigma' in self.dsa_raw.PointData.keys():
+            self.create_z_sigma()
+
+        # Get points and limit to those that exceed z_threshold
+        pts_np = vtk_to_numpy(self.get_polydata().GetPoints().GetData())
+        if return_dist:
+            dist_np = vtk_to_numpy(self.get_polydata().GetPointData(
+                ).GetArray('dist'))
+        if return_zs:
+            z_sigma_np = vtk_to_numpy(self.get_polydata().GetPointData(
+                ).GetArray('z_sigma'))    
+        mask = pts_np[:,2] > z_threshold
+        pts_np = pts_np[mask, :]
+        if return_dist:
+            dist_np = dist_np[mask]
+        if return_zs:
+            z_sigma_np = z_sigma_np[mask]
+        # Sort in descending z order
+        sort_ind = np.flip(np.argsort(pts_np[:,2]))
+        pts_np = pts_np[sort_ind,:]
+        if return_dist:
+            dist_np = dist_np[sort_ind]
+        if return_zs:
+            z_sigma_np = z_sigma_np[sort_ind]
+        # Create kdtree for quick nearest neighbor query
+        tree = KDTree(pts_np[:,:2])
+        # Mask keeps track of which points are still possibly local maxima
+        max_mask = np.ones(pts_np.shape[0], dtype=np.bool_)
+        # Counter for where we are in the array
+        ctr = 0
+        while True:
+            # Find all points within r near our current point
+            inds = np.array(tree.query_ball_point(pts_np[ctr, :2], rmax, 
+                                                  workers=-1))
+            # If any of the points are higher than our query point, the query
+            # cannot be a local max
+            if any(pts_np[inds,2]>pts_np[ctr,2]):
+                max_mask[ctr] = False
+            # Any of the points that are lower than the query also cannot be a
+            # local max
+            max_mask[inds[pts_np[inds,2]<pts_np[ctr,2]]] = False
+            # Find the next potential point that could be a local max
+            ind = utf1st.find_1st(max_mask[(ctr+1):], True, utf1st.cmp_equal)
+            if ind==-1:
+                break
+            else:
+                ctr = ctr + 1 + ind
+        
+        ret_list = [pts_np[max_mask,:]]
+        if return_dist:
+            ret_list.append(dist_np[max_mask])
+        if return_zs:
+            ret_list.append(z_sigma_np[max_mask])
+        return ret_list
+
 class Project:
     """Class linking relevant data for a project and methods for registration.
     
@@ -4666,6 +4756,9 @@ class Project:
     areapoints_to_cornercoords(areapoints)
         Given a set of points, identified by their scan names and point ids,
         return the coordinates of those points in the current reference frame.
+    get_local_max(z_threshold, rmax, return_dist=False, return_zs=False,
+                  Closest_only=False)
+        Get the set of locally maximal points
     """
     
     def __init__(self, project_path, project_name, poly='.1_.1_.01', 
@@ -8155,7 +8248,84 @@ class Project:
             cornercoords[i,:] = pts[PointId==areapoints[
                 self.project_name][i][1],:]
         return cornercoords
+
+    def get_local_max(self, z_threshold, rmax, return_dist=False, 
+                      return_zs=False, closest_only=False):
+        """
+        Get set of locally maxima points above z_threshold
+
+        Parameters
+        ----------
+        z_threshold : float
+            Minimum z value (in current transformation) for all points to 
+            consider.
+        rmax : float
+            Horizontal distance (in m) on which points must be locally maximal
+        return_dist : bool, optional
+            Whether to return an array with the distance of each point from 
+            scanner. The default is False.
+        return_zs : bool, optional
+            Whether to return the z-sigma of each point. The default is False.
+        closest_only : bool, optional
+            Whether to only return local max that are closer to their scanner
+            than any other scanner. The default is False.
+
+        Returns
+        -------
+        [local_max, dist, zs]
+            ndarrays, Nx3 of locally maximal points in current tranformation.
+            optionally distance and z sigma as well.
             
+        """
+
+        if closest_only:
+            # If we are using only those local max that are closer to their
+            # scanner than all others, we need to create distances between 
+            # points and scanners
+            scanner_pos_dict = {}
+            for scan_name in self.scan_dict:
+                scanner_pos_dict[scan_name] = np.array(self.scan_dict[scan_name]
+                                                       .transform.GetPosition()
+                                                       [:2])[np.newaxis,:]
+            # For each SingleScan, get local maxima and check if they are 
+            # closest to their own scanner
+            maxs_list = []
+            for scan_name in self.scan_dict:
+                maxs = self.scan_dict[scan_name].get_local_max(z_threshold, 
+                        rmax, return_dist=return_dist, return_zs=return_zs)
+                # For each point in local max, get the distance to its scanner
+                dist_array = np.square(maxs[0][:,:2] 
+                                       - scanner_pos_dict[scan_name]
+                                       ).sum(axis=1)[:,np.newaxis]
+                # And distance to all other scanners
+                for scan_name_1 in self.scan_dict:
+                    if scan_name==scan_name_1:
+                        continue
+                    da = np.square(maxs[0][:,:2] - scanner_pos_dict[scan_name_1]
+                                       ).sum(axis=1)[:,np.newaxis]
+                    dist_array = np.hstack((dist_array, da))
+                # Get points where the current scanner is closest
+                close_mask = np.argmin(dist_array, axis=1) == 0
+                # Subset by these
+                maxs[0] = maxs[0][close_mask,:]
+                for i in range(len(maxs)-1):
+                    maxs[i+1] = maxs[i+1][close_mask]
+                # Append to maxs_list
+                maxs_list.append(maxs)
+            # Combine to get return list
+            ret_list = []
+            for j in range(len(maxs_list[0])):
+                temp_list = []
+                for i in range(len(maxs_list)):
+                    temp_list.append(maxs_list[i][j])
+                if j==0:
+                    ret_list.append(np.vstack(temp_list))
+                else:
+                    ret_list.append(np.concatenate(temp_list))
+        else:
+            raise NotImplementedError('Only "closest_only" implemented.')
+
+        return ret_list
 
 class ScanArea:
     """
