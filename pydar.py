@@ -3956,7 +3956,8 @@ class SingleScan:
         
     
     def create_elevation_pipeline(self, z_min, z_max, lower_threshold=-1000,
-                                  upper_threshold=1000, LOD=True):
+                                  upper_threshold=1000, LOD=True,
+                                  cmap_name='rainbow'):
         """
         create mapper and actor displaying points colored by elevation.
 
@@ -3972,6 +3973,8 @@ class SingleScan:
             Maximum elevation of point to display. The default is 1000.
         LOD : bool, optional
             Whether to generate a level of detail actor. The default is True
+        cmap_name : str, optional
+            Name of matplotlib colormap to use. The default is 'rainbow'.
 
         Returns
         -------
@@ -4004,7 +4007,8 @@ class SingleScan:
         # Create mapper, hardcode LUT for now
         self.mapper = vtk.vtkPolyDataMapper()
         self.mapper.SetInputConnection(thresholdFilter.GetOutputPort())
-        self.mapper.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+        self.mapper.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max,
+                                                     name=cmap_name))
         self.mapper.SetScalarRange(z_min, z_max)
         self.mapper.SetScalarVisibility(1)
         
@@ -4018,7 +4022,9 @@ class SingleScan:
             maskPoints.Update()
             self.mapper_sub = vtk.vtkPolyDataMapper()
             self.mapper_sub.SetInputConnection(maskPoints.GetOutputPort())
-            self.mapper_sub.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
+            self.mapper_sub.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max,
+                                                             name=
+                                                             cmap_name))
             self.mapper_sub.SetScalarRange(z_min, z_max)
             self.mapper_sub.SetScalarVisibility(1)
             
@@ -4641,6 +4647,10 @@ class Project:
         PointData optionally includes upper and lower confidence intervals
         Various functions can either access these profile data or display
         it. Each polydata has a single polyline as its cell.
+    pdata_dict : dict
+        Dictionary holding polydata objects that we create in the project.
+        There is no requirement on a specific type of polydata, the purpose
+        is to make accessing and displaying (e.g. on top of image) easy.
     empirical_cdf : tuple
         (bounds, x, cdf) tuple with distribution of snow surface heights for 
         use with transforming and normalizing z-values.
@@ -4758,7 +4768,10 @@ class Project:
         return the coordinates of those points in the current reference frame.
     get_local_max(z_threshold, rmax, return_dist=False, return_zs=False,
                   Closest_only=False)
-        Get the set of locally maximal points
+        Get the set of locally maximal points.
+    create_local_max(z_threshold, rmax, Closest_only=True, key='local_max')
+        Add pdata containing locally maximal points to pdata_dict.
+
     """
     
     def __init__(self, project_path, project_name, poly='.1_.1_.01', 
@@ -4829,6 +4842,7 @@ class Project:
         self.project_date = mosaic_date_parser(project_name)
         self.current_transform_list = []
         self.profile_dict = {}
+        self.pdata_dict = {}
         
         if import_mode is None:
             # Issue a deprecated warning
@@ -5559,7 +5573,7 @@ class Project:
                         upper_threshold=1000, colorbar=True, field='Elevation',
                         mapview=False, profile_list=[], show_scanners=False,
                         scanner_color='Gray', scanner_length=150, 
-                        show_labels=False):
+                        show_labels=False, pdata_list=[]):
         """
         Display all scans in a vtk interactive window.
         
@@ -5590,6 +5604,13 @@ class Project:
             Which, if any, profiles to display along with the rendering. This
             list is composed of lists whose zeroth element is always the
             key of the profile in self.profile_dict. Element 1 is line width
+            in pixels (optional) Elements 2, 3, 4, are color
+            channels (optional) and element 5 is opacity (optional). The default
+            is [].
+        pdata_list : list, optional
+            Which, if any, pdata to display along with the rendering. This
+            list is composed of lists whose zeroth element is always the
+            key of the profile in self.pdata_dict. Element 1 is point/line width
             in pixels (optional) Elements 2, 3, 4, are color
             channels (optional) and element 5 is opacity (optional). The default
             is [].
@@ -5683,7 +5704,32 @@ class Project:
                 actor.GetProperty().SetOpacity(0.8)
             actor.GetProperty().RenderLinesAsTubesOn()
             renderer.AddActor(actor)
-            
+
+        # Add requested pdata
+        for profile_tup in pdata_list:
+            #print(profile_tup)
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(self.pdata_dict[profile_tup[0]])
+            mapper.SetScalarVisibility(0)
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            if len(profile_tup)>=2:
+                actor.GetProperty().SetLineWidth(profile_tup[1])
+                actor.GetProperty().SetPointSize(profile_tup[1])
+            else:
+                actor.GetProperty().SetLineWidth(5)
+                actor.GetProperty().SetPointSize(10)
+            if len(profile_tup)>=5:
+                actor.GetProperty().SetColor(profile_tup[2:5])
+            else:
+                actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+            if len(profile_tup)>=6:
+                actor.GetProperty().SetOpacity(profile_tup[5])
+            else:
+                actor.GetProperty().SetOpacity(0.8)
+            actor.GetProperty().RenderLinesAsTubesOn()
+            actor.GetProperty().RenderPointsAsSpheresOn()
+            renderer.AddActor(actor)
 
         if colorbar:
             scalarBar = vtk.vtkScalarBarActor()
@@ -6472,7 +6518,8 @@ class Project:
                       warp_scalars=False, color_field=None,
                       show_points=False, profile_list=[],
                       show_scanners=False,
-                      scanner_color='Gray', scanner_length=150):
+                      scanner_color='Gray', scanner_length=150,
+                      pdata_list=[]):
         """
         Display image in vtk interactive window.
 
@@ -6493,8 +6540,19 @@ class Project:
         show_points : bool, optional
             Whether to also render the points. The default is False.
         profile_list : list, optional
-            List of keys of profiles in the profiles dict to display. The 
-            default is [].
+            Which, if any, profiles to display along with the rendering. This
+            list is composed of lists whose zeroth element is always the
+            key of the profile in self.profile_dict. Element 1 is line width
+            in pixels (optional) Elements 2, 3, 4, are color
+            channels (optional) and element 5 is opacity (optional). The default
+            is [].
+        pdata_list : list, optional
+            Which, if any, pdata to display along with the rendering. This
+            list is composed of lists whose zeroth element is always the
+            key of the profile in self.pdata_dict. Element 1 is point/line width
+            in pixels (optional) Elements 2, 3, 4, are color
+            channels (optional) and element 5 is opacity (optional). The default
+            is [].
         show_scanners : bool, optional
             Whether or not to show the scanners. The default is False.
         scanner_color : str, optional
@@ -6608,6 +6666,45 @@ class Project:
             actor.GetProperty().RenderLinesAsTubesOn()
             renderer.AddActor(actor)
         
+        # Add requested pdata
+        for profile_tup in pdata_list:
+            transformFilter = vtk.vtkTransformPolyDataFilter()
+            transformFilter.SetTransform(self.imageTransform)
+            transformFilter.SetInputData(self.pdata_dict[profile_tup[0]])
+            transformFilter.Update()
+            mapper = vtk.vtkPolyDataMapper()
+            if warp_scalars:
+                mapper.SetInputData(transformFilter.GetOutput())
+            else:
+                flattener = vtk.vtkTransform()
+                flattener.Scale(1, 1, 0)
+                flatFilter = vtk.vtkTransformPolyDataFilter()
+                flatFilter.SetTransform(flattener)
+                flatFilter.SetInputData(transformFilter.GetOutput())
+                flatFilter.Update()
+                mapper.SetInputData(flatFilter.GetOutput())
+            mapper.SetScalarVisibility(0)
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            if len(profile_tup)>=2:
+                actor.GetProperty().SetLineWidth(profile_tup[1])
+                actor.GetProperty().SetPointSize(profile_tup[1])
+            else:
+                actor.GetProperty().SetLineWidth(5)
+                actor.GetProperty().SetPointSize(10)
+            if len(profile_tup)>=5:
+                actor.GetProperty().SetColor(profile_tup[2:5])
+            else:
+                actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+            if len(profile_tup)>=6:
+                actor.GetProperty().SetOpacity(profile_tup[5])
+            else:
+                actor.GetProperty().SetOpacity(0.8)
+            actor.GetProperty().RenderLinesAsTubesOn()
+            actor.GetProperty().RenderPointsAsSpheresOn()
+            renderer.AddActor(actor)
+
         scalarBar = vtk.vtkScalarBarActor()
         scalarBar.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
         renderer.AddActor2D(scalarBar)
@@ -8287,8 +8384,7 @@ class Project:
                 scanner_pos_dict[scan_name] = np.array(self.scan_dict[scan_name]
                                                        .transform.GetPosition()
                                                        [:2])[np.newaxis,:]
-            # For each SingleScan, get local maxima and check if they are 
-            # closest to their own scanner
+            # For each SingleScan, get local maxima
             maxs_list = []
             for scan_name in self.scan_dict:
                 maxs = self.scan_dict[scan_name].get_local_max(z_threshold, 
@@ -8297,35 +8393,87 @@ class Project:
                 dist_array = np.square(maxs[0][:,:2] 
                                        - scanner_pos_dict[scan_name]
                                        ).sum(axis=1)[:,np.newaxis]
-                # And distance to all other scanners
-                for scan_name_1 in self.scan_dict:
-                    if scan_name==scan_name_1:
-                        continue
-                    da = np.square(maxs[0][:,:2] - scanner_pos_dict[scan_name_1]
-                                       ).sum(axis=1)[:,np.newaxis]
-                    dist_array = np.hstack((dist_array, da))
-                # Get points where the current scanner is closest
-                close_mask = np.argmin(dist_array, axis=1) == 0
-                # Subset by these
-                maxs[0] = maxs[0][close_mask,:]
-                for i in range(len(maxs)-1):
-                    maxs[i+1] = maxs[i+1][close_mask]
-                # Append to maxs_list
-                maxs_list.append(maxs)
-            # Combine to get return list
-            ret_list = []
-            for j in range(len(maxs_list[0])):
-                temp_list = []
-                for i in range(len(maxs_list)):
-                    temp_list.append(maxs_list[i][j])
-                if j==0:
-                    ret_list.append(np.vstack(temp_list))
-                else:
-                    ret_list.append(np.concatenate(temp_list))
+                # Put everything side by side into one array
+                if len(maxs)==1:
+                    arr = np.hstack((maxs[0], dist_array))
+                elif len(maxs)==2:
+                    arr = np.hstack((maxs[0], dist_array, 
+                                     maxs[1][:,np.newaxis]))
+                elif len(maxs)==3:
+                    arr = np.hstack((maxs[0], dist_array, 
+                                     maxs[1][:,np.newaxis],
+                                     maxs[2][:,np.newaxis]))
+                maxs_list.append(arr)
+            # Combine maxs list into one array
+            arr = np.vstack(maxs_list)
+            # Now we'll build a kd tree and look for pairs of points 
+            # within rmax. Then eliminate points further from scanner
+            tree = KDTree(arr[:,:2])
+            pair_ind = tree.query_pairs(rmax, output_type='ndarray')
+            pair_dist = arr[:,3][pair_ind]
+            further = np.unique(pair_ind[np.argmax(pair_dist, axis=1)])
+            keep_mask = np.ones(arr.shape[0], dtype=np.bool_)
+            keep_mask[further] = False
+            arr = arr[keep_mask,:]
+
+            # Get return list
+            if arr.shape[1]==4:
+                ret_list = [arr[:,:3]]
+            elif arr.shape[1]==5:
+                ret_list = [arr[:,:3], arr[:,4]]
+            elif arr.shape[1]==6:
+                ret_list = [arr[:,:3], arr[:,4], arr[:,5]]
         else:
             raise NotImplementedError('Only "closest_only" implemented.')
 
         return ret_list
+
+    def create_local_max(self, z_threshold, rmax, closest_only=True, 
+                         key='local_max'):
+        """
+        Create pointset of local max points in pdata_dict.
+
+        See get_local_max() for details of local max identification.
+
+        Parameters
+        ----------
+        z_threshold : float
+            Minimum z value (in current transformation) for all points to 
+            consider.
+        rmax : float
+            Horizontal distance (in m) on which points must be locally maximal
+        closest_only : bool, optional
+            Whether to only return local max that are closer to their scanner
+            than any other scanner. The default is True.
+        key : str, optional
+            Key for this pointset in pdata_dict. The default is 'local_max'
+
+        Returns
+        -------
+        None.
+
+        """
+
+        pts_np, dist_np, z_sigma_np = self.get_local_max(z_threshold, rmax,
+                                                      return_dist=True,
+                                                      return_zs=True,
+                                                      closest_only=closest_only)
+        # Create polydata
+        self.pdata_dict[key] = vtk.vtkPolyData()
+        pts = vtk.vtkPoints()
+        pts.SetData(numpy_to_vtk(pts_np, array_type=vtk.VTK_DOUBLE,
+                                 deep=True))
+        self.pdata_dict[key].SetPoints(pts)
+        dist = numpy_to_vtk(dist_np, array_type=vtk.VTK_DOUBLE, deep=True)
+        dist.SetName('dist')
+        self.pdata_dict[key].GetPointData().AddArray(dist)
+        z_sigma = numpy_to_vtk(z_sigma_np, array_type=vtk.VTK_DOUBLE, deep=True)
+        z_sigma.SetName('z_sigma')
+        self.pdata_dict[key].GetPointData().AddArray(z_sigma)
+        vgf = vtk.vtkVertexGlyphFilter()
+        vgf.SetInputData(self.pdata_dict[key])
+        vgf.Update()
+        self.pdata_dict[key] = vgf.GetOutput()
 
 class ScanArea:
     """
