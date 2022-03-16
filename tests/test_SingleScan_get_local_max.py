@@ -45,5 +45,11 @@ arr_pts, = ss.get_local_max(z_threshold, rmax)
 local_max = ss.get_local_max(z_threshold, rmax, return_dist=True, return_zs
                              =True)
 
-# %% Display
+# %% Check that all local max are separated by rmax
 
+from scipy.spatial import KDTree
+
+tree = KDTree(local_max[0][:,:2])
+pairs = tree.query_pairs(rmax, output_type='ndarray')
+
+print(pairs)

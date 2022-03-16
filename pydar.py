@@ -8411,7 +8411,10 @@ class Project:
             tree = KDTree(arr[:,:2])
             pair_ind = tree.query_pairs(rmax, output_type='ndarray')
             pair_dist = arr[:,3][pair_ind]
-            further = np.unique(pair_ind[np.argmax(pair_dist, axis=1)])
+            further_mask = np.empty(pair_ind.shape, dtype=np.bool_)
+            further_mask[:,1] = np.argmax(pair_dist, axis=1)
+            further_mask[:,0] = np.logical_not(further_mask[:,1])
+            further = np.unique(pair_ind[further_mask])
             keep_mask = np.ones(arr.shape[0], dtype=np.bool_)
             keep_mask[further] = False
             arr = arr[keep_mask,:]
