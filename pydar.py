@@ -8496,6 +8496,9 @@ class ScanArea:
         The order of the list determines the order that actions are performed.
     difference_dict : dict
         Dictionary containing the differences between pairs of scans
+    max_difference_dict : dict
+        Dictionary containing the differences of local maxes between
+        pairs of scans
         
     Methods
     -------
@@ -8524,6 +8527,9 @@ class ScanArea:
     difference_projects(project_name_0, project_name_1)
         Subtract project_0 from project_1 and store the result in 
         difference_dict.
+    difference_maxes(project_name_0, project_name_1, r_pair)
+        Compare local maxes in two scans and store result in 
+        max_difference_dict.
     
     """
     
@@ -8595,6 +8601,7 @@ class ScanArea:
         self.project_dict = {}
         self.difference_dict = {}
         self.difference_dsa_dict = {}
+        self.max_difference_dict = {}
         
         for project_name in project_names:
             self.add_project(project_name, import_mode=import_mode, 
@@ -10683,6 +10690,99 @@ class ScanArea:
         None.
 
         """
+
+    def difference_maxes(self, project_name_0, project_name_1, r_pair):
+        """
+        Find pairs of local maxes and store their differences.
+
+        Each pair of points that are within r_pair of each other is
+        stored in a PolyData as the two points and a line connecting
+        them. The project_name_0 point is always first. The z difference
+        and z_sigma (quadrature sum of individual z_sigmas) are also stored
+        in the CellData attribute.
+        
+        Parameters
+        ----------
+        project_name_0 : str
+            Name of project to subtract (usually older).
+        project_name_1 : str
+            Name of project to subtract from (usually younger).
+        r_pair : float
+            Maximum horizontal distance in m that local maxima may be
+            separated to be considered same point.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        # Get points and relevant arrays
+        pts_np_0 = vtk_to_numpy(self.project_dict[project_name_0].pdata_dict
+                                ['local_max'].GetPoints().GetData())
+
+        z_sigma_np_0 = vtk_to_numpy(self.project_dict[project_name_0]
+                                    .pdata_dict['local_max'].GetPointData()
+                                    .GetArray('z_sigma'))
+
+        pts_np_1 = vtk_to_numpy(self.project_dict[project_name_1].pdata_dict
+                                ['local_max'].GetPoints().GetData())
+        z_sigma_np_1 = vtk_to_numpy(self.project_dict[project_name_1]
+                                    .pdata_dict['local_max'].GetPointData()
+                                    .GetArray('z_sigma'))
+        
+        # Get pairs of closest points within r_pair distance
+        tree_0 = KDTree(pts_np_0[:,:2])
+        tree_1 = KDTree(pts_np_1[:,:2])
+        closest = tree_0.query_ball_tree(tree_1, r_pair)
+        # Turn closest into pairs of indices, for loop is probably only way
+        pairs = []
+        for i in range(len(closest)):
+            if len(closest[i])==0:
+                continue
+            elif len(closest[i])==1:
+                pairs.append([i, closest[i][0]])
+            else:
+                raise RuntimeError('Too many closest at: ' + str(i))
+        
+        # Create a VTK polydata of line segments
+        pdata = vtk.vtkPolyData()
+        pts = vtk.vtkPoints()
+        lines = vtk.vtkCellArray()
+        # Allocate arrays
+        max_id_np = np.empty(2*len(pairs), dtype=np.uint32)
+        z_diff_np = np.empty(len(pairs), dtype=float)
+        z_sigma_np = np.empty(len(pairs), dtype=float)
+        pts.SetNumberOfPoints(2*len(pairs))
+        # For each pair of local maxima add points and line to objects
+        for i in range(len(pairs)):
+            pts.SetPoint(2*i, pts_np_0[pairs[i][0],:])
+            pts.SetPoint(2*i + 1, pts_np_1[pairs[i][1],:])
+            max_id_np[2*i] = pairs[i][0]
+            max_id_np[2*i + 1] = pairs[i][1]            
+            lines.InsertNextCell(2)
+            lines.InsertCellPoint(2*i)
+            lines.InsertCellPoint(2*i + 1)
+            z_diff_np[i] = pts_np_1[pairs[i][1],2] - pts_np_0[pairs[i][0],2]
+            z_sigma_np[i] = np.sqrt(z_sigma_np_1[pairs[i][1]]**2 
+                                 + z_sigma_np_0[pairs[i][0]]**2)
+        # Finish assembling polydata
+        pdata.SetPoints(pts)
+        pdata.SetLines(lines)
+        arr = numpy_to_vtk(max_id_np, deep=True, 
+                           array_type=vtk.VTK_UNSIGNED_INT)
+        arr.SetName('max_id')
+        pdata.GetPointData().AddArray(arr)
+        arr = numpy_to_vtk(z_diff_np, deep=True, array_type=vtk.VTK_DOUBLE)
+        arr.SetName('z_diff')
+        pdata.GetCellData().AddArray(arr)
+        pdata.GetCellData().SetScalars(arr)
+        arr = numpy_to_vtk(z_sigma_np, deep=True, array_type=vtk.VTK_DOUBLE)
+        arr.SetName('z_sigma')
+        pdata.GetCellData().AddArray(arr)
+        pdata.Modified()
+
+        self.max_difference_dict[(project_name_0, project_name_1)] = pdata
     
 class ClassFilter:
     """
