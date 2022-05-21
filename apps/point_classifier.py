@@ -519,6 +519,11 @@ class MainWindow(Qt.QMainWindow):
         trans_checkbox = Qt.QCheckBox('Use PRCS')
         opt_layout.addWidget(trans_checkbox)
         temp_layout = Qt.QHBoxLayout()
+        temp_layout.addWidget(Qt.QLabel("Trans Name:"))
+        self.proj_t_name_0 = Qt.QLineEdit('current_transform')
+        temp_layout.addWidget(self.proj_t_name_0)
+        opt_layout.addLayout(temp_layout)
+        temp_layout = Qt.QHBoxLayout()
         temp_layout.addWidget(Qt.QLabel("Trans Suffix:"))
         self.proj_t_suffix_0 = Qt.QLineEdit('')
         temp_layout.addWidget(self.proj_t_suffix_0)
@@ -984,8 +989,9 @@ class MainWindow(Qt.QMainWindow):
         # Set the transform appropriately
         if self.proj_t_suffix_0.isEnabled():
             # If the transform suffix is enabled use that
-            self.project.read_transforms(suffix=self.proj_t_suffix_0.text())
-            self.project.apply_transforms(['current_transform'])
+            self.project.read_transforms(name=self.proj_t_name_0.text(),
+                                         suffix=self.proj_t_suffix_0.text())
+            self.project.apply_transforms([self.proj_t_name_0.text()])
         else:
             self.project.apply_transforms(['sop'])
         

@@ -38,7 +38,6 @@ import json
 import math
 import warnings
 import time
-import utils_find_1st as utf1st
 from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 from sklearn.experimental import enable_hist_gradient_boosting
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -68,6 +67,10 @@ try:
     import gpytorch
 except ModuleNotFoundError:
     print('torch and gpytorch were not imported')
+try:
+    import utils_find_1st as utf1st
+except ModuleNotFoundError:
+    print('utf1st not loaded, local max finding will not work')
 
 class TiePointList:
     """Class to contain tiepointlist object and methods.
@@ -1148,10 +1151,14 @@ class SingleScan:
             matches = [pattern.fullmatch(filename) for filename in filenames]
             if any(matches):
                 # Create filename input
-                filename = next(f for f, m in zip(filenames, matches) if m)
+                #filename = next(f for f, m in zip(filenames, matches) if m)
+                filenames = [f for f, m in zip(filenames, matches) if m]
                 json_list = [os.path.join(self.project_path, self.project_name, 
-                             "lasfiles", filename)]
+                             "lasfiles", filename) for filename in filenames]
+                if len(filenames) > 1:
+                    json_list.append({"type": "filters.merge"})
                 json_data = json.dumps(json_list, indent=4)
+                #print(json_data)
                 # Load scan into numpy array
                 pipeline = pdal.Pipeline(json_data)
                 _ = pipeline.execute()
@@ -1216,9 +1223,7 @@ class SingleScan:
                         "type": "Pointset Source",
                         "git_hash": git_hash,
                         "method": "SingleScan.__init__",
-                        "filename": os.path.join(self.project_path, 
-                                                 self.project_name, 
-                                                 "lasfiles", filename),
+                        "filenames": json_data,
                         "params": {"import_mode": import_mode,
                                    "las_fieldnames": las_fieldnames}
                         }
@@ -4982,7 +4987,8 @@ class Project:
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].read_scan()
     
-    def write_current_transforms(self, suffix='', freeze=False, 
+    def write_current_transforms(self, suffix='', name='current_transform',
+                                 freeze=False, 
                                  overwrite_frozen=False):
         """
         Have each SingleScan write its current transform to a file.
@@ -5010,11 +5016,12 @@ class Project:
         
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].write_current_transform(suffix=suffix,
+                                                              name=name,
                                                               freeze=freeze,
                                                               overwrite_frozen=
                                                               overwrite_frozen)
     
-    def read_transforms(self, suffix=''):
+    def read_transforms(self, name='current_transform', suffix=''):
         """
         Have each SingleScan read a transform from file
 
@@ -5030,7 +5037,7 @@ class Project:
         """
         
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].read_transform(suffix=suffix)
+            self.scan_dict[scan_name].read_transform(name=name, suffix=suffix)
     
     def load_man_class(self):
         """
@@ -5573,7 +5580,7 @@ class Project:
                         upper_threshold=1000, colorbar=True, field='Elevation',
                         mapview=False, profile_list=[], show_scanners=False,
                         scanner_color='Gray', scanner_length=150, 
-                        show_labels=False, pdata_list=[]):
+                        show_labels=False, pdata_list=[], addtl_actors=[]):
         """
         Display all scans in a vtk interactive window.
         
@@ -5624,6 +5631,8 @@ class Project:
         show_labels : bool, optional
             Whether to display the labels for each SingleScan. The default is
             False.
+        addtl_actors : list, optional
+            List of additonal actors to render, the default is []
 
         Returns
         -------
@@ -5729,6 +5738,9 @@ class Project:
                 actor.GetProperty().SetOpacity(0.8)
             actor.GetProperty().RenderLinesAsTubesOn()
             actor.GetProperty().RenderPointsAsSpheresOn()
+            renderer.AddActor(actor)
+
+        for actor in addtl_actors:
             renderer.AddActor(actor)
 
         if colorbar:
@@ -9998,6 +10010,8 @@ class ScanArea:
         None.
 
         """
+
+        raise RuntimeError('Do not use this function, need to update form poisson')
         
         if len(sub_list)==0:
             for key in self.project_dict:
@@ -10751,6 +10765,7 @@ class ScanArea:
         lines = vtk.vtkCellArray()
         # Allocate arrays
         max_id_np = np.empty(2*len(pairs), dtype=np.uint32)
+        z_sigma_np_pts = np.empty(2*len(pairs), dtype=float)
         z_diff_np = np.empty(len(pairs), dtype=float)
         z_sigma_np = np.empty(len(pairs), dtype=float)
         pts.SetNumberOfPoints(2*len(pairs))
@@ -10759,7 +10774,9 @@ class ScanArea:
             pts.SetPoint(2*i, pts_np_0[pairs[i][0],:])
             pts.SetPoint(2*i + 1, pts_np_1[pairs[i][1],:])
             max_id_np[2*i] = pairs[i][0]
-            max_id_np[2*i + 1] = pairs[i][1]            
+            max_id_np[2*i + 1] = pairs[i][1]
+            z_sigma_np_pts[2*i] = z_sigma_np_0[pairs[i][0]]
+            z_sigma_np_pts[2*i + 1] = z_sigma_np_1[pairs[i][1]]
             lines.InsertNextCell(2)
             lines.InsertCellPoint(2*i)
             lines.InsertCellPoint(2*i + 1)
@@ -10780,8 +10797,11 @@ class ScanArea:
         arr = numpy_to_vtk(z_sigma_np, deep=True, array_type=vtk.VTK_DOUBLE)
         arr.SetName('z_sigma')
         pdata.GetCellData().AddArray(arr)
+        arr = numpy_to_vtk(z_sigma_np_pts, deep=True, array_type=vtk.VTK_DOUBLE)
+        arr.SetName('z_sigma')
+        pdata.GetPointData().AddArray(arr)
+        
         pdata.Modified()
-
         self.max_difference_dict[(project_name_0, project_name_1)] = pdata
     
 class ClassFilter:
@@ -11162,6 +11182,8 @@ def mosaic_date_parser(project_name):
             date = year + '-' + seq_match[0][2:4] + '-' + seq_match[0][:2]
         elif year == '2019':
             date = year + '-' + seq_match[0][:2] + '-' + seq_match[0][2:4]
+        elif year == '2022':
+            date = year + '-' + seq_match[0][2:4] + '-' + seq_match[0][:2]
     else:
         return None
     
