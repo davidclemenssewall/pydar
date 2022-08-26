@@ -8490,6 +8490,79 @@ class Project:
         vgf.Update()
         self.pdata_dict[key] = vgf.GetOutput()
 
+    def save_local_max(self, suffix='', key='local_max'):
+        """
+        Saves the local max in the npyfiles directory NOT ROBUST
+
+        Parameters
+        ----------
+        suffix : str, optional
+            Suffix for directory to write to. The default is ''.
+        key : str, optional
+            Key for this pointset in pdata_dict. The default is 'local_max'
+
+        Returns:
+        --------
+        None.
+
+        """
+
+        try:
+            pdata = self.pdata_dict[key]
+        except KeyError:
+            raise RuntimeWarning('Key not found in pdata_dict. Nothing saved')
+            return
+        # Get npy arrays
+        pts_np = vtk_to_numpy(pdata.GetPoints().GetData())
+        dist_np = vtk_to_numpy(pdata.GetPointData().GetArray('dist'))
+        z_sigma_np = vtk_to_numpy(pdata.GetPointData().GetArray('z_sigma'))
+        # Save a npz file
+        np.savez(os.path.join(self.project_path, self.project_name, 
+                              'npyfiles' + suffix, key),
+                 pts_np=pts_np, dist_np=dist_np, z_sigma_np=z_sigma_np)
+
+    def load_local_max(self, suffix='', key='local_max'):
+        """
+        Loads the local max in the npyfiles directory NOT ROBUST
+
+        Parameters
+        ----------
+        suffix : str, optional
+            Suffix for directory to write to. The default is ''.
+        key : str, optional
+            Key for this pointset in pdata_dict. The default is 'local_max'
+
+        Returns:
+        --------
+        None.
+
+        """
+
+        raise RuntimeWarning('No transform or history information is stored ' +
+                             'with this numpy file. Be sure you know where ' +
+                             'it came from!')
+        with np.load(os.path.join(self.project_path, self.project_name, 
+                                    'npyfiles' + suffix, key)) as data:
+            pts_np = data['pts_np']
+            dist_np = data['dist_np']
+            z_sigma_np = data['z_sigma_np']
+            # Create polydata
+            self.pdata_dict[key] = vtk.vtkPolyData()
+            pts = vtk.vtkPoints()
+            pts.SetData(numpy_to_vtk(pts_np, array_type=vtk.VTK_DOUBLE,
+                                     deep=True))
+            self.pdata_dict[key].SetPoints(pts)
+            dist = numpy_to_vtk(dist_np, array_type=vtk.VTK_DOUBLE, deep=True)
+            dist.SetName('dist')
+            self.pdata_dict[key].GetPointData().AddArray(dist)
+            z_sigma = numpy_to_vtk(z_sigma_np, array_type=vtk.VTK_DOUBLE, deep=True)
+            z_sigma.SetName('z_sigma')
+            self.pdata_dict[key].GetPointData().AddArray(z_sigma)
+            vgf = vtk.vtkVertexGlyphFilter()
+            vgf.SetInputData(self.pdata_dict[key])
+            vgf.Update()
+            self.pdata_dict[key] = vgf.GetOutput()
+
 class ScanArea:
     """
     Manage multiple scans from the same area.
