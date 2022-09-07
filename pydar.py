@@ -4639,13 +4639,17 @@ class Project:
         Name of filter currently applied to all scans in project.
     mesh : vtkPolyData
         Polydata containing a mesh representation of the project.
-    image : vtkImageData
-        Image data containing gridded height information over specified region
-    imageTransform : vtkTransform
-        Transform for going from mesh reference frame to image ref
+    image_dict : dict
+        Dictionary containing vtkImageData with gridded height information over
+        specified regions. For backwards compatability images if a key isn't
+        specified it will be ''
+    image_transform_dict : dict
+        Dictionary of vtkTransforms with same key as image_dict
+        Transforms for going from mesh reference frame to image ref
         frame. Needed because vtkImageData can only be axis aligned.
-    dsa_image : datasetadapter
-        Wrapper to interact with image via numpy
+    dsa_image_dict : dict
+        Dictionary of datasetadapter wrappers to interact with image via numpy
+        Same key as image_dict and image_transform_dict
     profile_dict : dict
         Dictionary holding polydata for each profile that we create in the
         project. Each entry is a Polydata whose points are a profile and the
@@ -4679,7 +4683,7 @@ class Project:
         Update transform for each scan and update current_transform_list.
     display_project(z_min, z_max, lower_threshold=-1000, upper_threshold=1000)
         Display project in a vtk interactive window.
-    display_image(z_min, z_max)
+    display_image(z_min, z_max, key='')
         Display project image in a vtk interactive window.
     write_merged_points(output_name=self.project_name + '_merged.vtp')
         Merge all transformed and filtered pointclouds and write to file.
@@ -4735,32 +4739,32 @@ class Project:
         don't want to have to repick all points.
     get_merged_points()
         Get the merged points as a polydata
-    mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0)
+    mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0, key='')
         Interpolate mesh into image.
     merged_points_to_image(x0, y0, nx, ny, dx, dy, yaw, max_pts_bucket, 
-                           lengthscale, outputscale)
+                           lengthscale, outputscale, key='')
         Convert a rectangular area of points to an image using gpytorch.
-    plot_image(z_min, z_max, cmap='inferno')
+    plot_image(z_min, z_max, cmap='inferno', key='')
         Plots the image using matplotlib
-    get_np_nan_image()
+    get_np_nan_image(key='')
         Convenience function for copying the image to a numpy object.
     create_empirical_cdf(bounds)
         Creates an empirical cdf from z-values of all points within bounds.
-    create_empirical_cdf_image(z_min, z_max)
+    create_empirical_cdf_image(z_min, z_max, key='')
         Creates an empirical cdf from z-values of image.
     set_empirical_cdf(x, cdf, bounds)
         Set the empirical cdf
     create_normalized_heights()
         Create the normalized heights, assumes that empirical cdf exists.
-    create_im_gaus()
+    create_im_gaus(key='')
         Create normalized image based on the empirical cdf
     add_theta(theta1, theta)
         Adds the GMRF parameters theta1 and theta to attributes.
-    create_im_nan_border(buffer)
+    create_im_nan_border(buffer, key='')
         Creates a mask for which missing pixels not to infill.
-    write_image(output_name=None)
+    write_image(output_name=None, key=None)
         Write vtkImageData to file. Useful for saving im_nan_border.
-    read_image(image_path=None)
+    read_image(image_path=None, key=None)
         Read image from file.
     create_gmrf()
         Create GMRF for pixel infilling. Generates mu_agivenb and sparse_LAA.
@@ -4848,6 +4852,10 @@ class Project:
         self.current_transform_list = []
         self.profile_dict = {}
         self.pdata_dict = {}
+        self.image_dict = {}
+        self.image_transform_dict = {}
+        self.dsa_image_dict = {}
+        self.image_history_dict_dict = {}
         
         if import_mode is None:
             # Issue a deprecated warning
@@ -5931,7 +5939,8 @@ class Project:
         renderWindow.Finalize()
         del renderWindow
         
-    def point_to_grid_average_image(self, nx, ny, dx, dy, x0, y0, yaw=0):
+    def point_to_grid_average_image(self, nx, ny, dx, dy, x0, y0, yaw=0,
+                                    key='', overwrite=False):
         """
         Convert a rectangular area of points to an image by gridded averaging
 
@@ -5954,12 +5963,28 @@ class Project:
         yaw : float, optional
             yaw angle in degrees of image to create, for generating 
             non-axis aligned image. The default is 0.
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
+        overwrite : bool, optional
+            Whether to overwrite preexisting image. If False and key already
+            exists in image_dict will raise a warning. The default is False.
 
         Returns:
         --------
         None
 
         """
+
+        # Check if key already exists
+        if key in self.image_dict.keys():
+            if overwrite:
+                raise RuntimeWarning('You are overwriting image: ' + key)
+            else:
+                raise RuntimeWarning(key + 'already exists in image_dict ' +
+                                     'set overwrite=True if you want to' + 
+                                     'overwrite')
+                return
 
         # Get the points in this rectangular region
         pdata, point_history_dict = self.get_merged_points(history_dict=True,
@@ -5968,16 +5993,16 @@ class Project:
         # Transform points into image reference frame, needed because
         # vtkImageData can only be axis-aligned. We'll save the transform 
         # filter in case we need it for mapping flags, etc, into image
-        self.imageTransform = vtk.vtkTransform()
-        self.imageTransform.PostMultiply()
+        self.image_transform_dict[key] = vtk.vtkTransform()
+        self.image_transform_dict[key].PostMultiply()
         # Translate origin to be at (x0, y0)
-        self.imageTransform.Translate(-x0, -y0, 0)
+        self.image_transform_dict[key].Translate(-x0, -y0, 0)
         # Rotate around this origin
-        self.imageTransform.RotateZ(-yaw)
+        self.image_transform_dict[key].RotateZ(-yaw)
         
         # Create transform filter and apply
         imageTransformFilter = vtk.vtkTransformPolyDataFilter()
-        imageTransformFilter.SetTransform(self.imageTransform)
+        imageTransformFilter.SetTransform(self.image_transform_dict[key])
         imageTransformFilter.SetInputData(pdata)
         imageTransformFilter.Update()
 
@@ -6002,24 +6027,24 @@ class Project:
         _, grid_mean = gridded_counts_means(pts_np, edges)
 
         # Create image
-        self.image = vtk.vtkImageData()
-        self.image.SetDimensions(nx, ny, 1)
-        self.image.SetSpacing(dx, dy, 1)
-        self.image.SetOrigin(0, 0, 0)
+        self.image_dict[key] = vtk.vtkImageData()
+        self.image_dict[key].SetDimensions(nx, ny, 1)
+        self.image_dict[key].SetSpacing(dx, dy, 1)
+        self.image_dict[key].SetOrigin(0, 0, 0)
         warnings.warn('Still not sure if origin should be offset half grid cell')
         # Store np arrays related to image
         if not hasattr(self, 'np_dict'):
             self.np_dict = {}
-        self.np_dict['image_z'] = np.ravel(grid_mean, order='F')
-        vtk_arr = numpy_to_vtk(self.np_dict['image_z'], deep=False, 
+        self.np_dict[('image_z', key)] = np.ravel(grid_mean, order='F')
+        vtk_arr = numpy_to_vtk(self.np_dict[('image_z', key)], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('Elevation')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.image.GetPointData().SetActiveScalars('Elevation')
-        self.image.Modified()
+        self.image_dict[key].GetPointData().AddArray(vtk_arr)
+        self.image_dict[key].GetPointData().SetActiveScalars('Elevation')
+        self.image_dict[key].Modified()
 
         # Create history dict
-        self.image_history_dict = {
+        self.image_history_dict_dict[key] = {
             "type": "Image Generator",
             "git_hash": get_git_hash(),
             "method": "Project.point_to_grid_average_image",
@@ -6028,7 +6053,7 @@ class Project:
             }
 
         # Also wrap with a datasetadaptor for working with numpy
-        self.dsa_image = dsa.WrapDataObject(self.image)
+        self.dsa_image_dict[key] = dsa.WrapDataObject(self.image_dict[key])
 
     def merged_points_to_image(self, nx, ny, dx, dy, x0, y0, lengthscale, 
                                outputscale, nu, yaw=0, n_neighbors=50, max_pts=
@@ -6036,7 +6061,8 @@ class Project:
                                corner_coords=None,
                                max_dist=None, optimize=False, learning_rate=0.1,
                                n_iter=5, max_time=0.5, optim_param=None,
-                               multiply_outputscale=False, var_radius=None):
+                               multiply_outputscale=False, var_radius=None,
+                               key='', overwrite=False):
         """
         Convert a rectangular area of points to an image using gpytorch.
         
@@ -6118,13 +6144,28 @@ class Project:
             using the variance of the points in the chunk, we use the variance
             of the z values of points within var_radius of the centroid of
             the chunk. The default is None.
-
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
+        overwrite : bool, optional
+            Whether to overwrite preexisting image. If False and key already
+            exists in image_dict will raise a warning. The default is False.
 
         Returns
         -------
         None
 
         """
+
+        # Check if key already exists
+        if key in self.image_dict.keys():
+            if overwrite:
+                raise RuntimeWarning('You are overwriting image: ' + key)
+            else:
+                raise RuntimeWarning(key + 'already exists in image_dict ' +
+                                     'set overwrite=True if you want to' + 
+                                     'overwrite')
+                return
 
         # Get the points in this rectangular region
         pdata, point_history_dict = self.get_merged_points(history_dict=True,
@@ -6133,16 +6174,16 @@ class Project:
         # Transform points into image reference frame, needed because
         # vtkImageData can only be axis-aligned. We'll save the transform 
         # filter in case we need it for mapping flags, etc, into image
-        self.imageTransform = vtk.vtkTransform()
-        self.imageTransform.PostMultiply()
+        self.image_transform_dict[key] = vtk.vtkTransform()
+        self.image_transform_dict[key].PostMultiply()
         # Translate origin to be at (x0, y0)
-        self.imageTransform.Translate(-x0, -y0, 0)
+        self.image_transform_dict[key].Translate(-x0, -y0, 0)
         # Rotate around this origin
-        self.imageTransform.RotateZ(-yaw)
+        self.image_transform_dict[key].RotateZ(-yaw)
         
         # Create transform filter and apply
         imageTransformFilter = vtk.vtkTransformPolyDataFilter()
-        imageTransformFilter.SetTransform(self.imageTransform)
+        imageTransformFilter.SetTransform(self.image_transform_dict[key])
         imageTransformFilter.SetInputData(pdata)
         imageTransformFilter.Update()
 
@@ -6326,53 +6367,53 @@ class Project:
 
 
         # Create image
-        self.image = vtk.vtkImageData()
-        self.image.SetDimensions(nx, ny, 1)
-        self.image.SetSpacing(dx, dy, 1)
-        self.image.SetOrigin(0, 0, 0)
+        self.image_dict[key] = vtk.vtkImageData()
+        self.image_dict[key].SetDimensions(nx, ny, 1)
+        self.image_dict[key].SetSpacing(dx, dy, 1)
+        self.image_dict[key].SetOrigin(0, 0, 0)
         # Store np arrays related to image
         if not hasattr(self, 'np_dict'):
             self.np_dict = {}
-        self.np_dict['image_z'] = grid_mean
-        vtk_arr = numpy_to_vtk(self.np_dict['image_z'], deep=False, 
+        self.np_dict[('image_z', key)] = grid_mean
+        vtk_arr = numpy_to_vtk(self.np_dict[('image_z', key)], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('Elevation')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_lower'] = grid_lower
-        vtk_arr = numpy_to_vtk(self.np_dict['image_z_lower'], deep=False, 
+        self.image_dict[key].GetPointData().AddArray(vtk_arr)
+        self.np_dict[('image_z_lower', key)] = grid_lower
+        vtk_arr = numpy_to_vtk(self.np_dict[('image_z_lower', key)], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_lower')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_upper'] = grid_upper
-        vtk_arr = numpy_to_vtk(self.np_dict['image_z_upper'], deep=False, 
+        self.image_dict[key].GetPointData().AddArray(vtk_arr)
+        self.np_dict[('image_z_upper', key)] = grid_upper
+        vtk_arr = numpy_to_vtk(self.np_dict[('image_z_upper', key)], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_upper')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['image_z_ci'] = grid_upper - grid_lower
-        vtk_arr = numpy_to_vtk(self.np_dict['image_z_ci'], deep=False, 
+        self.image_dict[key].GetPointData().AddArray(vtk_arr)
+        self.np_dict[('image_z_ci', key)] = grid_upper - grid_lower
+        vtk_arr = numpy_to_vtk(self.np_dict[('image_z_ci', key)], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('z_ci')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['gp_mean'] = gp_mean
-        vtk_arr = numpy_to_vtk(self.np_dict['gp_mean'], deep=False, 
+        self.image_dict[key].GetPointData().AddArray(vtk_arr)
+        self.np_dict[('gp_mean', key)] = gp_mean
+        vtk_arr = numpy_to_vtk(self.np_dict[('gp_mean', key)], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('gp_mean')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['gp_outputscale'] = gp_outputscale
-        vtk_arr = numpy_to_vtk(self.np_dict['gp_outputscale'], deep=False, 
+        self.image_dict[key].GetPointData().AddArray(vtk_arr)
+        self.np_dict[('gp_outputscale', key)] = gp_outputscale
+        vtk_arr = numpy_to_vtk(self.np_dict[('gp_outputscale', key)], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('gp_outputscale')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.np_dict['gp_lengthscale'] = gp_lengthscale
-        vtk_arr = numpy_to_vtk(self.np_dict['gp_lengthscale'], deep=False, 
+        self.image_dict[key].GetPointData().AddArray(vtk_arr)
+        self.np_dict[('gp_lengthscale', key)] = gp_lengthscale
+        vtk_arr = numpy_to_vtk(self.np_dict[('gp_lengthscale', key)], deep=False, 
                                array_type=vtk.VTK_FLOAT)
         vtk_arr.SetName('gp_lengthscale')
-        self.image.GetPointData().AddArray(vtk_arr)
-        self.image.GetPointData().SetActiveScalars('Elevation')
-        self.image.Modified()
+        self.image_dict[key].GetPointData().AddArray(vtk_arr)
+        self.image_dict[key].GetPointData().SetActiveScalars('Elevation')
+        self.image_dict[key].Modified()
 
         # Create history dict
-        self.image_history_dict = {
+        self.image_history_dict_dict[key] = {
             "type": "Image Generator",
             "git_hash": get_git_hash(),
             "method": "Project.merged_points_to_image",
@@ -6383,9 +6424,10 @@ class Project:
             }
 
         # Also wrap with a datasetadaptor for working with numpy
-        self.dsa_image = dsa.WrapDataObject(self.image)
+        self.dsa_image_dict[key] = dsa.WrapDataObject(self.image_dict[key])
 
-    def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0):
+    def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0, key='', 
+                      overwrite=False):
         """
         Interpolate mesh at regularly spaced points.
         
@@ -6410,6 +6452,12 @@ class Project:
         yaw : float, optional
             yaw angle in degerees of image to create, for generating 
             non-axis aligned image. The default is 0
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
+        overwrite : bool, optional
+            Whether to overwrite preexisting image. If False and key already
+            exists in image_dict will raise a warning. The default is False.
 
         Returns
         -------
@@ -6417,6 +6465,16 @@ class Project:
 
         """
         
+        # Check if key already exists
+        if key in self.image_dict.keys():
+            if overwrite:
+                raise RuntimeWarning('You are overwriting image: ' + key)
+            else:
+                raise RuntimeWarning(key + 'already exists in image_dict ' +
+                                     'set overwrite=True if you want to' + 
+                                     'overwrite')
+                return
+
         # Use elevation filter to write z data to scalars
         elevFilter = vtk.vtkSimpleElevationFilter()
         elevFilter.SetInputData(self.mesh)
@@ -6433,16 +6491,16 @@ class Project:
         # Transform mesh into image reference frame, needed because
         # vtkImageData can only be axis-aligned. We'll save the transform 
         # filter in case we need it for mapping flags, etc, into image
-        self.imageTransform = vtk.vtkTransform()
-        self.imageTransform.PostMultiply()
+        self.image_transform_dict[key] = vtk.vtkTransform()
+        self.image_transform_dict[key].PostMultiply()
         # Translate origin to be at (x0, y0)
-        self.imageTransform.Translate(-x0, -y0, 0)
+        self.image_transform_dict[key].Translate(-x0, -y0, 0)
         # Rotate around this origin
-        self.imageTransform.RotateZ(-yaw)
+        self.image_transform_dict[key].RotateZ(-yaw)
         
         # Create transform filter and apply
         imageTransformFilter = vtk.vtkTransformPolyDataFilter()
-        imageTransformFilter.SetTransform(self.imageTransform)
+        imageTransformFilter.SetTransform(self.image_transform_dict[key])
         imageTransformFilter.SetInputData(flattener.GetOutput())
         imageTransformFilter.Update()
         
@@ -6459,20 +6517,18 @@ class Project:
         probe.SetSourceData(imageTransformFilter.GetOutput())
         probe.SetInputData(im)
         probe.Update()
-        # If we've already created an image delete and make way for this one
-        if hasattr(self, 'image'):
-            del(self.image)
-        self.image = probe.GetOutput()
+        
+        self.image_dict[key] = probe.GetOutput()
         
         # Also wrap with a datasetadaptor for working with numpy
-        self.dsa_image = dsa.WrapDataObject(self.image)
+        self.dsa_image_dict[key] = dsa.WrapDataObject(self.image_dict[key])
         
         # and use dsa to set NaN values where we have no data
-        bool_arr = self.dsa_image.PointData['vtkValidPointMask']==0
-        self.dsa_image.PointData['Elevation'][bool_arr] = np.NaN
+        bool_arr = self.dsa_image_dict[key].PointData['vtkValidPointMask']==0
+        self.dsa_image_dict[key].PointData['Elevation'][bool_arr] = np.NaN
     
     def get_image(self, field='Elevation', warp_scalars=False,
-                  v_min=-9999.0, nan_value=None):
+                  v_min=-9999.0, nan_value=None, key=''):
         """
         Return image as vtkImageData or vtkPolyData depending on warp_scalars
 
@@ -6482,6 +6538,9 @@ class Project:
             Which field in PointData to set active. The default is 'Elevation'
         warp_scalars : bool, optional
             Whether to warp the scalars in the image to create 3D surface
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
 
         Returns
         -------
@@ -6489,11 +6548,11 @@ class Project:
 
         """
         
-        self.image.GetPointData().SetActiveScalars(field)
+        self.image_dict[key].GetPointData().SetActiveScalars(field)
         if warp_scalars:
             # copy image
             im = vtk.vtkImageData()
-            im.DeepCopy(self.image)
+            im.DeepCopy(self.image_dict[key])
             field_np = vtk_to_numpy(im.GetPointData().GetArray(field))
             if nan_value:
                 field_np[np.isnan(field_np)] = nan_value
@@ -6524,14 +6583,14 @@ class Project:
             return normals.GetOutput()
         
         else:
-            return self.image
+            return self.image_dict[key]
     
     def display_image(self, z_min, z_max, field='Elevation',
                       warp_scalars=False, color_field=None,
                       show_points=False, profile_list=[],
                       show_scanners=False,
                       scanner_color='Gray', scanner_length=150,
-                      pdata_list=[]):
+                      pdata_list=[], key=''):
         """
         Display image in vtk interactive window.
 
@@ -6572,6 +6631,9 @@ class Project:
         scanner_length : float, optional
             Length of the ray indicating the scanner's start orientation in m.
             The default is 150
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
 
         Returns
         -------
@@ -6594,7 +6656,8 @@ class Project:
         
         if warp_scalars:
             mapper = vtk.vtkPolyDataMapper()
-            min_scalar = np.nanmin(vtk_to_numpy(self.image.GetPointData().
+            min_scalar = np.nanmin(vtk_to_numpy(self.image_dict[key]
+                                                .GetPointData().
                                                 GetArray(field)))
             mapper.SetInputData(self.get_image(field, warp_scalars, 
                                                v_min=min_scalar))
@@ -6603,7 +6666,7 @@ class Project:
             
         else:
             mapper = vtk.vtkDataSetMapper()
-            mapper.SetInputData(self.get_image(field, warp_scalars))
+            mapper.SetInputData(self.get_image(field, warp_scalars, key=key))
             
         mapper.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
         mapper.SetScalarRange(z_min, z_max)
@@ -6623,7 +6686,7 @@ class Project:
                                                                       field=
                                                                       field)
                 self.scan_dict[scan_name].actor.SetUserTransform(
-                    self.imageTransform)
+                    self.image_transform_dict[key])
                 renderer.AddActor(self.scan_dict[scan_name].actor)
 
         # Add scanners if requested
@@ -6635,18 +6698,18 @@ class Project:
                 transform = vtk.vtkTransform()
                 transform.DeepCopy(self.scan_dict[scan_name].scannerActor
                                    .GetUserTransform())
-                transform.Concatenate(self.imageTransform)
+                transform.Concatenate(self.image_transform_dict[key])
                 self.scan_dict[scan_name].scannerActor.SetUserTransform(
                     transform)
                 self.scan_dict[scan_name].scannerText.AddPosition(
-                    self.imageTransform.GetPosition())
+                    self.image_transform_dict[key].GetPosition())
                 renderer.AddActor(self.scan_dict[scan_name].scannerActor)
                 renderer.AddActor(self.scan_dict[scan_name].scannerText)
 
         # Add requested profiles
         for profile_tup in profile_list:
             transformFilter = vtk.vtkTransformPolyDataFilter()
-            transformFilter.SetTransform(self.imageTransform)
+            transformFilter.SetTransform(self.image_transform_dict[key])
             transformFilter.SetInputData(self.profile_dict[profile_tup[0]])
             transformFilter.Update()
             mapper = vtk.vtkPolyDataMapper()
@@ -6681,7 +6744,7 @@ class Project:
         # Add requested pdata
         for profile_tup in pdata_list:
             transformFilter = vtk.vtkTransformPolyDataFilter()
-            transformFilter.SetTransform(self.imageTransform)
+            transformFilter.SetTransform(self.image_transform_dict[key])
             transformFilter.SetInputData(self.pdata_dict[profile_tup[0]])
             transformFilter.Update()
             mapper = vtk.vtkPolyDataMapper()
@@ -6744,7 +6807,7 @@ class Project:
                          roll=0, image_scale=500, lower_threshold=-1000, 
                          upper_threshold=1000, mode='map', colorbar=True,
                          name='', light=None, profile_list=[],
-                         window_size=(2000,1000)):
+                         window_size=(2000,1000), key=''):
         """
         Write an image of the image to the snapshots folder.
         
@@ -6780,6 +6843,9 @@ class Project:
             Whether to display a colorbar.
         name : str, optional
             Name to append to this snapshot. The default is ''.
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
 
         Returns
         -------
@@ -6790,10 +6856,10 @@ class Project:
         # Get image
         if warp_scalars:
             mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputData(self.get_image(field, warp_scalars))
+            mapper.SetInputData(self.get_image(field, warp_scalars, key=key))
         else:
             mapper = vtk.vtkDataSetMapper()
-            mapper.SetInputData(self.get_image(field, warp_scalars))
+            mapper.SetInputData(self.get_image(field, warp_scalars, key=key))
         mapper.SetLookupTable(mplcmap_to_vtkLUT(z_min, z_max))
         mapper.SetScalarRange(z_min, z_max)
         
@@ -6806,7 +6872,7 @@ class Project:
         # Add requested profiles
         for profile_tup in profile_list:
             transformFilter = vtk.vtkTransformPolyDataFilter()
-            transformFilter.SetTransform(self.imageTransform)
+            transformFilter.SetTransform(self.image_transform_dict[key])
             transformFilter.SetInputData(self.profile_dict[profile_tup[0]])
             transformFilter.Update()
             mapper = vtk.vtkPolyDataMapper()
@@ -6886,7 +6952,8 @@ class Project:
         renderWindow.Finalize()
         del renderWindow
     
-    def plot_image(self, z_min, z_max, cmap='inferno', figsize=(15, 15)):
+    def plot_image(self, z_min, z_max, cmap='inferno', figsize=(15, 15),
+                   key=''):
         """
         Plot the image of this project using matplotlib
 
@@ -6900,6 +6967,9 @@ class Project:
             Name of matplotlib colormap to use. The default is 'inferno'.
         figsize : tuple, optional
             Figure size. The default is (15, 15)
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
 
         Returns
         -------
@@ -6908,9 +6978,11 @@ class Project:
         """
         
         # Use point mask to create array with NaN's where we have no data
-        nan_image = copy.deepcopy(self.dsa_image.PointData['Elevation'])
-        nan_image[self.dsa_image.PointData['vtkValidPointMask']==0] = np.NaN
-        dims = self.image.GetDimensions()
+        nan_image = copy.deepcopy(self.dsa_image_dict[key]
+                                  .PointData['Elevation'])
+        nan_image[self.dsa_image_dict[key]
+         .PointData['vtkValidPointMask']==0] = np.NaN
+        dims = self.image_dict[key].GetDimensions()
         nan_image = nan_image.reshape((dims[1], dims[0]))
         
         # Plot
@@ -6922,9 +6994,15 @@ class Project:
         
         return f, ax
     
-    def get_np_nan_image(self):
+    def get_np_nan_image(self, key=''):
         """
         Convenience function for copying the image to a numpy object.
+
+        Parameters
+        ----------
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
 
         Returns
         -------
@@ -6933,10 +7011,12 @@ class Project:
         """
         
         # Use point mask to create array with NaN's where we have no data
-        nan_image = copy.deepcopy(self.dsa_image.PointData['Elevation'])
-        if 'vtkValidPointMask' in self.dsa_image.PointData:
-            nan_image[self.dsa_image.PointData['vtkValidPointMask']==0] = np.NaN
-        dims = self.image.GetDimensions()
+        nan_image = copy.deepcopy(self.dsa_image_dict[key]
+                                  .PointData['Elevation'])
+        if 'vtkValidPointMask' in self.dsa_image_dict[key].PointData:
+            nan_image[self.dsa_image_dict[key]
+             .PointData['vtkValidPointMask']==0] = np.NaN
+        dims = self.image_dict[key].GetDimensions()
         nan_image = nan_image.reshape((dims[1], dims[0]))
         
         return nan_image
@@ -7169,7 +7249,7 @@ class Project:
         # Return once we are within tolerance
         return extractPoints.GetOutput(), d
     
-    def image_transect(self, x0, y0, x1, y1, N, key):
+    def image_transect(self, x0, y0, x1, y1, N, key, image_key=''):
         """
         Sample a transect through the current image and save in profiles.
         
@@ -7187,6 +7267,9 @@ class Project:
             Number of points to put in transect.
         key : const (str, tuple, etc)
             Key to store this profile in profile_dict under.
+        image_key : str, optional
+            Key for the image in image_dict.
+            The default is '' (for backward compatability)
 
         Returns:
         --------
@@ -7195,8 +7278,8 @@ class Project:
         """
 
         # Get start and end points in image reference frame
-        start = self.imageTransform.TransformPoint(x0, y0, 0)
-        end = self.imageTransform.TransformPoint(x1, y1, 0)
+        start = self.image_transform_dict[image_key].TransformPoint(x0, y0, 0)
+        end = self.image_transform_dict[image_key].TransformPoint(x1, y1, 0)
         
         # Create transect in image coordinates
         pts_np = np.vstack((np.linspace(start[0], end[0], N), 
@@ -7209,13 +7292,13 @@ class Project:
         
         # Probe filter
         probeFilter = vtk.vtkProbeFilter()
-        probeFilter.SetSourceData(self.image)
+        probeFilter.SetSourceData(self.image_dict[image_key])
         probeFilter.SetInputData(pts_pdata)
         probeFilter.Update()
 
         # Transform back into project coordinates
         invTransform = vtk.vtkTransform()
-        invTransform.DeepCopy(self.imageTransform)
+        invTransform.DeepCopy(self.image_transform_dict[image_key])
         invTransform.Inverse()
         tfilter = vtk.vtkTransformPolyDataFilter()
         tfilter.SetTransform(invTransform)
@@ -7803,7 +7886,7 @@ class Project:
         # Store result in empirical_cdf attribute
         self.empirical_cdf = (bounds, x, cdf)
     
-    def create_empirical_cdf_image(self, z_min, z_max):
+    def create_empirical_cdf_image(self, z_min, z_max, key=''):
         """
         Creates an empirical distribution of heights from the image
 
@@ -7813,6 +7896,9 @@ class Project:
             Minimum height value to consider.
         z_max : float
             Maximum height value to consider.
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
 
         Returns
         -------
@@ -7821,11 +7907,11 @@ class Project:
         """
         
         # Check that image has been created
-        if not hasattr(self, 'image'):
+        if not (key in self.image_dict.keys()):
             raise RuntimeError('Need to create an image for project: ' + 
                                self.project_name)
         
-        z = np.ravel(self.get_np_nan_image())
+        z = np.ravel(self.get_np_nan_image(key=key))
         z[z<z_min] = np.NaN
         z[z>z_max] = np.NaN
         minh = np.nanmin(z)
@@ -7837,7 +7923,7 @@ class Project:
         cdf = np.cumsum(pdf)/1000
         
         # Store result in empirical_cdf attribute
-        bounds_image = self.image.GetBounds()
+        bounds_image = self.image_dict[key].GetBounds()
         bounds = (bounds_image[0], bounds_image[1], bounds_image[2], 
                   bounds_image[3], z_min, z_max)
         self.empirical_cdf = (bounds, x, cdf)
@@ -7876,36 +7962,43 @@ class Project:
             self.scan_dict[scan_name].create_normalized_heights(
                 self.empirical_cdf[1], self.empirical_cdf[2])
     
-    def create_im_gaus(self):
+    def create_im_gaus(self, key=''):
         """
         Transform image to gaussian using current value of empirical cdf
+
+        Parameters
+        ----------
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
 
         Returns
         -------
         None.
 
         """
+
         
         # Check that image  and empirical cdf has been created
         if not hasattr(self, 'empirical_cdf'):
             raise RuntimeError('Need to create an empirical_cdf for project: '
                                + self.project_name)
-        if not hasattr(self, 'image'):
+        if not (key in self.image_dict.keys()):
             raise RuntimeError('Need to create an image for project: ' + 
                                self.project_name)
         
         # Create im_gaus field if it doesn't exist.
-        if not 'im_gaus' in self.dsa_image.PointData.keys():
+        if not 'im_gaus' in self.dsa_image_dict[key].PointData.keys():
             arr = vtk.vtkFloatArray()
             arr.SetName('im_gaus')
             arr.SetNumberOfComponents(1)
-            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
+            arr.SetNumberOfTuples(self.image_dict[key].GetNumberOfPoints())
             arr.FillComponent(0, 0)
-            self.image.GetPointData().AddArray(arr)
+            self.image_dict[key].GetPointData().AddArray(arr)
         
         # Fill im_gaus
-        self.dsa_image.PointData['im_gaus'][:] = normalize(
-            self.dsa_image.PointData['Elevation'],
+        self.dsa_image_dict[key].PointData['im_gaus'][:] = normalize(
+            self.dsa_image_dict[key].PointData['Elevation'],
             self.empirical_cdf[1], self.empirical_cdf[2])
     
     def add_theta(self, theta1, theta):
@@ -7951,6 +8044,8 @@ class Project:
 
         """
         
+        raise RuntimeError('create_im_nan_border is deprecated')
+
         # Get logical array of missing pixels
         im_nan = np.array(np.isnan(self.dsa_image.PointData['im_gaus']).
                           reshape((self.image.GetDimensions()[1],
@@ -8017,6 +8112,8 @@ class Project:
 
         """
         
+        raise RuntimeError('dummy_im_nan_border is deprecated')
+
         # Create im_nan_border field if it doesn't exist.
         if not 'im_nan_border' in self.dsa_image.PointData.keys():
             arr = vtk.vtkUnsignedCharArray()
@@ -8027,7 +8124,7 @@ class Project:
             self.image.GetPointData().AddArray(arr)
         self.dsa_image.PointData['im_nan_border'][:] = 0
     
-    def write_image(self, output_path=None, suffix='', name='image'):
+    def write_image(self, output_path=None, suffix='', name=None, key=''):
         """
         Write the image out to a file.
         
@@ -8042,7 +8139,11 @@ class Project:
             The suffix for the vtkfiles dir. The default is ''.
         name : str, optional
             Name of the file if we're writing to vtkfiles dir. The default 
-            is 'image'.
+            is None, which uses the key unless the key is '' then it uses 
+            'image'.
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
 
         Returns
         -------
@@ -8050,9 +8151,15 @@ class Project:
 
         """
         
+        if name is None:
+            if key=='':
+                name = 'image'
+            else:
+                name = key
+
         # Create writer and write mesh
         writer = vtk.vtkXMLImageDataWriter()
-        writer.SetInputData(self.image)
+        writer.SetInputData(self.image_dict[key])
         if not output_path:
             # Create the mesh folder if it doesn't already exist
             if not os.path.isdir(os.path.join(self.project_path, 
@@ -8079,7 +8186,7 @@ class Project:
 
         # Write the imageTransform as a numpy file
         transform_np = np.zeros((4, 4), dtype=np.float64)
-        vtk4x4 = self.imageTransform.GetMatrix()
+        vtk4x4 = self.image_transform_dict[key].GetMatrix()
         for i in range(4):
             for j in range(4):
                 transform_np[i, j] = vtk4x4.GetElement(i, j)
@@ -8087,10 +8194,10 @@ class Project:
 
         # Write the history_dict
         f = open(output_path.rsplit('.', maxsplit=1)[0] + '.txt', 'w')
-        json.dump(self.image_history_dict, f, indent=4)
+        json.dump(self.image_history_dict_dict[key], f, indent=4)
         f.close()
     
-    def read_image(self, image_path=None, suffix='', name='mesh'):
+    def read_image(self, image_path=None, suffix='', name=None, overwrite=False):
         """
         Read in the image from a file.
 
@@ -8102,8 +8209,12 @@ class Project:
         suffix : str, optional
             The suffix for the vtkfiles dir. The default is ''.
         name : str, optional
-            Name of the file if we're reading in vtkfiles dir. The default 
-            is 'image'.
+            Name of the file if we're reading in vtkfiles dir. If None, name
+            is set to 'image' and key is set to ''. Otherwise name and key
+            are the the same. The default is None.
+        overwrite : bool, optional
+            Whether to overwrite preexisting image. If False and key already
+            exists in image_dict will raise a warning. The default is False.
 
         Returns
         -------
@@ -8111,6 +8222,22 @@ class Project:
 
         """
         
+        if name is None:
+            name = 'image'
+            key = ''
+        else:
+            key = name
+
+        # Check if key already exists
+        if key in self.image_dict.keys():
+            if overwrite:
+                raise RuntimeWarning('You are overwriting image: ' + key)
+            else:
+                raise RuntimeWarning(key + 'already exists in image_dict ' +
+                                     'set overwrite=True if you want to' + 
+                                     'overwrite')
+                return
+
         # Create reader and read image
         reader = vtk.vtkXMLImageDataReader()
         if not image_path:
@@ -8123,7 +8250,7 @@ class Project:
         # Read in history dict
         try:
             f = open(image_path.rsplit('.', maxsplit=1)[0] + '.txt')
-            self.image_history_dict = json.load(f)
+            self.image_history_dict_dict[key] = json.load(f)
             f.close()
         except:
             warnings.warn('History Dict not read properly!')
@@ -8134,16 +8261,14 @@ class Project:
         for i in range(4):
             for j in range(4):
                 vtk4x4.SetElement(i, j, transform_np[i, j])
-        self.imageTransform = vtk.vtkTransform()
-        self.imageTransform.SetMatrix(vtk4x4)
+        self.image_transform_dict[key] = vtk.vtkTransform()
+        self.image_transform_dict[key].SetMatrix(vtk4x4)
 
-        # If we've already created an image delete and make way for this one
-        if hasattr(self, 'image'):
-            del(self.image)
-        self.image = reader.GetOutput()
+        
+        self.image_dict[key] = reader.GetOutput()
         
         # Also wrap with a datasetadaptor for working with numpy
-        self.dsa_image = dsa.WrapDataObject(self.image)
+        self.dsa_image_dict[key] = dsa.WrapDataObject(self.image_dict[key])
         
     def create_gmrf(self):
         """
@@ -10101,7 +10226,8 @@ class ScanArea:
                                                              min_pts, alpha, 
                                                              overlap)
         
-    def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0, sub_list=[]):
+    def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0, sub_list=[],
+                      image_key=''):
         """
         Interpolate mesh at regularly spaced points.
         
@@ -10139,15 +10265,15 @@ class ScanArea:
         if len(sub_list)==0:
             for key in self.project_dict:
                 self.project_dict[key].mesh_to_image(nx, ny, dx, dy, x0, y0, 
-                                                     yaw=yaw)
+                                                     yaw=yaw, key=image_key)
         else:
             for key in sub_list:
                 self.project_dict[key].mesh_to_image(nx, ny, dx, dy, x0, y0,
-                                                     yaw=yaw)
+                                                     yaw=yaw, key=image_key)
 
     def difference_projects(self, project_name_0, project_name_1, 
                             difference_field='Elevation', 
-                            confidence_interval=False):
+                            confidence_interval=False, key=''):
         """
         Subtract project_0 from project_1 and store in difference_dict.
 
@@ -10162,6 +10288,9 @@ class ScanArea:
         confidence_interval : bool, optional
             Whether to estimate a confidence interval as well. The default
             is False.
+        key : str, optional
+            Key for images in image_dicts. Must be the same for both projects.
+            The default is ''.
 
         Returns
         -------
@@ -10173,49 +10302,50 @@ class ScanArea:
         # assume projects have the same sized images covering same extent
         # Create image
         im = vtk.vtkImageData()
-        im.SetDimensions(self.project_dict[project_name_0].image.
+        im.SetDimensions(self.project_dict[project_name_0].image_dict[key].
                          GetDimensions())
-        im.SetOrigin(self.project_dict[project_name_0].image.
+        im.SetOrigin(self.project_dict[project_name_0].image_dict[key].
                      GetOrigin())
-        im.SetSpacing(self.project_dict[project_name_0].image.
+        im.SetSpacing(self.project_dict[project_name_0].image_dict[key].
                       GetSpacing())
         arr = vtk.vtkFloatArray()
-        arr.SetNumberOfValues(self.project_dict[project_name_0].image.
+        arr.SetNumberOfValues(self.project_dict[project_name_0].image_dict[key].
                               GetNumberOfPoints())
         arr.SetName('Difference')
         im.GetPointData().SetScalars(arr)
-        self.difference_dsa_dict[(project_name_0, project_name_1)] = (
+        self.difference_dsa_dict[(project_name_0, project_name_1, key)] = (
             dsa.WrapDataObject(im))
         # Difference images
-        self.difference_dsa_dict[(project_name_0, project_name_1)].PointData[
+        self.difference_dsa_dict[(project_name_0, project_name_1, key)
+         ].PointData[
             'Difference'][:] = (
-            self.project_dict[project_name_1].dsa_image.PointData[
+            self.project_dict[project_name_1].dsa_image_dict[key].PointData[
                 difference_field]
-            - self.project_dict[project_name_0].dsa_image.PointData[
+            - self.project_dict[project_name_0].dsa_image_dict[key].PointData[
                 difference_field])
         
         # Repeat Add confidence interval if requested
         if confidence_interval:
             arr = vtk.vtkFloatArray()
-            arr.SetNumberOfValues(self.project_dict[project_name_0].image.
-                              GetNumberOfPoints())
+            arr.SetNumberOfValues(self.project_dict[project_name_0]
+                                  .image_dict[key].GetNumberOfPoints())
             arr.SetName('diff_ci')
             im.GetPointData().AddArray(arr)
-            self.difference_dsa_dict[(project_name_0, project_name_1)
+            self.difference_dsa_dict[(project_name_0, project_name_1, key)
                                      ].PointData['diff_ci'][:] = 4*np.sqrt(
             np.square(self.project_dict[project_name_1]
-                      .dsa_image.PointData['z_ci']/4)
+                      .dsa_image_dict[key].PointData['z_ci']/4)
             + np.square(self.project_dict[project_name_0]
-                       .dsa_image.PointData['z_ci']/4))
+                       .dsa_image_dict[key].PointData['z_ci']/4))
         
         # np.ravel(
         #     self.project_dict[project_name_1].get_np_nan_image() -
         #     self.project_dict[project_name_0].get_np_nan_image())
         # # Assign value
-        self.difference_dict[(project_name_0, project_name_1)] = im
+        self.difference_dict[(project_name_0, project_name_1, key)] = im
     
     def display_difference(self, project_name_0, project_name_1, diff_window,
-                           cmap='rainbow', profile_list=[]):
+                           cmap='rainbow', profile_list=[], key=''):
         """
         Display image in vtk interactive window.
 
@@ -10229,6 +10359,9 @@ class ScanArea:
             Scale of differences to display in color in m.
         cmap : str, optional
             Name of matplotlib colormap to use. The default is 'rainbow'
+        key : str, optional
+            Key for images in image_dicts. Must be the same for both projects.
+            The default is ''.
 
         Returns
         -------
@@ -10247,7 +10380,7 @@ class ScanArea:
         
         mapper = vtk.vtkDataSetMapper()
         mapper.SetInputData(self.difference_dict[(project_name_0,
-                                                  project_name_1)])
+                                                  project_name_1, key)])
         mapper.SetLookupTable(mplcmap_to_vtkLUT(-diff_window, diff_window,
                                                 name=cmap))
         mapper.SetScalarRange(-diff_window, diff_window)
@@ -10263,7 +10396,7 @@ class ScanArea:
         for profile_tup in profile_list:
             transformFilter = vtk.vtkTransformPolyDataFilter()
             transformFilter.SetTransform(self.project_dict[project_name_1]
-                                         .imageTransform)
+                                         .image_transform_dict[key])
             transformFilter.SetInputData(self.project_dict[project_name_1]
                                          .profile_dict[profile_tup[0]])
             transformFilter.Update()
@@ -10313,7 +10446,8 @@ class ScanArea:
                                 diff_window, field='Elevation_mean_fill',
                                 cmap='rainbow', profile_list=[], 
                                 show_scanners=False, scanner_color_0='Yellow', 
-                                scanner_color_1='Fuchsia', scanner_length=150):
+                                scanner_color_1='Fuchsia', scanner_length=150,
+                                key=''):
         """
         Display the surface of the image from project_name_1 colored by diff.
 
@@ -10344,6 +10478,9 @@ class ScanArea:
         scanner_length : float, optional
             Length of the ray indicating the scanner's start orientation in m.
             The default is 150
+        key : str, optional
+            Key for images in image_dicts. Must be the same for both projects.
+            The default is ''.
 
         Returns
         -------
@@ -10375,11 +10512,11 @@ class ScanArea:
         im = vtk.vtkImageData()
         im.DeepCopy(self.project_dict[project_name_1].
                                     get_image(field=field, warp_scalars=False,
-                                              nan_value=-5))
+                                              nan_value=-5, key=key))
         im.GetPointData().SetActiveScalars(field)
         
         im.GetPointData().AddArray(self.difference_dict[(project_name_0, 
-                                                         project_name_1)]
+                                                         project_name_1, key)]
                                    .GetPointData().GetArray('Difference'))
         field_np = vtk_to_numpy(im.GetPointData().GetArray('Difference'))
         field_np[np.isnan(field_np)] = 0
@@ -10445,7 +10582,7 @@ class ScanArea:
                     project.scan_dict[scan_name].scannerActor.SetUserTransform(
                         transform)
                     project.scan_dict[scan_name].scannerText.AddPosition(
-                        project.imageTransform.GetPosition())
+                        project.image_transform_dict[key].GetPosition())
                     renderer.AddActor(project.scan_dict[scan_name].scannerActor)
                     renderer.AddActor(project.scan_dict[scan_name].scannerText)
 
@@ -10453,7 +10590,7 @@ class ScanArea:
         for profile_tup in profile_list:
             transformFilter = vtk.vtkTransformPolyDataFilter()
             transformFilter.SetTransform(self.project_dict[project_name_1]
-                                         .imageTransform)
+                                         .image_transform_dict[key])
             transformFilter.SetInputData(self.project_dict[project_name_1]
                                          .profile_dict[profile_tup[0]])
             transformFilter.Update()
@@ -10507,7 +10644,7 @@ class ScanArea:
                                 field='Elevation',
                                 cmap='RdBu_r', filename="", name="",
                                 light=None, colorbar=True, profile_list=[],
-                                window_size=(2000, 1000)):
+                                window_size=(2000, 1000), key=''):
         """
         
 
@@ -10541,6 +10678,9 @@ class ScanArea:
             lighting. The default is None
         colorbar : bool, optional
             Whether to render a colorbar. The default is True
+        key : str, optional
+            Key for images in image_dicts. Must be the same for both projects.
+            The default is ''.
 
         Returns
         -------
@@ -10559,11 +10699,11 @@ class ScanArea:
         im = vtk.vtkImageData()
         im.DeepCopy(self.project_dict[project_name_1].
                                     get_image(field=field, warp_scalars=False,
-                                              nan_value=-5))
+                                              nan_value=-5, key=key))
         im.GetPointData().SetActiveScalars(field)
         
         im.GetPointData().AddArray(self.difference_dict[(project_name_0, 
-                                                         project_name_1)]
+                                                         project_name_1, key)]
                                    .GetPointData().GetArray('Difference'))
         field_np = vtk_to_numpy(im.GetPointData().GetArray('Difference'))
         field_np[np.isnan(field_np)] = 0
@@ -10615,7 +10755,7 @@ class ScanArea:
         for profile_tup in profile_list:
             transformFilter = vtk.vtkTransformPolyDataFilter()
             transformFilter.SetTransform(self.project_dict[project_name_1]
-                                         .imageTransform)
+                                         .image_transform_dict[key])
             transformFilter.SetInputData(self.project_dict[project_name_1]
                                          .profile_dict[profile_tup[0]])
             transformFilter.Update()
@@ -10679,7 +10819,8 @@ class ScanArea:
         del renderWindow
         
     def write_plot_difference_projects(self, project_name_0, project_name_1, 
-                                 diff_window, filename="", colorbar=True):
+                                 diff_window, filename="", colorbar=True,
+                                 key=''):
         """
         Display a plot showing the difference between two projects
 
@@ -10693,6 +10834,9 @@ class ScanArea:
             Scale of differences to display in color in m.
         filename : str
             Path and name of file to write, defaults to snapshots folder if ""
+        key : str, optional
+            Key for images in image_dicts. Must be the same for both projects.
+            The default is ''.
 
         Returns
         -------
@@ -10703,7 +10847,7 @@ class ScanArea:
         # Create mapper
         mapper = vtk.vtkDataSetMapper()
         mapper.SetInputData(self.difference_dict[(project_name_0, 
-                                                  project_name_1)])
+                                                  project_name_1, key)])
         mapper.SetLookupTable(mplcmap_to_vtkLUT(-1*diff_window, diff_window))
         mapper.SetScalarRange(-1*diff_window, diff_window)
         
