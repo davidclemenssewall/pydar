@@ -6660,7 +6660,7 @@ class Project:
                                                 .GetPointData().
                                                 GetArray(field)))
             mapper.SetInputData(self.get_image(field, warp_scalars, 
-                                               v_min=min_scalar))
+                                               v_min=min_scalar, key=key))
             if not color_field is None:
                 mapper.GetInput().GetPointData().SetActiveScalars(color_field)
             
@@ -8231,9 +8231,9 @@ class Project:
         # Check if key already exists
         if key in self.image_dict.keys():
             if overwrite:
-                raise RuntimeWarning('You are overwriting image: ' + key)
+                warnings.warn('You are overwriting image: ' + key)
             else:
-                raise RuntimeWarning(key + 'already exists in image_dict ' +
+                warnings.warn(key + 'already exists in image_dict ' +
                                      'set overwrite=True if you want to' + 
                                      'overwrite')
                 return
@@ -8663,11 +8663,11 @@ class Project:
 
         """
 
-        raise RuntimeWarning('No transform or history information is stored ' +
+        warnings.warn('No transform or history information is stored ' +
                              'with this numpy file. Be sure you know where ' +
                              'it came from!')
         with np.load(os.path.join(self.project_path, self.project_name, 
-                                    'npyfiles' + suffix, key)) as data:
+                                    'npyfiles' + suffix, key + '.npz')) as data:
             pts_np = data['pts_np']
             dist_np = data['dist_np']
             z_sigma_np = data['z_sigma_np']
@@ -10344,6 +10344,44 @@ class ScanArea:
         # # Assign value
         self.difference_dict[(project_name_0, project_name_1, key)] = im
     
+    def get_np_nan_diff_image(self, project_name_0, project_name_1,
+                              key='', diff_ci_cutoff=np.inf):
+        """
+        Convenience function for copying the image to a numpy object.
+
+        Parameters
+        ----------
+        project_name_0 : str
+            Name of project to subtract (usually older).
+        project_name_1 : str
+            Name of project to subtract from (usually younger).
+        key : str, optional
+            Key to index this image and transform in image_dict and
+            image_transform_dict. The default is '' (for backward compatability)
+        diff_ci_cutoff : float, optional
+            Confidence interval cutoff above which to set value to NaN
+
+        Returns
+        -------
+        nan_image : numpy ndarray
+
+        """
+        
+        im_diff = self.difference_dict[(project_name_0, project_name_1, key)]
+        
+        im_diff_np = vtk_to_numpy(im_diff.GetPointData().GetArray('Difference')
+                                  ).reshape((im_diff.GetDimensions()[1], 
+                                             im_diff.GetDimensions()[0]), 
+                                             order='C')
+        im_ci = vtk_to_numpy(im_diff.GetPointData().GetArray('diff_ci')
+                                  ).reshape((im_diff.GetDimensions()[1], 
+                                             im_diff.GetDimensions()[0]), 
+                                             order='C')
+        nan_image = copy.deepcopy(im_diff_np)
+        nan_image[im_ci>diff_ci_cutoff] = np.NaN
+            
+        return nan_image
+
     def display_difference(self, project_name_0, project_name_1, diff_window,
                            cmap='rainbow', profile_list=[], key=''):
         """

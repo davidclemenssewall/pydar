@@ -32,7 +32,7 @@ project.apply_transforms(['current_transform'])
 
 f = open('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/' +
          'lidar_research/rov_processing/leg_2_border.txt', 'r')
-areapoints = json.load(f)[project_name]
+areapoints = json.load(f)#[project_name]
 f.close()
 
 cornercoords = project.areapoints_to_cornercoords(areapoints)
