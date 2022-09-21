@@ -5811,7 +5811,7 @@ class Project:
                          upper_threshold=1000, mode=None, colorbar=True,
                          field='Elevation',
                          name='', window_size=(2000, 1000), path=None,
-                         date=True, scale=True):
+                         date=True, scale=True, addtl_actors=[]):
         """
         Write an image of the project to the snapshots folder.
         
@@ -5848,6 +5848,8 @@ class Project:
         path : str, optional
             If provided, this is the path to write the image to. The default
             is None.
+        addtl_actors : list, optional
+            List of additonal actors to render, the default is []
 
         Returns
         -------
@@ -5894,6 +5896,9 @@ class Project:
             textActor.GetTextProperty().SetColor(0.0, 1.0, 0.0)
             renderer.AddActor2D(textActor)
         
+        for actor in addtl_actors:
+            renderer.AddActor(actor)
+
         # Create RenderWindow
         renderWindow = vtk.vtkRenderWindow()
         renderWindow.SetSize(window_size[0], window_size[1])
@@ -5912,6 +5917,7 @@ class Project:
                 # sort out this stuff in needed...
                 #legendScaleActor.GetLeftAxis().SetFontFactor(5)
                 renderer.AddActor(legendScaleActor)
+            camera.SetRoll(roll)
         else:
             camera.SetRoll(roll)
         renderer.SetActiveCamera(camera)
