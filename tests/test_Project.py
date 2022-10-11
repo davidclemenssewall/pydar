@@ -7,34 +7,29 @@ Created on Fri Sep 11 11:59:03 2020
 @author: d34763s
 """
 
-#import os
-#os.chdir('C:\\Users\\d34763s\\Desktop\\DavidCS\\PhD\\code\\pydar\\')
 import sys
 sys.path.append('/home/thayer/Desktop/DavidCS/ubuntu_partition/code/pydar/')
 import pydar
 
-# %% Test init
+# %% Import project
 
-#project_path = 'D:\\mosaic_lidar\\Snow1\\'
 project_path = '/media/thayer/Data/mosaic_lidar/Snow1/'
 
-project_name = 'mosaic_01_040120.RiSCAN'
-#poly = 'all_within_16m'
+project_name = 'mosaic_01_101819.RiSCAN'
 
-project = pydar.Project(project_path, project_name)#, poly=poly)
+project = pydar.Project(project_path, project_name, import_mode='import_las')
 print(project.project_date)
 
-# %% Add z offset and apply transforms
+# %% Apply SOP transform to all SingleScans
 
-project.add_z_offset(4.5)
-project.apply_transforms(['sop', 'z_offset'])
+project.apply_transforms(['sop'])
 
 # %% Display
 
-z_min = 0
-z_max = 2
+z_min = -3.5
+z_max = -1.5
 
-#project.display_project(z_min, z_max)
+project.display_project(z_min, z_max)
 
 # %% Display with scanners
 z_min = 0
