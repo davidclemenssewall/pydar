@@ -5914,8 +5914,16 @@ class Project:
             if scale:
                 legendScaleActor = vtk.vtkLegendScaleActor()
                 legendScaleActor.LegendVisibilityOff()
+                legendScaleActor.TopAxisVisibilityOff()
+                legendScaleActor.RightAxisVisibilityOff()
+                legendScaleActor.LeftAxisVisibilityOff()
+
                 # sort out this stuff in needed...
-                #legendScaleActor.GetLeftAxis().SetFontFactor(5)
+                #legendScaleActor.GetLeftAxis().SetFontFactor(3)
+                legendScaleActor.GetBottomAxis().SetFontFactor(3)
+                #legendScaleActor.SetLeftBorderOffset(130)
+                legendScaleActor.SetBottomBorderOffset(80)
+                
                 renderer.AddActor(legendScaleActor)
             camera.SetRoll(roll)
         else:
@@ -5985,9 +5993,9 @@ class Project:
         # Check if key already exists
         if key in self.image_dict.keys():
             if overwrite:
-                raise RuntimeWarning('You are overwriting image: ' + key)
+                warnings.warn('You are overwriting image: ' + str(key))
             else:
-                raise RuntimeWarning(key + 'already exists in image_dict ' +
+                raise RuntimeWarning(str(key) + 'already exists in image_dict ' +
                                      'set overwrite=True if you want to' + 
                                      'overwrite')
                 return
@@ -6474,7 +6482,7 @@ class Project:
         # Check if key already exists
         if key in self.image_dict.keys():
             if overwrite:
-                raise RuntimeWarning('You are overwriting image: ' + key)
+                warnings.warn('You are overwriting image: ' + key)
             else:
                 raise RuntimeWarning(key + 'already exists in image_dict ' +
                                      'set overwrite=True if you want to' + 
@@ -6526,6 +6534,15 @@ class Project:
         
         self.image_dict[key] = probe.GetOutput()
         
+        # Create history dict
+        self.image_history_dict_dict[key] = {
+            "type": "Image Generator",
+            "git_hash": get_git_hash(),
+            "method": "Project.mesh_to_image",
+            "input_0": self.mesh_history_dict,
+            "params": {"x0": x0, "y0": y0, "yaw": yaw}
+            }
+
         # Also wrap with a datasetadaptor for working with numpy
         self.dsa_image_dict[key] = dsa.WrapDataObject(self.image_dict[key])
         
@@ -11584,7 +11601,7 @@ def sample_autocorr_2d(samples_in, mode='normal', nanmode='zero-fill'):
     Raises
     ------
         TypeError: samples must be 2D
-        ValueError: mode must be either 'normal' or 'fourier'
+        ValueError: mode must be either 'normal', 'fourier' or 'radial'
     """
     
     # Input checking
@@ -11629,7 +11646,7 @@ def sample_autocorr_2d(samples_in, mode='normal', nanmode='zero-fill'):
                                 index=np.arange(samples.shape[0]))
         return (r_radial, corr)
     else:
-        raise ValueError("mode must be either 'normal' or 'fourier'")
+        raise ValueError("mode must be either 'normal', 'fourier' or 'radial'")
 
 def biquad_plot(ax, arr, bins_0, bins_1, dx0=1, dx1=1, mode='inverse',
                 vmin=None, vmax=None):
