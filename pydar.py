@@ -800,30 +800,45 @@ class SingleScan:
     -------
     write_scan()
         Writes the scan to a file to save the filters
-    read_scan()
-        Reads the scan from a file, replacing the RiSCAN version.
     write_current_transform()
         Writes the current transform and its history_dict to files.
     read_transform()
         Reads a transform from file and places it in current transforms.
     load_man_class()
-        Load the manual classification table
-    apply_transforms(transform_list)
-        updates transform to be concatenation of transforms in transform list.
-    add_sop()
-        load the appropriate SOP matrix into transform_dict
-    add_z_offset(z_offset)
-        add a z_offset transformation to transform_dict
-    add_transform(key, matrix)
+        Load the manual classification dataframe
+    load_labels()
+        Load the labels dataframe
+    add_label(category, subcategory, id, x, y, z, transform="current")
+        Add a label to the labels dataframe
+    get_label_point(category, subcategory, id, transform="current")
+        Get the x, y, z for a given label.
+    get_labels()
+        Get the labels dataframe, includes columns for transformed coordinates
+    add_transform(key, matrix, history_dict=None)
         add a transform to transform_dict
     update_current_filter(class_list)
         update the current filter object with a new class_list
-    create_elevation_pipeline(z_min, z_max, lower_threshold=-1000,
-                              upper_threshold=1000)
-        create mapper and actor for displaying points with colors by elevation
-    get_polydata()
+    add_sop()
+        load the appropriate SOP matrix into transform_dict
+    add_z_offset(z_offset, history_dict=None)
+        add a z_offset transformation to transform_dict
+    get_polydata(port=False, history_dict=False)
         Returns the polydata object for the current settings of transforms
         and filters.
+    apply_transforms(transform_list)
+        updates transform to be concatenation of transforms in transform list.
+    random_voxel_downsample_filter(wx, wy, wz=None, seed=1234)
+        Downsample point cloud with one random point per voxel.
+    clear_classification(category=None)
+        Reset all Classification values to 0.
+    apply_man_class()
+        For points that we have manually classified, set their classification.
+    update_man_class(pdata, classification)
+        Update the points in man_class with the points in pdata.
+    update_man_class_fields(update_fields='all', update_trans=True)
+        Update the man_class table with values from the fields currently in
+        polydata_raw. Useful, for example if we've improved the HAG filter and
+        don't want to have to repick all points.
     create_normals(radius=2, max_nn=30)
         Estimate point normals (using Open3D).
     create_z_sigma()
@@ -832,8 +847,8 @@ class SingleScan:
     apply_elevation_filter(z_max)
         Filter out all points above a certain height. Sets the flag in 
         Classification to 64.
-    apply_snowflake_filter_2(z_diff, N, r_min):
-        Filter snowflakes based on their vertical distance from nearby points.
+    apply_rmin_filter(buffer=0.05, count=150000)
+        Assign all points very close to the scanner as snowflakes.
     apply_snowflake_filter_3(z_std_mult, leafsize):
         Filter points as snowflakes based on whether their z value in the
         transformed reference frame exceeds z_std_mult multiples of the mean
@@ -845,24 +860,21 @@ class SingleScan:
         Classify points by a selection loop.
     apply_cylinder_filter(x, y, r, category=73)
         Classify all points within a horizontal distance r of a given point.
-    random_voxel_downsample_filter(wx, wy, wz, seed=1234)
-        Subset the filtered pointcloud randomly by voxels. Replaces Polydata!!
-    apply_man_class()
-        For points that we have manually classified, set their classification.
-    clear_classification
-        Reset all Classification values to 0.
-    update_man_class(pdata, classification)
-        Update the points in man_class with the points in pdata.
-    update_man_class_fields(update_fields='all', update_trans=True)
-        Update the man_class table with values from the fields currently in
-        polydata_raw. Useful, for example if we've improved the HAG filter and
-        don't want to have to repick all points.
-    create_normalized_heights(x, cdf)
-        Use normalize function to create normalized heights in new PointData
-        array.
+    create_scanner_actor(color="Gray", length=150)
+        Create an actor for visualizing the scanner and its orientation.
+    create_labels_actors(color='White', row_index=None)
+        Create dataframe containing actors for each label
+    create_filter_pipeline(colors)
+        Create mapper and actor displaying points colored by Classification
+    create_solid_pipeline(color='Green')
+        Create vtk visualization pipeline with solid colors
+    create_elevation_pipeline(z_min, z_max, lower_threshold=-1000,
+                              upper_threshold=1000, LOD=True, 
+                              cmap_name='rainbow')
+        create mapper and actor for displaying points with colors by elevation
     create_reflectance()
         Create reflectance field in polydata_raw according to RiSCAN instructs.
-    create_reflectance_pipeline(v_min, v_max)
+    create_reflectance_pipeline(v_min, v_max, field='Reflectance')
         create mapper and actor for displaying points with colors by reflectance
     correct_reflectance_radial(mode)
         Adjust reflectance for radial artifact.
@@ -874,15 +886,6 @@ class SingleScan:
     write_pdal_transformation_json(mode, input_dir, output_dir)
         Write a JSON string for PDAL such that it transforms raw scan data
         by self.transform.
-    create_dimensionality_pdal(temp_file="", from_current=True, voxel=True,
-                               h_voxel=0.1, v_voxel=0.01, threads=8)
-        Create the four dimensionality variables from Demantke2011 and
-        Guinard2017. Uses pdal to do so.
-    create_heightaboveground_pdal(resolution=1, temp_file="",
-                                  from_current=True, voxel=True, h_voxel=0.1,
-                                  v_voxel=0.1)
-        Create height above ground value for each point in scan. To start
-        we'll just rasterize all points but we may eventually add csf filter.
     add_dist()
         Add distance from scanner to polydata_raw
     get_local_max(z_threshold, rmax, return_dist=False, return_zs=False)
@@ -1480,40 +1483,6 @@ class SingleScan:
             f = open(os.path.join(write_dir, 'raw_history_dict.txt'), 'w')
             json.dump(new_hist_dict, f, indent=4)
             f.close()
-        
-        
-    def read_scan(self):
-        """
-        Reads a scan from a vtp file
-
-        Returns
-        -------
-        None.
-
-        """
-        raise RuntimeError("There's no longer any reason to call SingleScan."
-                           + "read_scan. Simply init a new SingleScan object")
-        
-        # Clear polydata_raw and dsa_raw
-        if hasattr(self, 'dsa_raw'):
-            del self.dsa_raw
-            del self.polydata_raw
-
-            
-        # Create Reader, read file
-        reader = vtk.vtkXMLPolyDataReader()
-        reader.SetFileName(os.path.join(self.project_path, self.project_name, 
-                           "vtkfiles", "pointclouds",
-                           self.scan_name + '.vtp'))
-        reader.Update()
-        self.polydata_raw = reader.GetOutput()
-        self.polydata_raw.Modified()
-        
-        # Create dsa, link with transform filter
-        self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
-        self.transformFilter.SetInputData(self.polydata_raw)
-        self.transformFilter.Update()
-        self.currentFilter.Update()
     
     def write_current_transform(self, write_dir=None, name='current_transform'
                                 , mode='rigid', suffix='', freeze=False,
@@ -1850,7 +1819,7 @@ class SingleScan:
         
     def load_labels(self):
         """
-        Load the man_class dataframe. Create if it does not exist.
+        Load the labels dataframe. Create if it does not exist.
 
         Returns
         -------
@@ -1970,7 +1939,7 @@ class SingleScan:
 
     def get_label_point(self, category, subcategory, id, transform='current'):
         """
-        Get a label from the labels dataframe.
+        Get the x, y, z for a given label.
 
         Parameters
         ----------
@@ -1996,6 +1965,10 @@ class SingleScan:
 
         if transform=='current':
             point = self.transform.TransformPoint(point)
+        elif transform=='raw':
+            continue
+        else:
+            raise RuntimeError("Unsupported transform requested.")
 
         return point
 
@@ -2263,29 +2236,11 @@ class SingleScan:
         # the current transform
         self.transformed_history_dict["input_1"] = json.loads(json.dumps(
             temp_trans_dict))
-        
-        # If the norm_height array exists delete it we will recreate it 
-        # if needed
-        # if 'norm_height' in self.dsa_raw.PointData.keys():
-        #     self.polydata_raw.GetPointData().RemoveArray('norm_height')
-        #     self.polydata_raw.Modified()
-        #     # Update raw_history_dict accordingly
-        #     self.raw_history_dict = {
-        #         "type": "Scalar Modifier",
-        #         "git_hash": git_hash,
-        #         "method": 'SingleScan.apply_transforms',
-        #         "name": "Removed norm_height",
-        #         "input_0": json.loads(json.dumps(self.raw_history_dict))
-        #         }
-        #     self.transformed_history_dict["input_0"] = self.raw_history_dict
             
         self.transformFilter.Update()
         self.currentFilter.Update()
 
-        # If scannerActor exists update it's transform
-        #if hasattr(self, 'scannerActor'):
-        #    self.scannerActor.SetUserTransform(self.transform)
-    
+        
     def random_voxel_downsample_filter(self, wx, wy, wz=None, seed=1234):
         """
         Downsample point cloud with one random point per voxel.
@@ -2960,89 +2915,6 @@ class SingleScan:
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
         
-        
-    
-    def apply_snowflake_filter_2(self, z_diff, N, r_min):
-        """
-        Filter snowflakes based on their vertical distance from nearby points.
-        
-        Here we exploit the fact that snowflakes (and for that matter power
-        cables and some other human objects) are higher than their nearby
-        points. The filter steps through each point in the transformed
-        dataset and compares its z value with the mean of the z-values of
-        the N closest points. If the difference exceeds z_diff then set the
-        Classification for that point to be 2. Also, there is a shadow around the
-        base of the scanner so all points within there must be spurious. We
-        filter all points within r_min
-    
-        Parameters
-        ----------
-        z_diff : float
-            Maximum vertical difference in m a point can have from its 
-            neighborhood.
-        N : int
-            Number of neighbors to find.
-        r_min : float
-            Radius of scanner in m within which to filter all points.
-    
-        Returns
-        -------
-        None.
-    
-        """
-        
-        # Move z-values to scalars 
-        elevFilter = vtk.vtkSimpleElevationFilter()
-        elevFilter.SetInputConnection(self.transformFilter.GetOutputPort())
-        elevFilter.Update()
-        # Flatten points
-        flattener = vtk.vtkTransformPolyDataFilter()
-        trans = vtk.vtkTransform()
-        trans.Scale(1, 1, 0)
-        flattener.SetTransform(trans)
-        flattener.SetInputConnection(elevFilter.GetOutputPort())
-        flattener.Update()
-        
-        # Create pdata and locator
-        pdata = flattener.GetOutput()
-        locator = vtk.vtkOctreePointLocator()
-        pdata.SetPointLocator(locator)
-        locator.SetDataSet(pdata)
-        pdata.BuildLocator()
-        
-        # Create temporary arrays for holding points
-        output = vtk.vtkFloatArray()
-        output.SetNumberOfValues(N)
-        output_np = vtk_to_numpy(output)
-        pt_ids = vtk.vtkIdList()
-        pt_ids.SetNumberOfIds(N)
-        pt = np.zeros((3))
-        scan_pos = np.array(self.transform.GetPosition())
-        
-        for m in np.arange(pdata.GetNumberOfPoints()):
-            # Get the point
-            pdata.GetPoint(m, pt)
-            # Check if the point is within our exclusion zone
-            r = np.linalg.norm(pt[:2]-scan_pos[:2])
-            if r < r_min:
-                self.dsa_raw.PointData['Classification'][m] = 65
-                continue
-            
-            # Get N closest points
-            locator.FindClosestNPoints(N, pt, pt_ids)
-            # now using the list of point_ids set the values in output to be the z
-            # values of the found points
-            pdata.GetPointData().GetScalars().GetTuples(pt_ids, output)
-            # If we exceed z_diff set Classification to 2
-            if (pdata.GetPointData().GetScalars().GetTuple(m)
-                - output_np.mean())>z_diff:
-                self.dsa_raw.PointData['Classification'][m] = 65
-        
-        # Update currentTransform
-        self.polydata_raw.Modified()
-        self.transformFilter.Update()
-        self.currentFilter.Update()
-    
     def apply_snowflake_filter_3(self, z_std_mult, leafsize):
         """
         Filter points as snowflakes based on whether their z value in the
@@ -3408,282 +3280,6 @@ class SingleScan:
                        "category": category}
             }
         self.transformed_history_dict["input_0"] = self.raw_history_dict
-
-
-
-
-    def create_dimensionality_pdal(self, temp_file="", from_current=True, 
-                                   voxel=True, h_voxel=0.1, v_voxel=0.01, 
-                                   threads=8):
-        """
-        Uses pdal functions to voxel downsample and create dimensionality
-        variables from Demantke2011 and Guinard2017.
-        
-        WARNING: This method replaces polydata_raw but does not modify
-        transforms
-        
-        If from_current, we write the current polydata-points with 
-        Classification of 0, 1, or 2 and transformed by the current transform-
-        to a pdal readable numpy file in temp_file. We then create a json
-        with the instructions to voxelize that data, run 
-        filters.optimalneighborhood and filters.covariancefeatures and make
-        the results available as numpy arrays. Finally, we replace the points
-        in polydata_raw with the matching PointId's and eliminate other points
-        in polydata_raw.
-
-        Parameters
-        ----------
-        temp_file : str, optional
-            Location to write numpy file to. If "" use self.project_path +
-            '\\temp\\temp_pdal.npy'. The default is "".
-        from_current : bool, optional
-            Whether to write the current polydata to file, if False will use
-            whichever file is currently in the temp directory. False should 
-            only be used for debugging. The default is True.
-        voxel : bool, optional
-            Whether to voxel nearest centroid downsample. The default is True.
-        h_voxel : float, optional
-            Horizontal voxel dimension in m. The default is 0.1.
-        v_voxel : float, optional
-            Vertical voxel dimension in m. The default is 0.01.
-        threads : int, optional
-            Number of threads to use in covariancefeatures
-
-        Returns
-        -------
-        None.
-
-        """
-        warnings.warn("History tracking not implemented yet")
-        
-        # Parse temp_file
-        if not temp_file:
-            temp_file = os.path.join(self.project_path, 'temp', 'temp_pdal.npy')
-         
-        if from_current:
-            # Write to temp_file
-            self.write_npy_pdal(temp_file, filename='', mode='filtered')
-        else:
-            warnings.warn("create_dimensionality_pdal is reading whichever " 
-                          + "file is in the temp directory, make sure this "
-                          + "is the desired behavior")
-        
-        # Create dimensionality in pdal and import back into python
-        json_list = []
-        # Stage for reading data
-        json_list.append(
-            {"filename": os.path.join(self.project_path, 'temp', 'temp_pdal.npy'),
-             "type": "readers.numpy"})
-        # Add voxel filter stages if desired
-        if voxel:
-            json_list.append(
-                {"type": "filters.transformation",
-                 "matrix": str(1/h_voxel) + " 0 0 0 0 " + str(1/h_voxel) + 
-                 " 0 0 0 0 " + str(1/v_voxel) + " 0 0 0 0 1"})
-            json_list.append(
-                {"type": "filters.voxelcentroidnearestneighbor",
-                 "cell": 1})
-            json_list.append({"type": "filters.transformation",
-                 "matrix": str(h_voxel) + " 0 0 0 0 " + str(h_voxel) + 
-                 " 0 0 0 0 " + str(v_voxel) + " 0 0 0 0 1"})
-        # Stage to calculate optimal NN
-        json_list.append(
-            {"type": "filters.optimalneighborhood",
-            "min_k": 8,
-            "max_k": 50})
-        # Stage to calculate dimensionality
-        json_list.append(
-            {"type": "filters.covariancefeatures",
-             "threads": threads,
-             "optimized": True,
-             "feature_set": "all"})
-        # Create and execute pdal pipeline
-        json_data = json.dumps(json_list, indent=4)
-        pipeline = pdal.Pipeline(json_data)
-        _ = pipeline.execute()
-        
-        # Update Contents of PolydataRaw with the filter output
-        arr = pipeline.get_arrays()
-        # If we downsampled then we will change polydata raw
-        if voxel:
-            # Create PedigreeIds array to do selection
-            pedigreeIds = vtk.vtkTypeUInt32Array()
-            pedigreeIds.SetNumberOfComponents(1)
-            pedigreeIds.SetNumberOfTuples(arr[0].size)
-            np_pedigreeIds = vtk_to_numpy(pedigreeIds)
-            np_pedigreeIds[:] = arr[0]['PointId']
-            pedigreeIds.Modified()
-            
-            # Selection points from original polydata_raw by PedigreeId
-            selectionNode = vtk.vtkSelectionNode()
-            selectionNode.SetFieldType(1) # we want to select points
-            selectionNode.SetContentType(2) # 2 corresponds to pedigreeIds
-            selectionNode.SetSelectionList(pedigreeIds)
-            selection = vtk.vtkSelection()
-            selection.AddNode(selectionNode)
-            extractSelection = vtk.vtkExtractSelection()
-            extractSelection.SetInputData(0, self.polydata_raw)
-            extractSelection.SetInputData(1, selection)
-            extractSelection.Update()
-            pdata = extractSelection.GetOutput()
-            dsa_pdata = dsa.WrapDataObject(pdata)
-            
-            # vtk automatically sorts points by pedigree id, so apply same 
-            # sorting to our new dimensions and update
-            sort_inds = np.argsort(arr[0]['PointId'])
-            dims = ['Linearity', 'Planarity', 'Scattering', 'Verticality',
-                    'Density', 'Anisotropy']
-            for dim in dims:
-                arr_vtk = vtk.vtkFloatArray()
-                arr_vtk.SetName(dim)
-                arr_vtk.SetNumberOfComponents(1)
-                arr_vtk.SetNumberOfTuples(pdata.GetNumberOfPoints())
-                pdata.GetPointData().AddArray(arr_vtk)
-                dsa_pdata.PointData[dim][:] = np.float32(arr[0][dim]
-                                                         [sort_inds])
-                
-            pdata.Modified()
-            
-            # Update polydata_raw
-            #vertexGlyphFilter = vtk.vtkVertexGlyphFilter()
-            #vertexGlyphFilter.SetInputData(pdata)
-            #vertexGlyphFilter.Update()
-            self.polydata_raw = pdata #vertexGlyphFilter.GetOutput()
-            self.dsa_raw = dsa.WrapDataObject(self.polydata_raw)
-            
-            # Update filters
-            self.transformFilter.SetInputData(self.polydata_raw)
-            self.transformFilter.Update()
-            self.currentFilter.Update()
-        else:
-            raise NotImplementedError("create_dimensionality_pdal must have"
-                                      + " voxel=True for now")
-    
-    def create_heightaboveground_pdal(self, temp_file="",
-                                      temp_file_tif="", from_current=True, 
-                                      create_dem=True):
-        """
-        Create height above ground value for each point in scan.
-
-        Parameters
-        ----------
-        resolution : float, optional
-            DEM resolution in m. The default is 1.
-        temp_file : str, optional
-            Location to write numpy file to. If "" use self.project_path +
-            '\\temp\\temp_pdal.npy'. The default is "".
-        temp_file_tif : str, optional
-            tempfile for storing dem, if "" defaults to temp_dir/project_name
-            _scan_name.tif. The default is "".
-        from_current : bool, optional
-            Whether to write the current polydata to file, if False will use
-            whichever file is currently in the temp directory. False should 
-            only be used for debugging. The default is True.
-        create_dem : bool, optional
-            Whether to create a dem from this SingleScan. If not you should
-            probably supply a temp_file_tif string to this function. The 
-            default is True.
-
-        Returns
-        -------
-        None.
-
-        """
-        warnings.warn("History tracking not implemented yet")
-        
-        # Parse temp_file
-        if not temp_file:
-            temp_file = os.path.join(self.project_path, 'temp', self.project_name + 
-                         '_' + self.scan_name + '.npy')
-         
-        if from_current:
-            # Write to temp_file
-            self.write_npy_pdal(temp_file, filename='', mode='transformed',
-                                skip_fields='all')
-        else:
-            warnings.warn("create_heightaboveground_pdal is reading whichever" 
-                          + " file is in the temp directory, make sure this "
-                          + "is the desired behavior")
-        
-        # Parse temp_file_tif
-        if not temp_file_tif:
-            if not create_dem:
-                warnings.warn("create_heightaboveground_pdal is not creating"
-                              + " a dem but is reading an auto-generated " 
-                              "filename! Make sure this is desired")
-            temp_file_tif = os.path.join(self.project_path, 'temp', self.project_name 
-                             + '_' + self.scan_name + '.tif')
-        
-        if create_dem:
-            # Create DEM
-            json_list = []
-    
-            # Numpy reader
-            json_list.append({"filename": temp_file,
-                              "type": "readers.numpy"})
-            
-            json_list.append({"type": "filters.smrf",
-                              "slope": 0.667,
-                              "scalar": 2.18,
-                              "threshold": 0.894,
-                              "window": 14.8,
-                              "cell": 0.624})
-            
-            json_list.append({"type": "filters.range",
-                              "limits": "Classification[2:2]"})
-            
-            json_list.append({"type": "writers.gdal",
-                              "filename": temp_file_tif,
-                              "resolution": 0.5,
-                              "data_type": "float32",
-                              "output_type": "idw",
-                              "window_size": 7})
-            
-            json_data = json.dumps(json_list, indent=4)
-            
-            pipeline = pdal.Pipeline(json_data)
-            _ = pipeline.execute()
-            del _
-            del pipeline
-        
-        # Apply HeightAboveGround filter
-        json_list = []
-
-        # Numpy reader
-        json_list.append({"filename": temp_file,
-                          "type": "readers.numpy"})
-        
-        # Height above ground stage
-        json_list.append({"type": "filters.hag_dem",
-                          "raster": temp_file_tif,
-                          "zero_ground": 'false'})
-        
-        json_data = json.dumps(json_list, indent=4)
-
-        pipeline = pdal.Pipeline(json_data)
-        _ = pipeline.execute()
-        
-        # Update Contents of polydata_raw with the filter output
-        arr = pipeline.get_arrays()
-        sort_inds = np.argsort(arr[0]['PointId'])
-        if not 'HeightAboveGround' in self.dsa_raw.PointData.keys():
-            arr_vtk = vtk.vtkFloatArray()
-            arr_vtk.SetName('HeightAboveGround')
-            arr_vtk.SetNumberOfComponents(1)
-            arr_vtk.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
-            self.polydata_raw.GetPointData().AddArray(arr_vtk)
-        self.dsa_raw.PointData['HeightAboveGround'][:] = np.float32(
-            arr[0]['HeightAboveGround'][sort_inds])
-        
-        self.polydata_raw.Modified()
-        self.transformFilter.Update()
-        self.currentFilter.Update()
-        
-        # Delete temporary files to prevent bloat
-        del pipeline
-        os.remove(temp_file)
-        if create_dem:
-            os.remove(temp_file_tif)
     
     def create_scanner_actor(self, color='Gray', length=150):
         """
@@ -3831,8 +3427,6 @@ class SingleScan:
             labelText.GetProperty().SetColor(nc.GetColor3d(color))
             # add to dataframe
             self.labels_actors.at[row.Index, 'text_actor'] = labelText
-
-
 
     def create_filter_pipeline(self,colors={0 : (153/255, 153/255, 153/255, 1),
                                             1 : (153/255, 153/255, 153/255, 1),
@@ -4040,90 +3634,6 @@ class SingleScan:
         else:
             self.actor = vtk.vtkActor()
             self.actor.SetMapper(self.mapper)
-    
-    def create_normalized_heights(self, x, cdf):
-        """
-        Use normalize function to create normalized heights in new PointData
-        array.
-        
-        Here we use the normalize function (defined below in Pydar) to
-        transform the z values from the output of transformFilter to a normal
-        distribution assuming they were drawn from the distribution specified
-        by x and cdf.
-
-        Parameters
-        ----------
-        x : 1d-array
-            Bin values in empirical cdf.
-        cdf : 1d-array
-            Values of empirical cdf.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        # If normalized height array doesn't exist, create it.
-        if not 'norm_height' in self.dsa_raw.PointData.keys():
-            arr = vtk.vtkFloatArray()
-            arr.SetName('norm_height')
-            arr.SetNumberOfComponents(1)
-            arr.SetNumberOfTuples(self.polydata_raw.GetNumberOfPoints())
-            arr.FillComponent(0, 0)
-            self.polydata_raw.GetPointData().AddArray(arr)
-        
-        # Create a temporary dataset_adaptor for the output of currentTransform
-        dsa_transform = dsa.WrapDataObject(self.transformFilter.GetOutput())
-        # Normalize
-        self.dsa_raw.PointData['norm_height'][:] = normalize(
-            dsa_transform.Points[:, 2], x, cdf)
-        
-        # if np_dict doesn't exist create it
-        if not hasattr(self, 'np_dict'):
-            self.np_dict = {}
-        
-        # Create normalized height array
-        points_np = vtk_to_numpy(self.transformFilter.GetOutput().GetPoints()
-                                 .GetData())
-        self.np_dict['norm_height'] = normalize(points_np[:,2].squeeze(),
-                                                x, cdf)
-        vtk_arr = numpy_to_vtk(self.np_dict['norm_height'], deep=False,
-                               array_type=vtk.VTK_FLOAT)
-        vtk_arr.SetName('norm_height')
-        self.polydata_raw.GetPointData().AddArray(vtk_arr)
-        # if z_sigma exists create error for it too
-        if self.polydata_raw.GetPointData().HasArray('z_sigma'):
-            z_sigma_np = vtk_to_numpy(self.polydata_raw.GetPointData().
-                                      GetArray('z_sigma'))
-            norm_sigma_upper = normalize(points_np[:,2].squeeze() + z_sigma_np,
-                                         x, cdf)
-            norm_sigma_lower = normalize(points_np[:,2].squeeze() - z_sigma_np,
-                                         x, cdf)
-            self.np_dict['norm_z_sigma'] = (norm_sigma_upper
-                                            - norm_sigma_lower)/2
-            vtk_arr = numpy_to_vtk(self.np_dict['norm_z_sigma'], deep=False,
-                               array_type=vtk.VTK_FLOAT)
-            vtk_arr.SetName('norm_z_sigma')
-            self.polydata_raw.GetPointData().AddArray(vtk_arr)
-        
-        # Update
-        self.polydata_raw.Modified()
-        self.transformFilter.Update()
-        self.currentFilter.Update()
-        
-        # Update raw_history_dict
-        self.raw_history_dict = {
-            "type": "Scalar Modifier",
-            "git_hash": get_git_hash(),
-            "method": "SingleScan.create_normalized_heights",
-            "name": "Create normalized heights field",
-            "input_0": json.loads(json.dumps(self.raw_history_dict)),
-            "input_1": json.loads(json.dumps(self.transformed_history_dict)),
-            "params": {"x": x.tolist(),
-                       "cdf": cdf.tolist()}
-            }
-        self.transformed_history_dict["input_0"] = self.raw_history_dict
     
     def create_reflectance(self):
         """
