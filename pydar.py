@@ -109,20 +109,20 @@ class TiePointList:
         
     Methods
     -------
+    add_transform(name, transform, reflector_list=[], std=np.NaN)
+        Adds a transform the the transforms dataframe.
+    get_transform(index)
+        Returns the requested numpy array.
+    apply_transform(index)
+        Applies a transform in transforms to update tiepoints_transformed.
     calc_pairwise_dist()
         Calculates the distances between each unique pair of reflectors.
     compare_pairwise_dist(other_tiepointlist)
         Compares pwdist with other_tiepointlist, stores result in compare_dict
-    plot_map(other_project_name, delaunay=False, mode='dist')
-        Plots a map of the change in reflector distances.
     calc_transformation(other_tiepointlist, reflector_list, mode='LS')
         Calculates best fitting rigid transformation to align with other.
-    add_transform(name, transform, reflector_list=[], std=np.NaN)
-        Adds a transform the the transforms dataframe.
-    apply_transform(index)
-        Applies a transform in transforms to update tiepoints_transformed.
-    get_transform(index)
-        Returns the requested numpy array.
+    plot_map(other_project_name, delaunay=False, mode='dist')
+        Plots a map of the change in reflector distances.
     """
     
     def __init__(self, project_path, project_name):
