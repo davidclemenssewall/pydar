@@ -73,7 +73,7 @@ except ModuleNotFoundError:
     print('utf1st not loaded, local max finding will not work')
 
 class TiePointList:
-    """Class to contain tiepointlist object and methods.
+    """Class contains tiepointlist object and methods.
     
     ...
     
