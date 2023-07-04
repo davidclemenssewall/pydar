@@ -4170,21 +4170,7 @@ class Project:
         Dictionary holding polydata objects that we create in the project.
         There is no requirement on a specific type of polydata, the purpose
         is to make accessing and displaying (e.g. on top of image) easy.
-    empirical_cdf : tuple
-        (bounds, x, cdf) tuple with distribution of snow surface heights for 
-        use with transforming and normalizing z-values.
-    theta : 1D array or list
-        Theta parameters for the GMRF used in pixel infilling. See Rue and
-        Held 2005 Chapter 5.1
-    theta1 : float
-        Scaling parameter for GMRF used in pixel infilling. See Rue and Held
-        2005 Chapter 5.1
-    mu_agivenb : 1D array
-        Expectation of missing pixel values conditioned on observed pixels.
-    sparse_LAA : sparse matrix
-        Lower triangular Cholesky factor of the conditional precision matrix
-        (QAA) of the missing pixels conditioned on the observed pixels.
-    
+        
     Methods
     -------
     apply_transforms(transform_list)
@@ -7611,31 +7597,72 @@ class ScanArea:
         
     Methods
     -------
-    add_project(project_name)
+    add_project(project_name, import_mode=None, poly='.1_.1_.01', 
+                load_scans=True, read_scans=False, import_las=False, 
+                create_id=True, las_fieldnames=None, class_list=[0, 1, 2, 70], 
+                suffix='')
         Add a project in project_path directory to project_dict
     compare_reflectors(project_name_0, project_name_1, delaunay=False, 
                        mode='dist')
         Calculate pwdists and plot reflector comparison project 0 to project 1
-    register_project(project_name_0, project_name_1, reflector_list, mode='lS')
-        Register project 1 to project 0 using the reflectors in reflector_list.
     add_registration_tuple(registration_tuple, index=None)
         Add a registration tuple to the registration list.
     del_registration_tuple(index)
         Delete registration tuple from registration_list.
     register_all()
         Register all projects according to registration list.
-    apply_snowflake_filter(shells)
-        Apply a snowflake filter to each scan in each project.
-    apply_snowflake_filter_2(z_diff, N, r_min)
-        Apply a snowflake filter based on z difference with nearby points.
-    merged_points_to_mesh(self, subgrid_x, subgrid_y, min_pts=100, 
-                          alpha=0, overlap=0.1)
-        For each project convert pointcloud to mesh.
+    register_project(project_name_0, project_name_1, reflector_list, mode='lS')
+        Register project 1 to project 0 using the reflectors in reflector_list.
+    z_align_all(w0=10, w1=10, min_pt_dens=10, max_diff=0.1, 
+                frac_exceed_diff_cutoff=0.1, bin_reduc_op='min', 
+                diff_mode='mean')
+        Align all scans on the basis of their gridded values
+    z_alignment(project_name_0, project_name_1, w0=10, w1=10, min_pt_dens=10, 
+                max_diff=0.15, frac_exceed_diff_cutoff=0.1, bin_reduc_op='min',
+                diff_mode='mean')
+        Align successive scans on the basis of their gridded values
+    z_alignment_ss(project_name_0, project_name_1, scan_name, w0=10, w1=10, 
+                   min_pt_dens=10, max_diff=0.15, bin_reduc_op='min', 
+                   return_grid=False, return_history_dict=False)
+        Align successive scans on the basis of their gridded minima
+    z_tilt_alignment_ss(project_name_0, project_name_1, scan_name, w0=10, w1=10,
+                        min_pt_dens=10, max_diff=0.15, bin_reduc_op='mean')
+        Align a scan vertically and tilt based upon it's z offsets
+    max_alignment_ss(project_name_0, project_name_1, scan_name, w0=5, w1=5, 
+                     max_diff=0.1, return_count=False, use_closest=False, 
+                     p_thresh=None, az_thresh=None, z_intcpt=None, z_slope=None)
+        Align singlescan with project 0 using local maxima as keypoints.
     mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0)
         Interpolate mesh into image.
-    difference_projects(project_name_0, project_name_1)
+    difference_projects(project_name_0, project_name_1, 
+                        difference_field='Elevation', confidence_interval=False,
+                        key='')
         Subtract project_0 from project_1 and store the result in 
         difference_dict.
+    get_np_nan_diff_image(project_name_0, project_name_1, key='', 
+                          diff_ci_cutoff=np.inf)
+        Convenience function for copying the image to a numpy object.
+    display_difference(project_name_0, project_name_1, diff_window,
+                           cmap='rainbow', profile_list=[], key='')
+        Display difference image in vtk interactive window.
+    display_warp_difference(project_name_0, project_name_1, diff_window, 
+                            field='Elevation_mean_fill', cmap='rainbow', 
+                            profile_list=[], show_scanners=False, 
+                            scanner_color_0='Yellow', scanner_color_1='Fuchsia',
+                            scanner_length=150, key='')
+        Display the surface of the image from project_name_1 colored by diff.
+    write_plot_warp_difference(project_name_0, project_name_1, 
+                                diff_window, camera_position, focal_point,
+                                roll=0,
+                                field='Elevation',
+                                cmap='RdBu_r', filename="", name="",
+                                light=None, colorbar=True, profile_list=[],
+                                window_size=(2000, 1000), key='')
+        Write difference visualization to file.
+    write_plot_difference_projects(project_name_0, project_name_1, 
+                                   diff_window, filename="", colorbar=True,
+                                   key='')
+        Display a plot showing the difference between two projects
     difference_maxes(project_name_0, project_name_1, r_pair)
         Compare local maxes in two scans and store result in 
         max_difference_dict.
@@ -7958,7 +7985,7 @@ class ScanArea:
                            frac_exceed_diff_cutoff=0.1, bin_reduc_op='min',
                            diff_mode='mean'):
         """
-        Align successive scans on the basis of their gridded values
+        Align all scans on the basis of their gridded values
 
         !This function does not modify the tiepoint locations so it should 
         only be run after all tiepoint registration steps are done. It also
@@ -8681,449 +8708,6 @@ class ScanArea:
             return A, history_dict, psubi.shape[1]
         else:
             return A, history_dict
-    
-    def kernel_alignment(self, project_name_0, project_name_1, bin_width=0.15, 
-                         max_points=800000, max_dist=250, blur=0.005,
-                         max_steps=100, cutoff_t=0.0005, cutoff_r=0.000005,
-                         plot_optimization=False):
-        """
-        Align each single scan in project 1 with project 0 using geomloss
-
-        This function requires you to be running python from the docker group
-        and have the jupyter-keops container running. We will first subset
-        the two scans to areas with high overlapping point density. Then,
-        we apply compute_kernel_alignment.py to find the best fitting rigid
-        transformation. Finally, we load in this transformation.
-
-        This function updates the current_transform for each single scan and
-        applies current_transform to each scan.
-        
-        Parameters:
-        -----------
-        project_name_0 : str
-            The reference project we're trying to align project_1 with
-        project_name_1 : str
-            The project we're aligning with project_0
-        bin_width : float
-            Bin side length (in m) for when we downsample to areas with shared
-            high point density. The default is 0.15.
-        max_points : int
-            The maximum number of points from either scan to use, larger numbers
-            will increase runtimes. The default is 800000.
-        max_dist : float
-            The maximum distance from the scanner position of the scan we're
-            trying to align to look for points. The default is 250.
-        blur : float
-            Gaussian blur sigma for point alignment in m. The default is 0.005.
-        max_steps : int
-            The maximum number of steps that the optimization should take. The
-            default is 100.
-        cutoff_t : float
-            Threshold by which if all translations are less than cutoff_t and 
-            all rotations are less than cutoff_r for the current step stop
-            optimization. The default is 0.0005.
-        cutoff_r : float
-            Threshold by which if all translations are less than cutoff_t and 
-            all rotations are less than cutoff_r for the current step stop
-            optimization. The default is 0.000005.
-        plot_optimization : bool
-            Whether to plot the optimization. The default is False.
-
-        Returns
-        -------
-        None.
-
-        """
-
-        for scan_name in self.project_dict[project_name_1].scan_dict:
-            print(scan_name)
-            t0 = time.perf_counter()
-            self.kernel_alignment_ss(project_name_0, project_name_1, scan_name,
-                                     bin_width=bin_width, max_points=max_points,
-                                     max_dist=max_dist, blur=blur, max_steps=
-                                     max_steps, cutoff_t=cutoff_t, cutoff_r=
-                                     cutoff_r, plot_optimization=
-                                     plot_optimization)
-            t1 = time.perf_counter()
-            print(t1-t0)
-        # Apply current transform
-        self.project_dict[project_name_1].apply_transforms([
-                                                           'current_transform'])
-    def kernel_alignment_ss(self, project_name_0, project_name_1, scan_name,
-                            bin_width=0.15, max_points=800000, max_dist=250, 
-                            blur=0.005, max_steps=100, cutoff_t=0.0005, 
-                            cutoff_r=0.000005, plot_optimization=False):
-        """
-        Align single scan in project 1 with project 0 using geomloss
-
-        This function requires you to be running python from the docker group
-        and have the jupyter-keops container running. We will first subset
-        the two scans to areas with high overlapping point density. Then,
-        we apply compute_kernel_alignment.py to find the best fitting rigid
-        transformation. Finally, we load in this transformation.
-
-        This function will load the 
-        
-        Parameters:
-        -----------
-        project_name_0 : str
-            The reference project we're trying to align project_1 with
-        project_name_1 : str
-            The project we're aligning with project_0
-        bin_width : float
-            Bin side length (in m) for when we downsample to areas with shared
-            high point density. The default is 0.15.
-        max_points : int
-            The maximum number of points from either scan to use, larger numbers
-            will increase runtimes. The default is 800000.
-        max_dist : float
-            The maximum distance from the scanner position of the scan we're
-            trying to align to look for points. The default is 250.
-        blur : float
-            Gaussian blur sigma for point alignment in m. The default is 0.005.
-        max_steps : int
-            The maximum number of steps that the optimization should take. The
-            default is 100.
-        cutoff_t : float
-            Threshold by which if all translations are less than cutoff_t and 
-            all rotations are less than cutoff_r for the current step stop
-            optimization. The default is 0.0005.
-        cutoff_r : float
-            Threshold by which if all translations are less than cutoff_t and 
-            all rotations are less than cutoff_r for the current step stop
-            optimization. The default is 0.000005.
-        plot_optimization : bool
-            Whether to plot the optimization. The default is False.
-
-        Returns
-        -------
-        None.
-
-        """
-
-        git_hash = get_git_hash()
-        
-        # Create docker project path
-        docker_project_path = os.path.join('/mosaic_lidar/', 
-                                           self.project_path.rsplit('/',2)[1])
-
-        # Get pointclouds as numpy files and their history dicts
-        project_0 = self.project_dict[project_name_0]
-        ss = self.project_dict[project_name_1].scan_dict[scan_name]
-
-        pdata_merged_project_0, history_dict_project_0 = (project_0
-            .get_merged_points(history_dict=True))
-        project_0_points_np = vtk_to_numpy(pdata_merged_project_0
-                                           .GetPoints().GetData())
-        project_0_class_np = vtk_to_numpy(pdata_merged_project_0.GetPointData()
-                                          .GetArray('Classification'))
-        ss_points_np = vtk_to_numpy(ss.currentFilter.GetOutput().GetPoints()
-                                            .GetData())
-        ss_PointId = vtk_to_numpy(ss.currentFilter.GetOutput().GetPointData().
-                                  GetArray('PointId'))
-        history_dict_ss = json.loads(json.dumps(ss.filt_history_dict))
-
-        # Create Grid
-        w = [bin_width, bin_width]
-        bounds = pdata_merged_project_0.GetBounds()
-        edges = 2*[None]
-        nbin = np.empty(2, np.int_)
-        for i in range(2):
-            edges[i] = np.arange(int(np.ceil((bounds[2*i + 1] - 
-                                              bounds[2*i])/w[i]))
-                                 + 1, dtype=np.float32) * w[i] + bounds[2*i]
-            # Adjust lower edge so we don't miss lower most point
-            edges[i][0] = edges[i][0] - 0.00001
-            # Adjust uppermost edge so the bin width is appropriate
-            edges[i][-1] = bounds[2*i + 1] + 0.00001
-            nbin[i] = len(edges[i]) + 1
-
-        # Bin single scan
-        ss_Ncount = tuple(np.searchsorted(edges[i], ss_points_np[:,i], 
-                                          side='right') for i in range(2))
-        ss_xy = np.ravel_multi_index(ss_Ncount, nbin)
-        del ss_Ncount
-        ss_counts = np.bincount(ss_xy, minlength=nbin.prod())
-
-        # Bin Project
-        project_0_Ncount = tuple(np.searchsorted(edges[i], 
-                                                 project_0_points_np[:,i], 
-                                                 side='right') 
-                                 for i in range(2))
-        project_0_xy = np.ravel_multi_index(project_0_Ncount, nbin)
-        del project_0_Ncount
-        project_0_counts = np.bincount(project_0_xy, minlength=nbin.prod())
-
-        # Create array with min_counts per bucket
-        min_counts = np.minimum(project_0_counts, ss_counts)
-
-        # Sort by min_counts
-        sort_ind = np.argsort(min_counts)[::-1]
-
-        # Now starting at the bucket with the largest min number of points, 
-        # step through the buckets until we've gathered as many points as we 
-        # can fit under max_points
-        project_0_N = 0
-        ss_N = 0
-        for i in range(len(sort_ind)):
-            if ((project_0_N+project_0_counts[sort_ind[i]]>max_points) 
-                or (ss_N+ss_counts[sort_ind[i]]>max_points)):
-                break
-            else:
-                project_0_N += project_0_counts[sort_ind[i]]
-                ss_N += ss_counts[sort_ind[i]]
-
-        bin_ind = sort_ind[0:i]
-
-        # Use isin to get points
-        ss_bool = np.isin(ss_xy, bin_ind)
-        project_0_bool = np.isin(project_0_xy, bin_ind)
-
-        # The project points can be written directly to files, first we check
-        # if a folder already exists in the temp directory.
-        scan_0_path = os.path.join(self.project_path, 'temp', 'kernel_scan_0')
-        d_scan_0_path = os.path.join(docker_project_path, 'temp', 
-                                     'kernel_scan_0')
-        if not os.path.isdir(scan_0_path):
-            os.mkdir(scan_0_path)
-        # Delete old files
-        for f in os.listdir(scan_0_path):
-            os.remove(os.path.join(scan_0_path, f))
-        # Now save project_0
-        # Points
-        np.save(os.path.join(scan_0_path, 'Points.npy'), project_0_points_np[
-                project_0_bool, :])
-        # Classification
-        np.save(os.path.join(scan_0_path, 'Classification.npy'), 
-                project_0_class_np[project_0_bool])
-        # Create and save the history dict
-        history_dict = {
-            "type": "Filter",
-            "git_hash": git_hash,
-            "method": "ScanArea.kernel_alignment_ss",
-            "input_0": history_dict_project_0,
-            "params": {
-                "bin_width": bin_width,
-                "max_points": max_points,
-                "other_pointset": history_dict_ss
-                }
-            }
-        f = open(os.path.join(scan_0_path, 'raw_history_dict.txt'), 'w')
-        json.dump(history_dict, f, indent=4)
-        f.close()
-        # Save a blank transform
-        trans = np.array([(0, 0, 0, 
-                          0, 0, 0)],
-                          dtype=[('x0', '<f8'), ('y0', '<f8'), 
-                                 ('z0', '<f8'), ('u0', '<f8'),
-                                 ('v0', '<f8'), ('w0', '<f8')])
-        np.save(os.path.join(scan_0_path, 'current_transform.npy'), trans)
-        # Now create a blank transform source (indicates identity trans), save
-        history_dict = {
-            "type": "Transform Source",
-            "git_hash": git_hash,
-            "method": "ScanArea.kernel_alignment_ss",
-            "filename": ''
-            }
-        f = open(os.path.join(scan_0_path, 'current_transform.txt'), 'w')
-        json.dump(history_dict, f, indent=4)
-        f.close()
-
-        # For scan 1 we want to save untransformed points. So first we use
-        # pedigree id selection to get these points
-        ss_subset_pointid = ss_PointId[ss_bool]
-        selectionNode = vtk.vtkSelectionNode()
-        selectionNode.SetFieldType(1) # we want to select points
-        selectionNode.SetContentType(2) # 2 corresponds to pedigreeIds
-        selectionNode.SetSelectionList(numpy_to_vtk(ss_subset_pointid, 
-                                                    array_type=
-                                                    vtk.VTK_UNSIGNED_INT))
-        selection = vtk.vtkSelection()
-        selection.AddNode(selectionNode)
-        extractSelection = vtk.vtkExtractSelection()
-        extractSelection.SetInputData(0, ss.polydata_raw)
-        extractSelection.SetInputData(1, selection)
-        extractSelection.Update()
-        pdata = extractSelection.GetOutput()
-
-        ss_points_write = vtk_to_numpy(pdata.GetPoints().GetData())
-        ss_classification_write = vtk_to_numpy(pdata.GetPointData()
-                                               .GetArray('Classification'))
-        # Now write selected points to files
-        # if a folder already exists in the temp directory.
-        scan_1_path = os.path.join(self.project_path, 'temp', 'kernel_scan_1')
-        d_scan_1_path = os.path.join(docker_project_path, 'temp', 
-                                     'kernel_scan_1')
-        if not os.path.isdir(scan_1_path):
-            os.mkdir(scan_1_path)
-        # Delete old files
-        for f in os.listdir(scan_1_path):
-            os.remove(os.path.join(scan_1_path, f))
-        # Now save scan 1
-        # Points
-        np.save(os.path.join(scan_1_path, 'Points.npy'), ss_points_write)
-        # Classification
-        np.save(os.path.join(scan_1_path, 'Classification.npy'), 
-                ss_classification_write)
-        # Create and save the history dict
-        history_dict = {
-            "type": "Transformer",
-            "git_hash": git_hash,
-            "method": "ScanArea.kernel_alignment_ss",
-            "input_0": {
-                "type": "Filter",
-                "git_hash": git_hash,
-                "method": "ScanArea.kernel_alignment_ss",
-                "input_0": history_dict_ss,
-                "params": {
-                    "bin_width": bin_width,
-                    "max_points": max_points,
-                    "other_pointset": history_dict_project_0
-                    }
-                },
-            "input_1": {
-                "type": "Invert Transform",
-                "input_0": ss.transformed_history_dict["input_1"]
-                }
-            }
-        f = open(os.path.join(scan_1_path, 'raw_history_dict.txt'), 'w')
-        json.dump(history_dict, f, indent=4)
-        f.close()
-
-        # Now we can create our command for the kernel optimization
-        cmd = ("docker exec -w /code/pydar/keops jupyter-keops python " +
-               "compute_kernel_alignment.py --set_paths_directly --scan_1_path "
-               + d_scan_1_path + " --trans_1_path " + os.path.join(
-                '/mosaic_lidar/', docker_project_path, 
-                project_name_1, 'transforms', scan_name) + 
-               " --scan_0_paths " + d_scan_0_path + " --trans_0_paths " +
-               d_scan_0_path + " --max_dist " + str(max_dist) + " --max_pts " 
-               + str(max_points) + " --blur " + str(blur) + " --max_steps " + 
-               str(max_steps) + " --cutoff_t " + str(cutoff_t) + " --cutoff_r "
-               + str(cutoff_r) + " --git_hash " + git_hash + 
-               " --plot_optimization --plot_output_path " + os.path.join(
-               docker_project_path, 'snapshots'))
-
-        # Delete all unneeded objects to free up some memory
-        del history_dict, ss_classification_write, ss_points_write
-        del pdata, extractSelection, selection, selectionNode, ss_subset_pointid
-        del project_0_bool, ss_bool, bin_ind, sort_ind, min_counts
-        del project_0_counts, project_0_xy, ss_counts, ss_xy, nbin, edges
-        del history_dict_ss, ss_PointId, ss_points_np, project_0_class_np
-        del project_0_points_np, pdata_merged_project_0, history_dict_project_0
-
-        # Execute command
-        os.system(cmd)
-
-        # Update the current transform in our single scan
-        ss.read_transform()
-
-    def apply_snowflake_filter(self, shells):
-        """
-        Apply a snowflake filter to each project.
-
-        Parameters
-        ----------
-        shells : array-like of tuples
-            shells is an array-like set of tuples where each tuple is four
-            elements long (inner_r, outer_r, point_radius, neighbors). *_r
-            define the inner and outer radius of a halo defining shell. 
-            point_radius is radius for vtkRadiusOutlierRemoval to look at
-            (if 0, remove all points). Neighbors is number of neighbors that
-            must be within point_radius (if 0, keep all points)
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        for key in self.project_dict:
-            self.project_dict[key].apply_snowflake_filter(shells)
-        
-    def apply_snowflake_filter_2(self, z_diff, N, r_min):
-        """
-        Filter snowflakes based on their vertical distance from nearby points.
-        
-        Here we exploit the fact that snowflakes (and for that matter power
-        cables and some other human objects) are higher than their nearby
-        points. The filter steps through each point in the transformed
-        dataset and compares it's z value with the mean of the z-values of
-        the N closest points. If the difference exceeds z_diff then set the
-        Classification for that point to be 65. Also, there is a shadow around the
-        base of the scanner so all points within there must be spurious. We
-        filter all points within r_min
-
-        Parameters
-        ----------
-        z_diff : float
-            Maximum vertical difference in m a point can have from its 
-            neighborhood.
-        N : int
-            Number of neighbors to find.
-        r_min : float
-            Radius of scanner in m within which to filter all points.
-
-        Returns
-        -------
-        None.
-        """
-        
-        for key in self.project_dict:
-            print(key)
-            self.project_dict[key].apply_snowflake_filter_2(z_diff, N, r_min)
-    
-    def merged_points_to_mesh(self, subgrid_x, subgrid_y, min_pts=100, 
-                              alpha=0, overlap=0.1, sub_list=[]):
-        """
-        Create mesh from all points in singlescans.
-        
-        Note, we use a delaunay2D filter to create this mesh. The filter
-        encounters memory issues for large numbers of input points. So before
-        the mesh creation step, we break the project up into a subgrid of 
-        smaller chunks and then we apply the delaunay2D filter to each of 
-        these and save the output in the mesh object.
-
-        Parameters
-        ----------
-        subgrid_x : float
-            x spacing, in m for the subgrid.
-        subgrid_y : float
-            y spacing, in m for the subgrid.
-        min_pts : int, optional
-            Minimum number of points for a subgrid region below which dont 
-            include data from this region. The default is 100.
-        alpha : float, optional
-            Alpha value for vtkDelaunay2D filter. Inverse of how large of data
-            gaps to interpolate over in m. The default is 0.
-        overlap : float, optional
-            Overlap value indicates how much overlap to permit between subgrid
-            chunks in meters. The default is 0.1
-        sub_list : list, optional
-            List of project names to apply to if not whole project.
-
-        Returns
-        -------
-        None.
-
-        """
-
-        raise RuntimeError('Do not use this function, need to update form poisson')
-        
-        if len(sub_list)==0:
-            for key in self.project_dict:
-                print(key)
-                self.project_dict[key].merged_points_to_mesh(subgrid_x, 
-                                                             subgrid_y,
-                                                             min_pts, alpha, 
-                                                             overlap)
-        else:
-            for key in sub_list:
-                print(key)
-                self.project_dict[key].merged_points_to_mesh(subgrid_x, 
-                                                             subgrid_y,
-                                                             min_pts, alpha, 
-                                                             overlap)
         
     def mesh_to_image(self, nx, ny, dx, dy, x0, y0, yaw=0, sub_list=[],
                       image_key=''):
@@ -9836,28 +9420,6 @@ class ScanArea:
     
         renderWindow.Finalize()
         del renderWindow
-    
-    def difference_histogram(self, ax, project_name_0, project_name_1, 
-                            difference_field='Elevation'):
-        """
-        
-
-        Parameters
-        ----------
-        ax : matplotlib axis object
-            Axis to plot on.
-        project_name_0 : str
-            Name of project to subtract (usually older).
-        project_name_1 : str
-            Name of project to subtract from (usually younger).
-        difference_field : str, optional
-            Which field in ImageData to use. The default is 'Elevation'
-        
-        Returns
-        -------
-        None.
-
-        """
 
     def difference_maxes(self, project_name_0, project_name_1, r_pair):
         """
