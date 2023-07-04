@@ -4187,39 +4187,22 @@ class Project:
     
     Methods
     -------
-    add_z_offset(z_offset)
-        Add z offset to all scans in project.
     apply_transforms(transform_list)
         Update transform for each scan and update current_transform_list.
-    display_project(z_min, z_max, lower_threshold=-1000, upper_threshold=1000)
-        Display project in a vtk interactive window.
-    display_image(z_min, z_max, key='')
-        Display project image in a vtk interactive window.
-    write_merged_points(output_name=self.project_name + '_merged.vtp')
-        Merge all transformed and filtered pointclouds and write to file.
-    write_las_pdal(output_dir, filename)
-        Merge all points and write to a las formatted output.
-    write_mesh(output_name=self.project_name + '_mesh.vtp')
-        Write mesh to vtp file.
-    read_mesh(mesh_name=self.project_name + '_mesh.vtp')
-        Read mesh from file.
-    write_scans()
+    write_scans(project_write_dir=None, suffix='',
+                freeze=False, overwrite_frozen=False)
         Write all singlescans to files.
-    read_scans()
-        Read all singlescans from files.
-    merged_points_to_mesh(subgrid_x, subgrid_y, min_pts=100, alpha=0,
-                          overlap=0.1)
-        Merge all transformed pointclouds and convert to mesh.
-    project_to_image(z_min, z_max, focal_point, camera_position,
-                         image_scale=500, lower_threshold=-1000, 
-                         upper_threshold=1000, mode='map', colorbar=True,
-                         name='')
-        Write out an image of the project (in point cloud) to the snapshot
-        folder.
-    add_transforms(key, matrix)
-        Add the provided transform to each SingleScan
+    write_current_transform(suffix='', name='current_transform',
+                            freeze=False, overwrite_frozen=False)
+        Have each SingleScan write its current transform to a file.
+    read_transforms(name='current_transform', suffix=''):
+        Have each SingleScan read a transform from file
+    load_man_class()
+        Direct each single scan to load it's man_class table.
+    apply_man_class()
+        Update all point Classifications with their values in man_class.
     create_normals(radius=2, max_nn=30)
-        Estimate point normals (using Open3D).
+        Use Open3d to compute pointwise normals and store.
     create_z_sigma()
         For the current value of the transformation, project the pointwise
         uncertainty spheroids onto the z-axis and save in PointData.
@@ -4229,58 +4212,104 @@ class Project:
         Get all labels as a DataFrame
     apply_manual_filter()
         Manually classify points within a selection loop.
-    apply_snowflake_filter(shells)
-        Apply the snowflake filter.
-    apply_snowflake_filter_2(z_diff, N, r_min)
-        Apply a snowflake filter based on z difference with nearby points.
     apply_snowflake_filter_returnindex(cylinder_rad, radial_precision)
         Filter snowflakes based on their return index and whether they are on
         the border of the visible region.
-    create_scanwise_closest_point()
-        For each point in each scan, find the vertical and horizontal
-        distances to the closest point in all other scans. Useful for
-        filtering out snowmobiles and humans and things that move.
-    create_heightaboveground_pdal(resolution=1, voxel=true, h_voxel=0.1,
-                                  v_voxel=0.1, project_dem=True)
-        Create height above ground value for each point in scan.
+    apply_cylinder_filter(x, y, r, category=73)
+        Classify all points within distance r of (x,y).
     update_man_class_fields(update_fields='all', update_trans=True)
         Update the man_class table with values from the fields currently in
         polydata_raw. Useful, for example if we've improved the HAG filter and
         don't want to have to repick all points.
-    get_merged_points()
-        Get the merged points as a polydata
+    add_transform(key, matrix, history_dict=None)
+        Add the provided transform to each SingleScan
+    add_z_offset(z_offset)
+        Add z offset to all scans in project.
+    display_project(z_min, z_max, lower_threshold=-1000, 
+                    upper_threshold=1000, colorbar=True, field='Elevation',
+                    mapview=False, profile_list=[], show_scanners=False,
+                    scanner_color='Gray', scanner_length=150, 
+                    show_labels=False, pdata_list=[], addtl_actors=[])
+        Display project in a vtk interactive window.
+    project_to_image(z_min, z_max, focal_point, camera_position,
+                     roll=0, image_scale=500, lower_threshold=-1000, 
+                     upper_threshold=1000, mode=None, colorbar=True,
+                     field='Elevation',
+                     name='', window_size=(2000, 1000), path=None,
+                     date=True, scale=True, addtl_actors=[])
+        Write out an image of the project (in point cloud) to the snapshot
+        folder.
+    point_to_grid_average_image(nx, ny, dx, dy, x0, y0, yaw=0,
+                                key='', overwrite=False)
+        Convert a rectangular area of points to an image by gridded averaging
+    merged_points_to_image(nx, ny, dx, dy, x0, y0, lengthscale, 
+                           outputscale, nu, yaw=0, n_neighbors=50, max_pts=
+                           64000, min_pts=100, mx=32, my=32, eps=0, 
+                           corner_coords=None,
+                           max_dist=None, optimize=False, learning_rate=0.1,
+                           n_iter=5, max_time=0.5, optim_param=None,
+                           multiply_outputscale=False, var_radius=None,
+                           key='', overwrite=False)
+        Convert a rectangular area of points to an image using gpytorch.
     mesh_to_image(z_min, z_max, nx, ny, dx, dy, x0, y0, key='')
         Interpolate mesh into image.
-    merged_points_to_image(x0, y0, nx, ny, dx, dy, yaw, max_pts_bucket, 
-                           lengthscale, outputscale, key='')
-        Convert a rectangular area of points to an image using gpytorch.
+    get_image(field='Elevation', warp_scalars=False,
+              v_min=-9999.0, nan_value=None, key='')
+        Return image as vtkImageData or vtkPolyData depending on warp_scalars
+    display_image(z_min, z_max, field='Elevation', warp_scalars=False, 
+                  color_field=None, show_points=False, profile_list=[],
+                  show_scanners=False, scanner_color='Gray', scanner_length=150,
+                  pdata_list=[], key='')
+        Display project image in a vtk interactive window.
+    write_plot_image(z_min, z_max, focal_point, camera_position,
+                     field='Elevation', warp_scalars=False,
+                     roll=0, image_scale=500, lower_threshold=-1000, 
+                     upper_threshold=1000, mode='map', colorbar=True,
+                     name='', light=None, profile_list=[],
+                     window_size=(2000,1000), key='')
+        Write an image of the image to the snapshots folder.
     plot_image(z_min, z_max, cmap='inferno', key='')
         Plots the image using matplotlib
     get_np_nan_image(key='')
         Convenience function for copying the image to a numpy object.
-    create_empirical_cdf(bounds)
-        Creates an empirical cdf from z-values of all points within bounds.
-    create_empirical_cdf_image(z_min, z_max, key='')
-        Creates an empirical cdf from z-values of image.
-    set_empirical_cdf(x, cdf, bounds)
-        Set the empirical cdf
-    create_normalized_heights()
-        Create the normalized heights, assumes that empirical cdf exists.
-    create_im_gaus(key='')
-        Create normalized image based on the empirical cdf
-    add_theta(theta1, theta)
-        Adds the GMRF parameters theta1 and theta to attributes.
-    create_im_nan_border(buffer, key='')
-        Creates a mask for which missing pixels not to infill.
-    write_image(output_name=None, key=None)
+    merged_points_to_mesh(depth=13, min_density=9, x0=None, y0=None,
+                          wx=None, wy=None, yaw=0)
+        Merge all transformed pointclouds and convert to mesh.
+    transect_points(x0, y0, x1, y1, d)
+        Get the points within a distance d of transect defined by points.
+    transect_n_points(x0, y0, x1, y1, n_pts, tol=1000, d0=0.5, dmax=50)
+        Get approximately n points around the transect.
+    image_transect(x0, y0, x1, y1, N, key, image_key='')
+        Sample a transect through the current image and save in profiles.
+    merged_points_transect_gp(x0, y0, x1, y1, N, key, mx=256, n_neighbors=256, 
+                              eps=0, use_z_sigma=True, lengthscale=None, 
+                              outputscale=None, mean=None, nu=0.5, 
+                              optimize=False, learning_rate=0.1, n_iter=None, 
+                              max_time=60)
+        Use gpytorch to infer a surface transect.
+    get_profile(key)
+        Returns the requested profile as a numpy array
+    mesh_transect(x0, y0, x1, y1, N)
+        Cut a transect through the mesh, return the transect
+    get_merged_points(port=False, history_dict=False, x0=None, y0=None, 
+                      wx=None, wy=None, yaw=0)
+        Get the merged points as a polydata
+    write_merged_points(output_name=None)
+        Merge all transformed and filtered pointclouds and write to file.
+    write_las_pdal(output_dir, filename)
+        Merge all points and write to a las formatted output.
+    write_mesh(output_path=None, suffix='', name='mesh')
+        Write mesh to vtp file.
+    read_mesh(output_path=None, suffix='', name='mesh')
+        Read mesh from file.
+    write_image(output_path=None, suffix='', name=None, key='')
         Write vtkImageData to file. Useful for saving im_nan_border.
-    read_image(image_path=None, key=None)
+    read_image(image_path=None, suffix='', name=None, overwrite=False)
         Read image from file.
-    create_gmrf()
-        Create GMRF for pixel infilling. Generates mu_agivenb and sparse_LAA.
     create_reflectance()
         Create reflectance for each scan.
-    correct_reflectance_radial()
+    correct_reflectance_radial(mode, r_min=None, r_max=None, num=None, 
+                               base=None)
         Attempt to correct for reflectance bias due to distance from scanner.
     areapoints_to_cornercoords(areapoints)
         Given a set of points, identified by their scan names and point ids,
@@ -4290,6 +4319,10 @@ class Project:
         Get the set of locally maximal points.
     create_local_max(z_threshold, rmax, Closest_only=True, key='local_max')
         Add pdata containing locally maximal points to pdata_dict.
+    save_local_max(suffix='', key='local_max')
+        Saves the local max in the npyfiles directory NOT ROBUST
+    load_local_max(suffix='', key='local_max')
+        Loads the local max in the npyfiles directory NOT ROBUST
 
     """
     
@@ -4450,9 +4483,9 @@ class Project:
         
         Parameters
         ----------
-        A directory to write all scans for this project to. If none write
-        to default npyfiles location. The default is None.
-        
+        project_write_dir : str, optional
+            A directory to write all scans for this project to. If none write
+            to default npyfiles location. The default is None.
         suffix : str, optional
             Suffix for npyfiles directory if we are reading scans. The default
             is '' which corresponds to the regular npyfiles directory.
@@ -4492,29 +4525,20 @@ class Project:
                                                      overwrite_frozen=
                                                      overwrite_frozen)
     
-    def read_scans(self):
-        """
-        Read all single scans from files.
-
-        Returns
-        -------
-        None.
-
-        """
-        raise RuntimeError('Do not use, just init a new Project object')
-        for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].read_scan()
-    
     def write_current_transforms(self, suffix='', name='current_transform',
                                  freeze=False, 
                                  overwrite_frozen=False):
         """
         Have each SingleScan write its current transform to a file.
-
+        
+        Parameters
+        ----------
         suffix : str, optional
             Suffix for transforms directory if we are reading scans. 
             The default is '' which corresponds to the regular transforms
             directory.
+        name : str, optional
+            The name of the transform. The default is 'current_transform'.
         freeze: bool, optional
             Indicate whether the written files should be 'frozen'. Frozen files
             have the first element of their history dict set as 'frozen', and 
@@ -4543,6 +4567,10 @@ class Project:
         """
         Have each SingleScan read a transform from file
 
+        Parameters
+        ----------
+        name : str, optional
+            The name of the transform. The default is 'current_transform'.
         suffix : str, optional
             Suffix for transforms directory if we are reading scans. 
             The default is '' which corresponds to the regular transforms
@@ -4551,7 +4579,8 @@ class Project:
         Returns
         -------
         None.
-
+name : str, optional
+            The name of the transform. The default is 'current_transform'.
         """
         
         for scan_name in self.scan_dict:
@@ -4711,63 +4740,6 @@ class Project:
                                                           category=category,
                                                           mode=mode)
 
-    def apply_snowflake_filter(self, shells):
-        """
-        Apply a snowflake filter to each SingleScan
-
-        Parameters
-        ----------
-        shells : array-like of tuples
-            shells is an array-like set of tuples where each tuple is four
-            elements long (inner_r, outer_r, point_radius, neighbors). *_r
-            define the inner and outer radius of a halo defining shell. 
-            point_radius is radius for vtkRadiusOutlierRemoval to look at
-            (if 0, remove all points). Neighbors is number of neighbors that
-            must be within point_radius (if 0, keep all points)
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].apply_snowflake_filter(shells)
-        self.filterName = "snowflake"
-    
-    def apply_snowflake_filter_2(self, z_diff, N, r_min):
-        """
-        Filter snowflakes based on their vertical distance from nearby points.
-        
-        Here we exploit the fact that snowflakes (and for that matter power
-        cables and some other human objects) are higher than their nearby
-        points. The filter steps through each point in the transformed
-        dataset and compares it's z value with the mean of the z-values of
-        the N closest points. If the difference exceeds z_diff then set the
-        Classification for that point to be 2. Also, there is a shadow around the
-        base of the scanner so all points within there must be spurious. We
-        filter all points within r_min
-
-        Parameters
-        ----------
-        z_diff : float
-            Maximum vertical difference in m a point can have from its 
-            neighborhood.
-        N : int
-            Number of neighbors to find.
-        r_min : float
-            Radius of scanner in m within which to filter all points.
-
-        Returns
-        -------
-        None.
-        """
-        
-        for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].apply_snowflake_filter_2(z_diff, N,
-                                                               r_min)
-        self.filterName = "snowflake_2"
-    
     def apply_snowflake_filter_returnindex(self, cylinder_rad=0.025*np.sqrt(2)
                                            *np.pi/180, radial_precision=0):
         """
@@ -4835,170 +4807,6 @@ class Project:
                                                             category)
         self.filterName = "cylinder_filter"
     
-    def create_scanwise_closest_point(self):
-        """
-        Create VerticalClosestPoint and HorizontalClosestPoint fields.
-        
-        For each point in each scan, find the vertical and horizontal
-        distances to the closest point in all other scans. Useful for
-        filtering out snowmobiles and humans and things that move.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        for scan_name in self.scan_dict:
-            print(scan_name)
-            pdata = self.scan_dict[scan_name].transformFilter.GetOutput()
-            
-            # Combine all other scans into a single polydata and build
-            n_other_points = 0
-            for s in self.scan_dict:
-                if s==scan_name:
-                    continue
-                else:
-                    n_other_points += (self.scan_dict[s].transformFilter
-                                       .GetOutput().GetNumberOfPoints())
-            
-            otherPoints = vtk.vtkPoints()
-            otherPoints.SetDataTypeToFloat()
-            otherPoints.SetNumberOfPoints(n_other_points)
-            ctr = 0
-            for s in self.scan_dict:
-                if s==scan_name:
-                    continue
-                else:
-                    n = (self.scan_dict[s].transformFilter.GetOutput()
-                         .GetNumberOfPoints())
-                    otherPoints.InsertPoints(ctr, n, 0, self.scan_dict[s]
-                                             .transformFilter.GetOutput()
-                                             .GetPoints())
-                    ctr += n
-            
-            otherPData = vtk.vtkPolyData()
-            otherPData.SetPoints(otherPoints)
-            locator = vtk.vtkOctreePointLocator()
-            locator.SetDataSet(otherPData)
-            otherPData.SetPointLocator(locator)
-            otherPData.BuildLocator()
-            
-            
-            # Create numpy array to hold points
-            closest_points_np = np.zeros((pdata.GetNumberOfPoints(), 3), 
-                                         dtype=np.float32)
-            for i in np.arange(pdata.GetNumberOfPoints()):
-                otherPData.GetPoint(locator.FindClosestPoint(pdata
-                                                             .GetPoint(i)),
-                                    closest_points_np[i,:])
-            
-            # Create arrays to hold horizontal and vertical distances
-            hArr = vtk.vtkFloatArray()
-            hArr.SetNumberOfComponents(1)
-            hArr.SetNumberOfTuples(pdata.GetNumberOfPoints())
-            hArr.SetName('HorizontalClosestPoint')
-            vArr = vtk.vtkFloatArray()
-            vArr.SetNumberOfComponents(1)
-            vArr.SetNumberOfTuples(pdata.GetNumberOfPoints())
-            vArr.SetName('VerticalClosestPoint')
-            
-            # Add arrays to polydata_raw
-            self.scan_dict[scan_name].polydata_raw.GetPointData().AddArray(
-                hArr)
-            self.scan_dict[scan_name].polydata_raw.GetPointData().AddArray(
-                vArr)
-            self.scan_dict[scan_name].polydata_raw.Modified()
-            
-            # Populate with vertical and horizontal distances
-            dsa_pdata = dsa.WrapDataObject(pdata)
-            self.scan_dict[scan_name].dsa_raw.PointData['VerticalClosestPoint'
-                                                        ][:] = (
-                dsa_pdata.Points[:,2] - closest_points_np[:,2]).squeeze()
-            self.scan_dict[scan_name].dsa_raw.PointData[
-                'HorizontalClosestPoint'][:] = (
-                np.sqrt(np.sum(np.square(dsa_pdata.Points[:,:2] 
-                                         - closest_points_np[:,:2]),
-                               axis=1)).squeeze())
-            
-            self.scan_dict[scan_name].polydata_raw.Modified()
-            self.scan_dict[scan_name].transformFilter.Update()
-            self.scan_dict[scan_name].currentFilter.Update()
-        
-    def create_heightaboveground_pdal(self, 
-                                      project_dem=True):
-        """
-        Create height above ground for each point in each scan.
-        
-        For now we are just building a dem from inverse distance weighting
-        of all points. Will change to csf filter eventually.
-
-        Parameters
-        ----------
-        project_dem : bool, optional
-            Whether to create a dem from all scans in the project. 
-            The default is True.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        if project_dem:
-            filenames = []
-            dem_name = os.path.join(self.project_path, 'temp', self.project_name 
-                        + '.tif')
-            for scan_name in self.scan_dict:
-                # Write scan to numpy
-                filenames.append(os.path.join(self.project_path, 'temp', 
-                                 self.project_name + '_' + scan_name 
-                                 + '.npy'))
-                self.scan_dict[scan_name].write_npy_pdal(filenames[-1],
-                                                         filename='',
-                                                         mode='transformed',
-                                                         skip_fields='all')
-            
-            # Now create dem from all scans
-            json_list = []
-            for filename in filenames:
-                json_list.append({"filename": filename,
-                                  "type": "readers.numpy"})
-            json_list.append({"type": "filters.merge"})
-            json_list.append({"type": "filters.smrf",
-                              "slope": 0.667,
-                              "scalar": 2.18,
-                              "threshold": 0.894,
-                              "window": 14.8,
-                              "cell": 0.624})
-
-            json_list.append({"type": "filters.range",
-                              "limits": "Classification[2:2]"})
-            
-            json_list.append({"type": "writers.gdal",
-                              "filename": dem_name,
-                              "resolution": 0.5,
-                              "data_type": "float32",
-                              "output_type": "idw",
-                              "window_size": 7})
-            
-            json_data = json.dumps(json_list, indent=4)
-            
-            pipeline = pdal.Pipeline(json_data)
-            _ = pipeline.execute()
-            del _
-            del pipeline
-            
-            # Now create heightaboveground for each scan
-            for filename, scan_name in zip(filenames, self.scan_dict):
-                self.scan_dict[scan_name].create_heightaboveground_pdal(
-                    create_dem=False, from_current=False, temp_file=filename,
-                    temp_file_tif=dem_name)
-            os.remove(dem_name)
-        else:
-            for scan_name in self.scan_dict:
-                self.scan_dict[scan_name].create_heightaboveground_pdal()
-    
     def update_man_class_fields(self, update_fields='all', update_trans=True):
         """
         Update man_class table with the fields that are currently in
@@ -5050,28 +4858,6 @@ class Project:
             self.scan_dict[scan_name].add_transform(key, matrix, history_dict=
                                                     history_dict)
     
-    def add_transform_from_tiepointlist(self, key):
-        """
-        Add the transform in the tiepointlist to each single scan.
-
-        Parameters
-        ----------
-        key : const (could be string or tuple)
-            Dictionary key for the transforms dictionary.
-        matrix : TYPE
-            DESCRIPTION.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        for scan_name in self.scan_dict:
-            matrix, history_dict = self.tiepointlist.get_transform(key, 
-                                                        history_dict=True)
-            self.scan_dict[scan_name].add_transform(key, matrix, history_dict)
-            
     def add_z_offset(self, z_offset, history_dict=None):
         """
         Add z_offset transform to each single scan in scan_dict
@@ -6648,7 +6434,7 @@ class Project:
     
     def transect_points(self, x0, y0, x1, y1, d):
         """
-        Get the points within a distance d of transect defined by by points.
+        Get the points within a distance d of transect defined by points.
 
         Parameters
         ----------
@@ -7197,6 +6983,7 @@ class Project:
         
         Uses the output of each scans get_polydata so should run
         apply_transforms beforehand.
+
         Parameters
         ----------
         output_name : str, optional
@@ -7367,296 +7154,6 @@ class Project:
         self.raw_history_dict = json.load(f)
         f.close()
     
-    def create_empirical_cdf(self, bounds=None):
-        """
-        Creates an empirical distribution of heights from histogram.
-        
-        Currently sets the resolution of distribution to 1 mm vertically but
-        could change that if needed.
-
-        Parameters
-        ----------
-        bounds : six element tuple, optional
-            The boundaries of box of points to create distribution from.
-            Format is (xmin, xmax, ymin, ymax, zmin, zmax). If None use all
-            points. The default is None.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        if bounds is None:
-            dsa_points = dsa.WrapDataObject(self.get_merged_points())
-        else:
-            # Get all points within bounds
-            box = vtk.vtkBox()
-            box.SetBounds(bounds)
-            appendPolyData = vtk.vtkAppendPolyData()
-            for key in self.scan_dict:
-                self.scan_dict[key].currentFilter.Update()
-                extractPoints = vtk.vtkExtractPoints()
-                extractPoints.SetImplicitFunction(box)
-                extractPoints.SetExtractInside(1)
-                extractPoints.SetInputData(self.scan_dict[key].get_polydata())
-                extractPoints.Update()
-                appendPolyData.AddInputData(extractPoints.GetOutput())
-            
-            appendPolyData.Update()
-            dsa_points = dsa.WrapDataObject(appendPolyData.GetOutput())
-        
-        # Get z-values of points and create cdf
-        z = dsa_points.Points[:, 2].squeeze()
-        minh = np.min(z)
-        maxh = np.max(z)
-        nbins = int(1000*(maxh - minh))
-        pdf, bin_edges = np.histogram(z,
-                                  density=True, bins=nbins)
-        x = (bin_edges[:-1] + bin_edges[1:])/2
-        cdf = np.cumsum(pdf)/1000
-        
-        # Store result in empirical_cdf attribute
-        self.empirical_cdf = (bounds, x, cdf)
-    
-    def create_empirical_cdf_image(self, z_min, z_max, key=''):
-        """
-        Creates an empirical distribution of heights from the image
-
-        Parameters
-        ----------
-        z_min : float
-            Minimum height value to consider.
-        z_max : float
-            Maximum height value to consider.
-        key : str, optional
-            Key to index this image and transform in image_dict and
-            image_transform_dict. The default is '' (for backward compatability)
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        # Check that image has been created
-        if not (key in self.image_dict.keys()):
-            raise RuntimeError('Need to create an image for project: ' + 
-                               self.project_name)
-        
-        z = np.ravel(self.get_np_nan_image(key=key))
-        z[z<z_min] = np.NaN
-        z[z>z_max] = np.NaN
-        minh = np.nanmin(z)
-        maxh = np.nanmax(z)
-        nbins = int(1000*(maxh - minh))
-        pdf, bin_edges = np.histogram(z[~np.isnan(z)],
-                                  density=True, bins=nbins)
-        x = (bin_edges[:-1] + bin_edges[1:])/2
-        cdf = np.cumsum(pdf)/1000
-        
-        # Store result in empirical_cdf attribute
-        bounds_image = self.image_dict[key].GetBounds()
-        bounds = (bounds_image[0], bounds_image[1], bounds_image[2], 
-                  bounds_image[3], z_min, z_max)
-        self.empirical_cdf = (bounds, x, cdf)
-
-    def set_empirical_cdf(self, x, cdf, bounds=None):
-        """
-        Set the empirical cdf to the given values
-
-        Parameters
-        ----------
-        x : 1d-array
-            Bin values in empirical cdf.
-        cdf : 1d-array
-            Values of empirical cdf.
-        bounds : tuple, optional
-            Bounding box for points making up cdf. The default is None.
-
-        Returns
-        -------
-        None.
-
-        """
-
-        self.empirical_cdf = (bounds, x, cdf)
-
-    def create_normalized_heights(self):
-        """
-        Apply the empirical cdf to each single scan to create normalized height
-
-        Returns
-        -------
-        None.
-        """
-
-        for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].create_normalized_heights(
-                self.empirical_cdf[1], self.empirical_cdf[2])
-    
-    def create_im_gaus(self, key=''):
-        """
-        Transform image to gaussian using current value of empirical cdf
-
-        Parameters
-        ----------
-        key : str, optional
-            Key to index this image and transform in image_dict and
-            image_transform_dict. The default is '' (for backward compatability)
-
-        Returns
-        -------
-        None.
-
-        """
-
-        
-        # Check that image  and empirical cdf has been created
-        if not hasattr(self, 'empirical_cdf'):
-            raise RuntimeError('Need to create an empirical_cdf for project: '
-                               + self.project_name)
-        if not (key in self.image_dict.keys()):
-            raise RuntimeError('Need to create an image for project: ' + 
-                               self.project_name)
-        
-        # Create im_gaus field if it doesn't exist.
-        if not 'im_gaus' in self.dsa_image_dict[key].PointData.keys():
-            arr = vtk.vtkFloatArray()
-            arr.SetName('im_gaus')
-            arr.SetNumberOfComponents(1)
-            arr.SetNumberOfTuples(self.image_dict[key].GetNumberOfPoints())
-            arr.FillComponent(0, 0)
-            self.image_dict[key].GetPointData().AddArray(arr)
-        
-        # Fill im_gaus
-        self.dsa_image_dict[key].PointData['im_gaus'][:] = normalize(
-            self.dsa_image_dict[key].PointData['Elevation'],
-            self.empirical_cdf[1], self.empirical_cdf[2])
-    
-    def add_theta(self, theta1, theta):
-        """
-        Adds theta attributes for specifying GMRF, see Rue and Held 2005 ch. 5
-
-        Parameters
-        ----------
-        theta1 : float
-            Scaling parameter theta1.
-        theta : array
-            Conditional covariances of neighbors, see Rue and Held Ch. 5.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        self.theta1 = theta1
-        self.theta = theta
-    
-    def create_im_nan_border(self, buffer=2):
-        """
-        Creates a mask of which missing pixels not to infill.
-        
-        We don't want to infill certain pixels because either, they border the 
-        boundary of our domain or more generally are conditionally dependent
-        on a pixel outside the border of our domain (which we cannot know).
-        We create this mask recursively starting at the boundary of the domain
-        and then iteratively finding all missing pixels that are in contact
-        with the boundary.
-
-        Parameters
-        ----------
-        buffer : int, optional
-            The width of the neighborhood around a pixel, same as m in the
-            specification of theta. The default is 2.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        raise RuntimeError('create_im_nan_border is deprecated')
-
-        # Get logical array of missing pixels
-        im_nan = np.array(np.isnan(self.dsa_image.PointData['im_gaus']).
-                          reshape((self.image.GetDimensions()[1],
-                                   self.image.GetDimensions()[0])), 
-                          dtype='uint8')
-        
-        # Connected components filter
-        retval, labels = cv.connectedComponents(im_nan)
-        
-        # First find missing blobs on boundary
-        border = np.zeros(im_nan.shape, dtype='bool')
-        border[:buffer,:] = True
-        border[:,:buffer] = True
-        border[-1*buffer:,:] = True
-        border[:,-1*buffer:] = True
-        
-        im_nan_border = np.zeros(im_nan.shape, dtype='bool')
-        
-        for i in np.arange(labels.max()):
-            if (np.logical_and((labels==i), border)).any():
-                im_nan_border[(labels==i)] = True
-        
-        im_nan_border = np.logical_and(im_nan_border, im_nan, dtype='uint8')
-        
-        # Now repeatedly dilate missing area by the buffer, see if any missing
-        # areas are within the neighborhood, add those that are, and repeat
-        # until we've gotten all areas conditionally dependent on pixels
-        # outside of boundary.
-        kernel = np.ones((2*buffer+1, 2*buffer+1), dtype='uint8')
-        while True:
-            im_nan_border_dilate = cv.dilate(im_nan_border.astype(np.uint8), 
-                                             kernel, iterations=1)
-            im_nan_border2 = np.zeros(im_nan.shape, dtype='bool')
-            for i in np.arange(labels.max()):
-                if (np.logical_and((labels==i), im_nan_border_dilate)).any():
-                    im_nan_border2[(labels==i)] = True
-            im_nan_border2 = np.logical_and(im_nan_border2, im_nan, 
-                                            dtype='uint8')
-            
-            if np.equal(im_nan_border, im_nan_border2).all():
-                break
-            else:
-                im_nan_border = copy.deepcopy(im_nan_border2)
-        
-        # Create im_nan_border field if it doesn't exist.
-        if not 'im_nan_border' in self.dsa_image.PointData.keys():
-            arr = vtk.vtkUnsignedCharArray()
-            arr.SetName('im_nan_border')
-            arr.SetNumberOfComponents(1)
-            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
-            arr.FillComponent(0, 0)
-            self.image.GetPointData().AddArray(arr)
-        self.dsa_image.PointData['im_nan_border'][:] = np.ravel(im_nan_border)
-        
-    def dummy_im_nan_border(self):
-        """
-        Create an all false im_nan_border.
-        
-        In case we want to do pixel infilling on all pixels.
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        raise RuntimeError('dummy_im_nan_border is deprecated')
-
-        # Create im_nan_border field if it doesn't exist.
-        if not 'im_nan_border' in self.dsa_image.PointData.keys():
-            arr = vtk.vtkUnsignedCharArray()
-            arr.SetName('im_nan_border')
-            arr.SetNumberOfComponents(1)
-            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
-            arr.FillComponent(0, 0)
-            self.image.GetPointData().AddArray(arr)
-        self.dsa_image.PointData['im_nan_border'][:] = 0
-    
     def write_image(self, output_path=None, suffix='', name=None, key=''):
         """
         Write the image out to a file.
@@ -7730,7 +7227,8 @@ class Project:
         json.dump(self.image_history_dict_dict[key], f, indent=4)
         f.close()
     
-    def read_image(self, image_path=None, suffix='', name=None, overwrite=False):
+    def read_image(self, image_path=None, suffix='', name=None, 
+                   overwrite=False):
         """
         Read in the image from a file.
 
@@ -7743,7 +7241,7 @@ class Project:
             The suffix for the vtkfiles dir. The default is ''.
         name : str, optional
             Name of the file if we're reading in vtkfiles dir. If None, name
-            is set to 'image' and key is set to ''. Otherwise name and key
+            is set to 'image' and key is seimage_path=None, suffix='', name=None, overwrite=Falset to ''. Otherwise name and key
             are the the same. The default is None.
         overwrite : bool, optional
             Whether to overwrite preexisting image. If False and key already
@@ -7802,138 +7300,6 @@ class Project:
         
         # Also wrap with a datasetadaptor for working with numpy
         self.dsa_image_dict[key] = dsa.WrapDataObject(self.image_dict[key])
-        
-    def create_gmrf(self):
-        """
-        Creates a GMRF for the missing data in im_gaus using theta1 and theta.
-        
-        This method implements our pixel infilling scheme, which is:
-        represent the gaussian transformed image as a Gaussian Markov Random
-        Field with a known, sparse precision matrix Q. The neighbors of each
-        node are the points in a square around it (usually 5 pixels wide). If
-        the whole image is a GMRF, then any subset A is also a GMRF with a 
-        mean function that is conditional on the points not in the subset (
-        we'll label these points B) and the precision matrix of A (QAA) is
-        just a subset of Q. Specifically, we choose the missing pixels to be
-        the subset A and the known ones to be our subset B. Then, following
-        Rue and Held 2005 ch. 2 we can find the expectation of this GMRF and
-        simulate draws from it.
-        
-        This function generates the attributes mu_agivenb and sparse_LAA
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        if not (len(self.theta)==5):
-            raise RuntimeError("Currently we assume m = 2 only.")
-        # Create sparse_Q, precision matrix for the entire image
-        sparse_Q = theta_to_Q(self.image.GetDimensions()[1], 
-                              self.image.GetDimensions()[0], 
-                              2, self.theta) * self.theta1
-        sparse_Q = sparse_Q.tocsr()
-        
-        # SHOULD REALLY CHECK THAT ALL OF THIS INDEXING IS WORKING AS PLANNED
-        # Find indices of missing pixels and subset Q accordingly
-        if not 'im_nan_border' in self.dsa_image.PointData.keys():
-            raise RuntimeError('Must create im_nan_border before gmrf')
-        ind_a = np.logical_and(np.isnan(self.dsa_image.PointData['im_gaus']),
-                       ~np.array(self.dsa_image.PointData['im_nan_border'],
-                                 dtype='bool'))
-        ind_b = ~np.isnan(self.dsa_image.PointData['im_gaus'])
-        i_b = np.argwhere(ind_b)
-        #i_a = np.argwhere(ind_missing) not needed
-        i_b = np.argwhere(ind_b)
-        sparse_QAA = sparse_Q[ind_a,:][:,ind_a]
-        sparse_QAB = sparse_Q[ind_a,:][:,ind_b]
-        
-        # Compute the b a given b parameter of the canonical conditional dist
-        b_agivenb = -1*sparse_QAB.dot(self.dsa_image.PointData['im_gaus'][i_b])
-        # And conditional mean Q*mu = b, so for the conditional distribution 
-        # Q=QAA
-        self.mu_agivenb = sp.linalg.spsolve(sparse_QAA, b_agivenb)
-        
-        # create sparse_LAA to sample from the posterior
-        # In order to sample from the posterior we need to find the cholesky 
-        # factor of QAA, let's see if we can do this with SuperLU
-        options = dict(SymmetricMode=True)
-        # set permute colum specification to natural to prevent it from 
-        # permuting matrix, mild computation hit but makes coding easier
-        splu_QAA = sp.linalg.splu(sparse_QAA.tocsc(), permc_spec='NATURAL', 
-                        options=options)
-        
-        # The L factor in SuperLU is normalized with principal diagonal elements 
-        # equal to 1.
-        # Follow this reference for computing L (cholesky)
-        # https://people.eecs.berkeley.edu/~demmel/ma221_Fall11/Lectures/
-        # Lecture_13.html
-        d = np.sqrt(splu_QAA.U.diagonal(0))
-        D = sp.diags(d)
-        self.sparse_LAA = splu_QAA.L.dot(D)
-    
-    def create_im_gaus_mean_fill(self):
-        """
-        Fill missing pixels in im_gaus with expectation (mu_agivenb)
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        # Create im_gaus_mean_fill field if it doesn't exist.
-        if not 'im_gaus_mean_fill' in self.dsa_image.PointData.keys():
-            arr = vtk.vtkFloatArray()
-            arr.SetName('im_gaus_mean_fill')
-            arr.SetNumberOfComponents(1)
-            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
-            arr.FillComponent(0, 0)
-            self.image.GetPointData().AddArray(arr)
-        
-        # Fill im_gaus_mean_fill
-        self.dsa_image.PointData['im_gaus_mean_fill'][:] = copy.deepcopy(
-            self.dsa_image.PointData['im_gaus'])
-        ind_a = np.logical_and(np.isnan(self.dsa_image.PointData['im_gaus']),
-                       ~np.array(self.dsa_image.PointData['im_nan_border'],
-                                 dtype='bool'))
-        print(ind_a.sum())
-        i_a = np.argwhere(ind_a)
-        print(self.dsa_image.PointData['im_gaus_mean_fill'][i_a].shape)
-        self.dsa_image.PointData['im_gaus_mean_fill'][i_a] = self.mu_agivenb[
-            :, np.newaxis]
-    
-    def create_elevation_mean_fill(self):
-        """
-        Fill missing pixels in Elevation with transformed expectation
-
-        Returns
-        -------
-        None.
-
-        """
-        # Create im_gaus_mean_fill field if it doesn't exist.
-        if not 'Elevation_mean_fill' in self.dsa_image.PointData.keys():
-            arr = vtk.vtkFloatArray()
-            arr.SetName('Elevation_mean_fill')
-            arr.SetNumberOfComponents(1)
-            arr.SetNumberOfTuples(self.image.GetNumberOfPoints())
-            arr.FillComponent(0, 0)
-            self.image.GetPointData().AddArray(arr)
-        
-        # Fill Elevation_mean_fill
-        self.dsa_image.PointData['Elevation_mean_fill'][:] = copy.deepcopy(
-            self.dsa_image.PointData['Elevation'])
-        ind_a = np.logical_and(np.isnan(self.dsa_image.PointData['im_gaus']),
-                       ~np.array(self.dsa_image.PointData['im_nan_border'],
-                                 dtype='bool'))
-        i_a = np.argwhere(ind_a)
-        #print(self.dsa_image.PointData['im_gaus_mean_fill'][i_a].shape)
-        self.dsa_image.PointData['Elevation_mean_fill'][i_a] = inormalize(
-            self.mu_agivenb[:, np.newaxis], 
-            self.empirical_cdf[1],
-            self.empirical_cdf[2])
     
     def create_reflectance(self):
         """
