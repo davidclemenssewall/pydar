@@ -1326,9 +1326,6 @@ class SingleScan:
         self.filterName = 'None'
         self.filterDict = {}
         
-        # Create currentFilter
-        # self.currentFilter = ClassFilter(self.transformFilter.GetOutputPort(),
-        #                                  class_list=class_list)
         if class_list=='all':
             self.currentFilter = self.transformFilter
         else:
@@ -9519,131 +9516,7 @@ class ScanArea:
         
         pdata.Modified()
         self.max_difference_dict[(project_name_0, project_name_1)] = pdata
-    
-class ClassFilter:
-    """
-    Filter points according to the classification field
-    
-    Attributes
-    ----------
-    input_connection : vtkAlgorithmOutput
-    class_list : list
-        List of categories this filter will return, if special value: 'all'
-        Then we do not have a selection filter and we pass through all points
-    filter : vtkPolyDataAlgorithm
-        The filter
-    selectionNode : vtkSelectionNode
-        Selection node object for selecting points
-    selection : vtkSelection
-        selection object
-    
-    Methods
-    -------
-    CreateFilter(class_list)
-        Creates the desired filter. Overwrites existing if present.
-    Update()
-        update filters (e.g. call after upstream Modified)
-    GetOutputPort()
-        Returns the output port
-    GetOutput()
-        Returns the output as a PolyData
-        
-    """
-    
-    def __init__(self, input_connection, class_list=[0, 1, 2, 70]):
-        """
-        Create objects and pipeline
 
-        Parameters
-        ----------
-        input_connection : vtkAlgorithmOutput
-            vtk input connection to this filter
-        class_list : list, optional
-            List of categories to include in the output. If 'all' then we will
-            do no filtering. The default is [0, 1, 2, 70].
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        self.input_connection = input_connection
-        self.CreateFilter(class_list)
-    
-    def CreateFilter(self, class_list):
-        """
-        Create desired filter replaces existing if one exists.
-
-        Parameters
-        ----------
-        class_list : list, optional
-            List of categories to include in the output. If 'all' then we will
-            do no filtering. The default is [0, 1, 2, 70].
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        self.class_list = class_list
-        if class_list=='all':
-            self.filter = vtk.vtkTransformPolyDataFilter()
-            self.filter.SetTransform(vtk.vtkTransform())
-        else:
-            self.selectionList = vtk.vtkUnsignedCharArray()
-            for v in self.class_list:
-                self.selectionList.InsertNextValue(v)
-            self.selectionNode = vtk.vtkSelectionNode()
-            self.selectionNode.SetFieldType(vtk.vtkSelectionNode.POINT)
-            self.selectionNode.SetContentType(vtk.vtkSelectionNode.VALUES)
-            self.selectionNode.SetSelectionList(self.selectionList)
-            
-            self.selection = vtk.vtkSelection()
-            self.selection.AddNode(self.selectionNode)
-            
-            self.filter = vtk.vtkExtractSelection()
-            self.filter.SetInputData(1, self.selection)
-        self.filter.SetInputConnection(0, self.input_connection)
-        self.filter.Update()
-    
-    def Update(self):
-        """
-        Updates pipeline
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        self.filter.Update()
-    
-    def GetOutput(self):
-        """
-        Returns polydata
-
-        Returns
-        -------
-        vtkPolyData
-
-        """
-        
-        return self.filter.GetOutput()
-    
-    def GetOutputPort(self):
-        """
-        Returns output port.
-
-        Returns
-        -------
-        vtkAlgorithmOutput
-
-        """
-        
-        return self.filter.GetOutputPort()
-    
 class Classifier:
     """
     Manage multiple scans from the same area.
