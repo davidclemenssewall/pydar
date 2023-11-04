@@ -1963,7 +1963,8 @@ class SingleScan:
         if transform=='current':
             point = self.transform.TransformPoint(point)
         elif transform=='raw':
-            continue
+            # do nothing
+            pass
         else:
             raise RuntimeError("Unsupported transform requested.")
 
