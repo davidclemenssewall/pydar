@@ -6855,7 +6855,7 @@ name : str, optional
         return output
     
     def get_merged_points(self, port=False, history_dict=False, x0=None,
-                          y0=None, wx=None, wy=None, yaw=0):
+                          y0=None, wx=None, wy=None, r=None, yaw=0):
         """
         Returns a polydata with merged points from all single scans
         
@@ -6873,6 +6873,9 @@ name : str, optional
             x coordinate of the selection box. The default is None
         y0 : float, optional
             y coordinate of the selection box. The default is None
+        r : float, optional
+            radius of the vertically-aligned cylinder to get points in
+            The default is None. Cannot be set if wx/wy is set.
         wx : float, optional
             the selection box width. The default is None
         wy : float, optional
@@ -6896,24 +6899,34 @@ name : str, optional
             self.scan_dict[key].transformFilter.Update()
             connection, temp_hist_dict = self.scan_dict[key].get_polydata(
                 port=True, history_dict=True)
-            if x0 is not None:
-                # If we are just selecting a box, do so
-                box = vtk.vtkBox()
-                box.SetBounds((0, wx, 0, wy, -10, 10))
-                # We need a transform to put the data in the desired location 
-                # relative to our box
-                transform = vtk.vtkTransform()
-                transform.PostMultiply()
-                transform.RotateZ(yaw)
-                transform.Translate(x0, y0, 0)
-                # That transform moves the box relative to the data, so the 
-                # box takes its inverse
-                transform.Inverse()
-                box.SetTransform(transform)
-                
+            if (wx is not None) or (r is not None):
+                if (wx is not None) and (r is not None):
+                    raise ValueError("get merged points cannot have x0 and r")
+                if wx is not None:
+                    # If we are just selecting a box, do so
+                    imp = vtk.vtkBox()
+                    imp.SetBounds((0, wx, 0, wy, -10, 10))
+                    # We need a transform to put the data in the desired location 
+                    # relative to our box
+                    transform = vtk.vtkTransform()
+                    transform.PostMultiply()
+                    transform.RotateZ(yaw)
+                    transform.Translate(x0, y0, 0)
+                    # That transform moves the box relative to the data, so the 
+                    # box takes its inverse
+                    transform.Inverse()
+                    imp.SetTransform(transform)
+                elif r is not None:
+                    imp = vtk.vtkCylinder()
+                    imp.SetCenter(x0, y0, 0)
+                    imp.SetRadius(r)
+                    imp.SetAxis(0, 0, 1)
+                else:
+                    raise RuntimeError()
+                    
                 # vtkExtractPoints does the actual filtering
                 extractPoints = vtk.vtkExtractPoints()
-                extractPoints.SetImplicitFunction(box)
+                extractPoints.SetImplicitFunction(imp)
                 extractPoints.SetInputConnection(connection)
                 extractPoints.GetInput().GetPointData().CopyNormalsOn()
                 extractPoints.GenerateVerticesOn()
