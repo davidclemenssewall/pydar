@@ -2,11 +2,21 @@
 
 This package contains a set of classes and methods for classifying, filtering, and aligning repeat Terrestrial Laser Scanning (TLS) data, converting pointclouds to irregular or gridded surfaces, and visualizing and interacting with these data. The code was designed for sea ice with an ice fixed, lagrangian reference frame. However, it may be applied to terrestrial data as well and future updates may add georeferencing capabilities. The code has exclusively been developed and tested for a Riegl VZ1000 scanner although it should be adaptable to other terrestrial scanners.
 
+## Installation instructions
+0. Get the code: ![Clone](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) this repository, or, if you are planning to do code development, fork and then clone it.
+1. Create python environment(s): ![Conda]() is recommended for package management. Yaml files of the environments that work on Ubuntu are provided for reference although frustratingly they do not seem to work cross-platform. If the yaml file does not work, to create the 'vtk_processing' environment, go to the root of the pydar directory and run:
+
+    conda create -n vtk_processing numpy matplotlib scipy pandas vtk scikit-learn cython pdal open3d opencv -c conda-forge -c open3d-admin
+
+If you need to use point cloud local maxima functionality install ![py-find-1st](https://pypi.org/project/py-find-1st/) in that conda environment with pip.
+
+If you need to use the gaussian process surface creation, install pytorch and gpytorch in the environment using conda. On Ubuntu, I encountered unresolvable conflicts when attempting to install pytorch and gpytorch in the same virtual environment as opencv, pdal, and open3d. If you encounter the same issues, you may need to create a separate environment with pytorch and gpytorch in it (see 'vtk_gpytorch.yaml' file). The problem doesn't appear to emerge consistently across platforms however.
+
 Below is a non-exhaustive guide to processing and examining repeat TLS data using pydar
 
 Terminology:
 
- + Scan Position: set-up the tripod at a given location and measure the topography within the scanner's line of sight.
++ Scan Position: set-up the tripod at a given location and measure the topography within the scanner's line of sight.
 + SingleScan: the data collected from a single scan position. We use this term to refer to both the point cloud of topographic measurements from this scan position and ancillary data such as the locations of TLS reflectors within the scanner's reference frame at this scan position and the rigid transformations that register and align this SingleScan with others (see below).
 + Project: a collection of SingleScans covering a contiguous area that were collected during a sufficiently short time interval such that no topographic change occurred between scan positions (ideally, exceptions are described in the Usage Notes). Typically, the set of SingleScans in a Project were collected in a single day of measurements although on some occasions measurements were collected over two days.
 + Registration: the act of computing the rigid transformations that describe the spatial relationships between the different SingleScans in a Project. Registration places all SingleScans in a Project into a common reference frame (whose origin and unit vectors are typically defined by an arbitrary SingleScan).
