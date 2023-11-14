@@ -40,9 +40,13 @@ from sklearn.experimental import enable_hist_gradient_boosting
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+
+#try:
+#    import pyximport
+#    pyximport.install(inplace=True, language_level=3)
+#except ImportError:
+#    print('Failed to build cython_util, is the C/C++ compiler installed?')
 try:
-    import pyximport
-    pyximport.install(inplace=True, language_level=3)
     import cython_util
 except ModuleNotFoundError:
     print('cython_util was not imported, functions relying on it will fail')

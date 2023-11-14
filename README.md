@@ -3,14 +3,21 @@
 This package contains a set of classes and methods for classifying, filtering, and aligning repeat Terrestrial Laser Scanning (TLS) data, converting pointclouds to irregular or gridded surfaces, and visualizing and interacting with these data. The code was designed for sea ice with an ice fixed, lagrangian reference frame. However, it may be applied to terrestrial data as well and future updates may add georeferencing capabilities. The code has exclusively been developed and tested for a Riegl VZ1000 scanner although it should be adaptable to other terrestrial scanners.
 
 ## Installation instructions
-0. Get the code: ![Clone](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) this repository, or, if you are planning to do code development, fork and then clone it.
-1. Create python environment(s): ![Conda]() is recommended for package management. Yaml files of the environments that work on Ubuntu are provided for reference although frustratingly they do not seem to work cross-platform. If the yaml file does not work, to create the 'vtk_processing' environment, go to the root of the pydar directory and run:
+Get the code: 
+![Clone](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) this repository, or, if you are planning to do code development, fork and then clone it.
 
-    conda create -n vtk_processing numpy matplotlib scipy pandas vtk scikit-learn cython pdal open3d opencv -c conda-forge -c open3d-admin
+Create python environment(s): 
+![Conda]() is recommended for package management. Yaml files of the environments that work on Ubuntu are provided for reference although frustratingly they do not seem to work cross-platform. If the yaml file does not work, to create the 'vtk_processing' environment, go to the root of the pydar directory and run:
 
-If you need to use point cloud local maxima functionality install ![py-find-1st](https://pypi.org/project/py-find-1st/) in that conda environment with pip.
+    conda create -n vtk_processing numpy=1.20.1 matplotlib=3.3.4 scipy=1.6.0 pandas=1.4.3 vtk=9.0.1 scikit-learn=0.24.1 cython=0.29.22 pdal=2.2.0 python-pdal=2.3.7 open3d=0.11.2 opencv=4.5.1 pyperclip=1.8.1 pyqt=5.12.3 pyarrow=3.0.0 -c conda-forge -c open3d-admin
 
-If you need to use the gaussian process surface creation, install pytorch and gpytorch in the environment using conda. On Ubuntu, I encountered unresolvable conflicts when attempting to install pytorch and gpytorch in the same virtual environment as opencv, pdal, and open3d. If you encounter the same issues, you may need to create a separate environment with pytorch and gpytorch in it (see 'vtk_gpytorch.yaml' file). The problem doesn't appear to emerge consistently across platforms however.
+This versions of the python libraries listed above are the most-thoroughly tested environment. The code may work with more up-to-date packages (if you find this to be the case please feel free to submit a PR).
+
+To use cython functionality you will need to have the appropriate c compiler for your system. See ![Installing Cython](https://cython.readthedocs.io/en/latest/src/quickstart/install.html).
+
+If you need to use point cloud local maxima functionality, install ![py-find-1st](https://pypi.org/project/py-find-1st/) in that conda environment with pip.
+
+If you have access to a CUDA-compatible GPU and want to use the gaussian process surface creation, install pytorch (tested version 1.8.1) and gpytorch (tested version 1.4.0) in the environment using conda. Then install pykeops (tested version 1.5) and keops following ![their instructions](https://www.kernel-operations.io/keops/python/installation.html). On Ubuntu, I encountered unresolvable conflicts when attempting to install pytorch and gpytorch in the same virtual environment as opencv, pdal, and open3d. If you encounter the same issues, you may need to create a separate environment with pytorch and gpytorch in it (see 'vtk_gpytorch.yaml' file). The problem doesn't appear to emerge consistently across platforms however.
 
 Below is a non-exhaustive guide to processing and examining repeat TLS data using pydar
 
@@ -33,6 +40,7 @@ Terminology:
 ## Part 1: Loading and displaying a project in pydar
 The following script shows a basic example of how to read in a project and display it in an interactive window.
 
+    sys.path.append(PATH/TO/PYDAR/DIRECTORY)
     import pydar
     
     # Import project
@@ -71,6 +79,7 @@ These tools are components of the ![FlakeOut](https://doi.org/10.5281/zenodo.565
 
 ### The following script demonstrates applying a simple visibility based filter to label points that are disconnected from other points (i.e. floating in space).
 
+    sys.path.append(PATH/TO/PYDAR/DIRECTORY)
     import pydar
     
     project_name = 'mosaic_01_101819.RiSCAN'
@@ -130,6 +139,7 @@ Writing to npyfiles can be done at the Project or SingleScan level:
 
 For reflector alignment, label each reflector with a consistent name (e.g. ‘r01’) in RiSCAN (Part 0 above). Ice deformation and errors in the VZ1000's reflector search process can shift a reflector relative to the other reflectors. The pairwise distances between reflectors can be compared using `ScanArea.compare_reflectors`. We recommend using only the set of reflectors whose pairwise distances between Projects changed by 0.02 m or less. With this set of reflectors as keypoints, compute the rigid transformation that minimizes the least-squares error between the keypoints (implemented in `TiePointList.calc\_transformation`). The default version of this rigid transformation calculation (`mode='LS'` in `TiePointList.calc\_transformation`) requires at least 3 pairs of keypoints and has six degrees of freedom: translations in the 3 spatial directions and rotations around the 3 unit vectors (roll, pitch, and yaw). However, sometimes when there are just 3 or 4 pairs of keypoints, small vertical errors in the reflector positions produce unrealistic tilts (i.e., unreasonable roll and pitch). For these cases and when there are only 2 pairs of keypoints, calculate the rigid transformation without permitting tilt changes (`mode='Yaw'` in `TiePointList.calc\_transformation`).
 
+    sys.path.append(PATH/TO/PYDAR/DIRECTORY)
     import pydar
     
     # Load ScanArea
