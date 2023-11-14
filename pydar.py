@@ -41,11 +41,11 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
-#try:
-#    import pyximport
-#    pyximport.install(inplace=True, language_level=3)
-#except ImportError:
-#    print('Failed to build cython_util, is the C/C++ compiler installed?')
+try:
+    import pyximport
+    pyximport.install(inplace=True, language_level=3)
+except ImportError:
+    print('Failed to build cython_util, is the C/C++ compiler installed?')
 try:
     import cython_util
 except ModuleNotFoundError:
