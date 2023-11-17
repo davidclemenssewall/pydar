@@ -4886,7 +4886,8 @@ name : str, optional
             self.scan_dict[scan_name].add_z_offset(z_offset, history_dict=
                                                    history_dict)
 
-    def create_reflector_actors(self, color='White', text_scale=1):
+    def create_reflector_actors(self, color='White', text_scale=1,
+                                size=0.05):
         """
         Create actors for visualizing the reflectors.
 
@@ -4900,8 +4901,10 @@ name : str, optional
         color : str, optional
             Name of the color to display as. The default is 'White'
         text_scale : float, optional
-            Scale for the text 
-
+            Scale for the text. Default is 1
+        size : float, optional
+            Radius of sphere used to represent reflector in m. Default is 0.05
+        
         Returns:
         --------
         None.
@@ -4911,50 +4914,52 @@ name : str, optional
         # Named colors object
         nc = vtk.vtkNamedColors()
 
-        # Dicts store 
+        # Dicts store reflector and text actors
+        if hasattr(self, 'reflectorActorDict'):
+            del self.reflectorActorDict
+            del self.reflectorTextDict
+        self.reflectorActorDict = {}
+        self.reflectorTextDict = {}
 
-
-        # Create a cylinder to represent the scanner
-        sphereSource = vtk.vtkSphereSource()
-        sphereSource.SetCenter(0, 0, 0)
-        sphereSource.SetRadius(0.25)
-        sphereSource.SetResolution(12)
-        sphereSource.Update()
-        pdata = sphereSource.GetOutput()
-
-        
-        # Mapper and Actor
-        mapper = vtk.vtkPolyDataMapper()
-        mapper.SetInputData(pdata)
-        mapper.SetScalarVisibility(0)
-        if hasattr(self, 'scannerActor'):
-            del self.scannerActor
-            del self.scannerText
-        self.scannerActor = vtk.vtkActor()
-        self.scannerActor.SetMapper(mapper)
-        self.scannerActor.GetProperty().SetLineWidth(3)
-        self.scannerActor.GetProperty().RenderLinesAsTubesOn()
-        self.scannerActor.GetProperty().SetColor(nc.GetColor3d(color))
-        self.scannerActor.RotateX(90) # because cylinder is along y axis
-        self.scannerActor.SetUserTransform(self.transform)
-
-        # Create Text with the scan position name
-        text = vtk.vtkVectorText()
-        text.SetText(self.scan_name)
-        text.Update()
-        textMapper = vtk.vtkPolyDataMapper()
-        textMapper.SetInputData(text.GetOutput())
-        self.scannerText = vtk.vtkFollower()
-        self.scannerText.SetMapper(textMapper)
-        self.scannerText.SetScale(1, 1, 1)
-        self.scannerText.SetPosition(self.transform.GetPosition())
-        self.scannerText.AddPosition(0, 0, 0.5)
-        self.scannerText.GetProperty().SetColor(nc.GetColor3d(color))
+        for index, row in self.tiepointlist.tiepoints_transformed.iterrows():
+            # Create a cylinder to represent the scanner
+            sphereSource = vtk.vtkSphereSource()
+            sphereSource.SetCenter(row['X[m]'], row['Y[m]'], row['Z[m]'])
+            sphereSource.SetRadius(size)
+            sphereSource.Update()
+            pdata = sphereSource.GetOutput()
+            
+            # Mapper and Actor
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(pdata)
+            mapper.SetScalarVisibility(0)
+            self.reflectorActorDict[index] = vtk.vtkActor()
+            self.reflectorActorDict[index].SetMapper(mapper)
+            self.reflectorActorDict[index].GetProperty().SetColor(
+                                                        nc.GetColor3d(color))
+            
+            # Create Text with the scan position name
+            text = vtk.vtkVectorText()
+            text.SetText(index)
+            text.Update()
+            textMapper = vtk.vtkPolyDataMapper()
+            textMapper.SetInputData(text.GetOutput())
+            self.reflectorTextDict[index] = vtk.vtkFollower()
+            self.reflectorTextDict[index].SetMapper(textMapper)
+            self.reflectorTextDict[index].SetScale(text_scale, text_scale, 
+                                                   text_scale)
+            self.reflectorTextDict[index].SetPosition(np.array([row['X[m]'], 
+                                                               row['Y[m]'], 
+                                                               row['Z[m]']]))
+            self.reflectorTextDict[index].AddPosition(0, 0.5, 0)
+            self.reflectorTextDict[index].GetProperty().SetColor(nc.GetColor3d(color))
             
     def display_project(self, z_min, z_max, lower_threshold=-1000, 
                         upper_threshold=1000, colorbar=True, field='Elevation',
                         mapview=False, profile_list=[], show_scanners=False,
                         scanner_color='Gray', scanner_length=150, 
+                        show_reflectors=False, reflector_color='White',
+                        reflector_text_scale=1, reflector_size=0.05,
                         show_labels=False, pdata_list=[], addtl_actors=[]):
         """
         Display all scans in a vtk interactive window.
@@ -5003,6 +5008,14 @@ name : str, optional
         scanner_length : float, optional
             Length of the ray indicating the scanner's start orientation in m.
             The default is 150
+        show_reflectors : bool, optional
+            Whether or not to show the reflectors. The default is False.
+        reflector_color : str, optional
+            Name of the color to display as. The default is 'White'
+        reflector_text_scale : float, optional
+            Text scale for reflector labels. The default is 1
+        reflector_size : float, optional
+            Radius of sphere representing reflector in m, the default is 0.05
         show_labels : bool, optional
             Whether to display the labels for each SingleScan. The default is
             False.
@@ -5055,6 +5068,15 @@ name : str, optional
                 renderer.AddActor(self.scan_dict[scan_name].scannerActor)
                 renderer.AddActor(self.scan_dict[scan_name].scannerText)
 
+        # Add reflectors if requested
+        if show_reflectors:
+            self.create_reflector_actors(color=reflector_color,
+                                         text_scale=reflector_text_scale,
+                                         size=reflector_size)
+            for key in self.reflectorActorDict.keys():
+                renderer.AddActor(self.reflectorActorDict[key])
+                renderer.AddActor(self.reflectorTextDict[key])
+                
         # Add labels if requested
         if show_labels:
             for scan_name in self.scan_dict:
@@ -5178,7 +5200,10 @@ name : str, optional
                          upper_threshold=1000, mode=None, colorbar=True,
                          field='Elevation',
                          name='', window_size=(2000, 1000), path=None,
-                         date=True, scale=True, addtl_actors=[]):
+                         date=True, scale=True, 
+                         show_reflectors=False, reflector_color='White',
+                         reflector_text_scale=1, reflector_size=0.05,
+                         addtl_actors=[]):
         """
         Write an image of the project to the snapshots folder.
         
@@ -5215,6 +5240,14 @@ name : str, optional
         path : str, optional
             If provided, this is the path to write the image to. The default
             is None.
+        show_reflectors : bool, optional
+            Whether or not to show the reflectors. The default is False.
+        reflector_color : str, optional
+            Name of the color to display as. The default is 'White'
+        reflector_text_scale : float, optional
+            Text scale for reflector labels. The default is 1
+        reflector_size : float, optional
+            Radius of sphere representing reflector in m, the default is 0.05
         addtl_actors : list, optional
             List of additonal actors to render, the default is []
 
@@ -5242,7 +5275,7 @@ name : str, optional
                                                                       field=
                                                                       field)
             renderer.AddActor(self.scan_dict[scan_name].actor)
-            
+
         if colorbar:
             scalarBar = vtk.vtkScalarBarActor()
             if field=='Elevation':
@@ -5296,6 +5329,16 @@ name : str, optional
         else:
             camera.SetRoll(roll)
         renderer.SetActiveCamera(camera)
+
+        # Add reflectors if requested
+        if show_reflectors:
+            self.create_reflector_actors(color=reflector_color,
+                                         text_scale=reflector_text_scale,
+                                         size=reflector_size)
+            for key in self.reflectorActorDict.keys():
+                renderer.AddActor(self.reflectorActorDict[key])
+                self.reflectorTextDict[key].SetCamera(camera)
+                renderer.AddActor(self.reflectorTextDict[key])
         
         renderWindow.Render()
 
