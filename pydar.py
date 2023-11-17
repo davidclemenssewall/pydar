@@ -110,7 +110,7 @@ class TiePointList:
     Methods
     -------
     add_transform(name, transform, reflector_list=[], std=np.NaN)
-        Adds a transform the the transforms dataframe.
+        Adds a transform to the transforms dataframe.
     get_transform(index)
         Returns the requested numpy array.
     apply_transform(index)
@@ -4841,7 +4841,29 @@ name : str, optional
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].add_transform(key, matrix, history_dict=
                                                     history_dict)
-    
+            
+    def add_transform_from_tiepointlist(self, key):
+        """
+        Add the transform in the tiepointlist to each single scan.
+
+        Parameters
+        ----------
+        key : const (could be string or tuple)
+            Dictionary key for the transforms dictionary.
+        matrix : TYPE
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        for scan_name in self.scan_dict:
+            matrix, history_dict = self.tiepointlist.get_transform(key, 
+                                                        history_dict=True)
+            self.scan_dict[scan_name].add_transform(key, matrix, history_dict)
+
     def add_z_offset(self, z_offset, history_dict=None):
         """
         Add z_offset transform to each single scan in scan_dict
@@ -4863,6 +4885,71 @@ name : str, optional
         for scan_name in self.scan_dict:
             self.scan_dict[scan_name].add_z_offset(z_offset, history_dict=
                                                    history_dict)
+
+    def create_reflector_actors(self, color='White', text_scale=1):
+        """
+        Create actors for visualizing the reflectors.
+
+        Note, this is part of Project because TiePointList is in Project.
+        If the transform changes, this needs to be re-run.
+
+        Todo: Dicts for each reflector actor and text actor
+        
+        Parameters:
+        -----------
+        color : str, optional
+            Name of the color to display as. The default is 'White'
+        text_scale : float, optional
+            Scale for the text 
+
+        Returns:
+        --------
+        None.
+
+        """
+
+        # Named colors object
+        nc = vtk.vtkNamedColors()
+
+        # Dicts store 
+
+
+        # Create a cylinder to represent the scanner
+        sphereSource = vtk.vtkSphereSource()
+        sphereSource.SetCenter(0, 0, 0)
+        sphereSource.SetRadius(0.25)
+        sphereSource.SetResolution(12)
+        sphereSource.Update()
+        pdata = sphereSource.GetOutput()
+
+        
+        # Mapper and Actor
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(pdata)
+        mapper.SetScalarVisibility(0)
+        if hasattr(self, 'scannerActor'):
+            del self.scannerActor
+            del self.scannerText
+        self.scannerActor = vtk.vtkActor()
+        self.scannerActor.SetMapper(mapper)
+        self.scannerActor.GetProperty().SetLineWidth(3)
+        self.scannerActor.GetProperty().RenderLinesAsTubesOn()
+        self.scannerActor.GetProperty().SetColor(nc.GetColor3d(color))
+        self.scannerActor.RotateX(90) # because cylinder is along y axis
+        self.scannerActor.SetUserTransform(self.transform)
+
+        # Create Text with the scan position name
+        text = vtk.vtkVectorText()
+        text.SetText(self.scan_name)
+        text.Update()
+        textMapper = vtk.vtkPolyDataMapper()
+        textMapper.SetInputData(text.GetOutput())
+        self.scannerText = vtk.vtkFollower()
+        self.scannerText.SetMapper(textMapper)
+        self.scannerText.SetScale(1, 1, 1)
+        self.scannerText.SetPosition(self.transform.GetPosition())
+        self.scannerText.AddPosition(0, 0, 0.5)
+        self.scannerText.GetProperty().SetColor(nc.GetColor3d(color))
             
     def display_project(self, z_min, z_max, lower_threshold=-1000, 
                         upper_threshold=1000, colorbar=True, field='Elevation',
