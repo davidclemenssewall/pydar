@@ -19,6 +19,7 @@ If you need to use point cloud local maxima functionality, install ![py-find-1st
 
 If you have access to a CUDA-compatible GPU and want to use the gaussian process surface creation, install pytorch (tested version 1.8.1) and gpytorch (tested version 1.4.0) in the environment using conda. Then install pykeops (tested version 1.5) and keops following ![their instructions](https://www.kernel-operations.io/keops/python/installation.html). On Ubuntu, I encountered unresolvable conflicts when attempting to install pytorch and gpytorch in the same virtual environment as opencv, pdal, and open3d. If you encounter the same issues, you may need to create a separate environment with pytorch and gpytorch in it (see 'vtk_gpytorch.yaml' file). The problem doesn't appear to emerge consistently across platforms however.
 
+# Usage instructions
 Below is a non-exhaustive guide to processing and examining repeat TLS data using pydar
 
 Terminology:
