@@ -3919,6 +3919,8 @@ class SingleScan:
             raise ValueError('mode must be raw, transformed, or filtered')
         
         n_pts = pdata.GetNumberOfPoints()
+        if n_pts == 0:
+            return None
         
         # Create numpy output
         names = []
@@ -3956,7 +3958,9 @@ class SingleScan:
         if filename is None:
             filename = self.project_name + '_' + self.scan_name + '.npy'
         
-        np.save(os.path.join(output_dir, filename), output_npy)
+        npy_filepath = os.path.join(output_dir, filename)
+        np.save(npy_filepath, output_npy)
+        return npy_filepath
     
     def write_pdal_transformation_json(self, mode='las', input_dir='./', 
                                        output_dir='./pdal_output/'):
@@ -7173,11 +7177,11 @@ name : str, optional
         # Write each scan individually to a numpy output
         json_list = []
         for scan_name in self.scan_dict:
-            self.scan_dict[scan_name].write_npy_pdal(output_dir, mode=mode,
-                                                     skip_fields=skip_fields)
-            json_list.append({"filename": output_dir + self.project_name + 
-                              '_' + scan_name + '.npy',
-                              "type": "readers.numpy"})
+            npy_filepath = self.scan_dict[scan_name].write_npy_pdal(
+                output_dir, mode=mode, skip_fields=skip_fields)
+            if npy_filepath is not None:
+                json_list.append({"filename": npy_filepath,
+                                  "type": "readers.numpy"})
         
         # Create JSON to instruct merging and conversion
         json_list.append({"type": "filters.merge"})
